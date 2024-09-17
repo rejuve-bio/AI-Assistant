@@ -172,7 +172,7 @@ class QueryExtractionSystem:
 
 
 if __name__ == '__main__':
-    gemini_api_key = "AIzaSyCA28Q75fqDYQ5e8aTROfyN9fnJBoPWz54"
+    gemini_api_key = ""
     schema_text = """
     Schema
     Node properties:
