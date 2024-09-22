@@ -49,3 +49,82 @@ sample_json_format = """
                 ]
                 }
                 """
+sample_graph  = {"nodes":[
+  {
+            "data": {
+                "id": "enst00000378392",
+                "type": "transcript",
+                "gene_name": "ANKEF1",
+                "transcript_id": "ENST00000378392.6",
+                "start": "10034987",
+                "transcript_name": "ANKEF1-202",
+                "end": "10058303",
+                "source": "GENCODE",
+                "chr": "chr20",
+                "transcript_type": "protein_coding",
+                "source_url": "https://www.gencodegenes.org/human/"
+            }
+        },
+        {
+            "data": {
+                "id": "enst00000378380",
+                "type": "transcript",
+                "gene_name": "ANKEF1",
+                "transcript_id": "ENST00000378380.4",
+                "start": "10035049",
+                "transcript_name": "ANKEF1-201",
+                "end": "10058303",
+                "source": "GENCODE",
+                "chr": "chr20",
+                "transcript_type": "protein_coding",
+                "source_url": "https://www.gencodegenes.org/human/"
+            }
+        },
+        {
+            "data": {
+                "id": "enst00000488991",
+                "type": "transcript",
+                "gene_name": "ANKEF1",
+                "transcript_id": "ENST00000488991.1",
+                "start": "10035117",
+                "transcript_name": "ANKEF1-204",
+                "end": "10055827",
+                "source": "GENCODE",
+                "chr": "chr20",
+                "transcript_type": "protein_coding_CDS_not_defined",
+                "source_url": "https://www.gencodegenes.org/human/"
+            }
+        }
+  ],
+  "edges": [
+        {
+            "data": {
+                "id": 1152921504606847846,
+                "label": "transcribed_to",
+                "source_node": "gene ensg00000101349",
+                "target_node": "transcript enst00000353224",
+                "source_data": "GENCODE",
+                "source_url": "https://www.gencodegenes.org/human/"
+            }
+        },
+        {
+            "data": {
+                "id": 1155173304420533094,
+                "label": "transcribed_to",
+                "source_node": "gene ensg00000101349",
+                "target_node": "transcript enst00000378423",
+                "source_data": "GENCODE",
+                "source_url": "https://www.gencodegenes.org/human/"
+            }
+        },
+        {
+            "data": {
+                "id": 6917529027641082780,
+                "label": "transcribed_to",
+                "source_node": "gene ensg00000101349",
+                "target_node": "transcript enst00000378429",
+                "source_data": "GENCODE",
+                "source_url": "https://www.gencodegenes.org/human/"
+            }
+        },]
+}
