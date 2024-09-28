@@ -1,26 +1,199 @@
-schema_description = '''
-                    Nodes: gene, transcript, protein
+schema_description = """
+                    **Schema Description:**
 
-                    if node is gene it might include this properies such as:
-                    gene {gene_name: STRING, gene_type: STRING, synonyms: LIST}
-                    example gene_name = ENSG00000237491, gene_type = protein_coding, synonyms = [bA204H22.1, dJ1099D15.3, C20orf94]
+                    Nodes:
+                    gene
+                    Properties:
+                    gene_name: STRING
+                    gene_type: STRING
+                    synonyms: LIST
+                    Example:
+                    gene_name = ENSG00000237491
+                    gene_type = protein_coding
+                    synonyms = [bA204H22.1, dJ1099D15.3, C20orf94]
 
-                    if node is transcript it might include this properies such as:
-                    transcript {gene_name: STRING}
-                    example gene_name = AKAP17A
+                    transcript
+                    Properties:
+                    gene_name: STRING
+                    Example:
+                    gene_name = AKAP17A
 
-                    if node is protein it might include this properies such as:
-                    protein {synonyms: LIST, protein_name: STRING}
-                    example protein_name= MKKS,ANKE1, synonyms = []
+                    protein
+                    Properties:
+                    protein_name: STRING
+                    synonyms: LIST
+                    Example:
+                    protein_name = MKKS, ANKE1
+                    synonyms = []
 
-                    Relationship properties are only transcribed_to ,transcribed_from, translates_to ,translation_of
+                    ontology_term
 
-                    The relationships are only this way dont create any other relationships :
-                    (:gene)-[:transcribed_to]->(:transcript)
-                    (:transcript)-[:transcribed_from]->(:gene)
-                    (:transcript)-[:translates_to]->(:protein)
-                    (:protein)-[:translation_of]->(:transcript)
+                    pathway
+
+                    snp
+
+                    chromosome_chain
+
+                    position_entity
+
+                    transcription_binding_site
+
+                    tad
+
+                    regulatory_region
+
+                    enhancer
+
+                    promoter
+
+                    super_enhancer
+
+                    non_coding_rna
+
+                    CL
+
+                    Uberon
+
+                    BTO
+
+                    EFO
+
+                    CLO
+
+                    GO
+                    """
+schema_relationship={
+                    "gene": {
+                        "transcribed_to": "transcript",
+                        "coexpressed_with": "gene",
+                        "expressed_in": "ontology_term",
+                        "genes_pathways": "pathway",
+                        "regulates": ["gene","regulatory_region"],
+                        "associated_with":["enhancer","promoter","super_enhancer"],
+                        "tfbs_snp": "snp",
+                        "binds_to": "transcription_binding_site",
+                        "in_tad_region": "tad",
+                    },
+                    "transcript": {
+                        "transcribed_from": "gene",
+                        "translates_to": "protein",
+                    },
+                    "protein": {
+                        "translation_of": "transcript",
+                        "interacts_with": "protein",
+                        "go_gene_product": "go",
+                    },
+                    "ontology_term": {
+                        "has_part": "ontology_term",
+                        "part_of": "ontology_term",
+                        "subclass_of": "ontology_term",
+                    },
+                    "cl": {
+                        "capable_of": "go",
+                        "part_of": "uberon",
+                        "subclass_of": "cl",
+                    },
+                    "bto": {
+                        "subclass_of": "bto",
+                    },
+                    "efo": {
+                        "subclass_of": "efo",
+                    },
+                    "uberon": {
+                        "subclass_of": "uberon",
+                    },
+                    "clo": {
+                        "subclass_of": "clo",
+                    },
+                    "go": {
+                        "subclass_of": "go",
+                    },
+                    "pathway": {
+                        "parent_pathway_of": "pathway",
+                        "child_pathway_of": "pathway",
+                    },
+                    "snp": {
+                        "eqtl_association": "gene",
+                        "closest_gene": "gene",
+                        "upstream_gene": "gene",
+                        "downstream_gene": "gene",
+                        "in_gene": "gene",
+                        "in_ld_with": "snp",
+                        "activity_by_contact": "gene",
+                        "chromatin_state": "uberon",
+                        "in_dnase_I_hotspot": "uberon",
+                        "histone_modification": "uberon",
+                    },
+                    "chromosome_chain": {
+                        "lower_resolution": "chromosome_chain",
+                    },
+                    "position_entity": {
+                        "located_on_chain": "chromosome_chain",
+                    },
+                    "regulatory_region": {
+                        "regulates": "gene",
+                    },
+                }
+nodes_edges_prompt = '''
+                    Given the user query
+                    
+                    {self.query}
+                    
+                    you are supposed to identify and create a graph based on the following schema and refering to the description on the schema
+                    
+                    {self.schema_description}
+
+                    1. dont use the examples in the description just return the result only from the query
+                    2. return the result in json format in key value pairs where the keys are the schema name and value is the user query we will set to query the graph
+                    3. only return a relationship related with user question
+                    3. dont explain anything just return the result in json format
+                    4. return me in a cypher query format
                     '''
+
+relationship_extractor = """
+                        You are an assistant that extracts graph nodes and relationships from user queries based on a given schema.
+
+                        {schema}
+
+                        **Allowed Relationships:**
+                        {schema_relationships}
+
+                        **Instructions:**
+                        Given the user query below:
+                        {query}
+
+                        1. Identify and extract the relevant nodes from the query.
+                        2. Extract the source node and target node from the user query.
+                        3. Always return the response in the following strict JSON format only:
+
+                        {{
+                            "source_node": {{
+                                "type": "<type_of_source_node>",
+                                "properties": <source_node_properties>
+                            }},
+                            "target_node": {{"type": "<type_of_target_node>", "properties": <target_node_properties>}}  // Include this line only if a target node exists
+                        }}
+                        """
+json_constructor_prompt = """
+            The user question is:
+            {self.query}
+            Given the following extracted information from a query:
+            {self.nodes_and_edges}
+            Convert this information into the following JSON format:
+            {self.sample_json_format}
+            Please follow these rules when creating the output:
+            1. For each node, include node_id, id, type, and properties fields. These are mandatory and should be the only fields for nodes.
+            2. Generate node_ids by auto-incrementing for each node (n1, n2, n3, ...).
+            3. If a specific ID is given in the extracted information, use it in the 'id' field. Otherwise, leave it as an empty string.
+            4. Add the label of the node in the type filed
+            5. Include all relevant properties from the extracted information in the properties field of each node.
+            6. For predicates (relationships), include type, source, and target fields. The source and target should reference the node_ids.
+            7. Ensure that the output JSON structure matches the sample format provided.
+            8. Make sure all relationships in the extracted information are represented as predicates in the output.
+            9. Make sure all nodes in the relation ship are available in the nodes list
+            10.Dont mention id in the dicitionary
+            Provide only the resulting JSON as your response, without any additional explanation or commentary.
+            """
 
 sample_json_format = """
                 {
@@ -49,82 +222,29 @@ sample_json_format = """
                 ]
                 }
                 """
-sample_graph  = {"nodes":[
-  {
-            "data": {
-                "id": "enst00000378392",
-                "type": "transcript",
-                "gene_name": "ANKEF1",
-                "transcript_id": "ENST00000378392.6",
-                "start": "10034987",
-                "transcript_name": "ANKEF1-202",
-                "end": "10058303",
-                "source": "GENCODE",
-                "chr": "chr20",
-                "transcript_type": "protein_coding",
-                "source_url": "https://www.gencodegenes.org/human/"
-            }
-        },
-        {
-            "data": {
-                "id": "enst00000378380",
-                "type": "transcript",
-                "gene_name": "ANKEF1",
-                "transcript_id": "ENST00000378380.4",
-                "start": "10035049",
-                "transcript_name": "ANKEF1-201",
-                "end": "10058303",
-                "source": "GENCODE",
-                "chr": "chr20",
-                "transcript_type": "protein_coding",
-                "source_url": "https://www.gencodegenes.org/human/"
-            }
-        },
-        {
-            "data": {
-                "id": "enst00000488991",
-                "type": "transcript",
-                "gene_name": "ANKEF1",
-                "transcript_id": "ENST00000488991.1",
-                "start": "10035117",
-                "transcript_name": "ANKEF1-204",
-                "end": "10055827",
-                "source": "GENCODE",
-                "chr": "chr20",
-                "transcript_type": "protein_coding_CDS_not_defined",
-                "source_url": "https://www.gencodegenes.org/human/"
-            }
-        }
-  ],
-  "edges": [
-        {
-            "data": {
-                "id": 1152921504606847846,
-                "label": "transcribed_to",
-                "source_node": "gene ensg00000101349",
-                "target_node": "transcript enst00000353224",
-                "source_data": "GENCODE",
-                "source_url": "https://www.gencodegenes.org/human/"
-            }
-        },
-        {
-            "data": {
-                "id": 1155173304420533094,
-                "label": "transcribed_to",
-                "source_node": "gene ensg00000101349",
-                "target_node": "transcript enst00000378423",
-                "source_data": "GENCODE",
-                "source_url": "https://www.gencodegenes.org/human/"
-            }
-        },
-        {
-            "data": {
-                "id": 6917529027641082780,
-                "label": "transcribed_to",
-                "source_node": "gene ensg00000101349",
-                "target_node": "transcript enst00000378429",
-                "source_data": "GENCODE",
-                "source_url": "https://www.gencodegenes.org/human/"
-            }
-        },]
-}
+json_constructor_prompt = """
+        The user question is:
+        {query}
+        Given the following extracted information from a query:
+
+        {source_node}
+        {target_node}
+        {relations}
+
+        Convert this information into the following JSON format:
+
+        {sample_json_format}
+
+        Please follow these rules when creating the output:
+        1. For each node, include node_id, id, type, and properties fields. These are mandatory and should be the only fields for nodes.
+        2. Generate node_ids by auto-incrementing for each node (n1, n2, n3, ...).
+        3. If a specific ID is given in the extracted information, use it in the 'id' field. Otherwise, leave it as an empty string.
+        4. Add the label of the node in the type filed
+        5. Include all relevant properties from the extracted information in the properties field of each node.
+        6. For predicates (relationships), include type, source, and target fields. The source and target should reference the node_ids.
+        7. Ensure that the output JSON structure matches the sample format provided.
+        8. Make sure all relationships in the extracted information are represented as predicates in the output.
+        9. Make sure all nodes in the relation ship are available in the nodes list
+        10.Dont mention id in the dicitionary
+        Provide only the resulting JSON as your response, without any additional explanation or commentary.
+        """
