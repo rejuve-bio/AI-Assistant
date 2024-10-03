@@ -64,7 +64,7 @@ schema_description = """
                     """
 schema_relationship={
                     "gene": {
-                        "transcribed_to": "transcript",
+                        "transcribed to": "transcript",
                         "coexpressed_with": "gene",
                         "expressed_in": "ontology_term",
                         "genes_pathways": "pathway",
@@ -134,72 +134,13 @@ schema_relationship={
                         "regulates": "gene",
                     },
                 }
-nodes_edges_prompt = '''
-                    Given the user query
-                    
-                    {self.query}
-                    
-                    you are supposed to identify and create a graph based on the following schema and refering to the description on the schema
-                    
-                    {self.schema_description}
-
-                    1. dont use the examples in the description just return the result only from the query
-                    2. return the result in json format in key value pairs where the keys are the schema name and value is the user query we will set to query the graph
-                    3. only return a relationship related with user question
-                    3. dont explain anything just return the result in json format
-                    4. return me in a cypher query format
-                    '''
-
-relationship_extractor = """
-                        You are an assistant that extracts graph nodes and relationships from user queries based on a given schema.
-
-                        {schema}
-
-                        **Allowed Relationships:**
-                        {schema_relationships}
-
-                        **Instructions:**
-                        Given the user query below:
-                        {query}
-
-                        1. Identify and extract the relevant nodes from the query.
-                        2. Extract the source node and target node from the user query.
-                        3. Always return the response in the following strict JSON format only:
-
-                        {{
-                            "source_node": {{
-                                "type": "<type_of_source_node>",
-                                "properties": <source_node_properties>
-                            }},
-                            "target_node": {{"type": "<type_of_target_node>", "properties": <target_node_properties>}}  // Include this line only if a target node exists
-                        }}
-                        """
-json_constructor_prompt = """
-            The user question is:
-            {self.query}
-            Given the following extracted information from a query:
-            {self.nodes_and_edges}
-            Convert this information into the following JSON format:
-            {self.sample_json_format}
-            Please follow these rules when creating the output:
-            1. For each node, include node_id, id, type, and properties fields. These are mandatory and should be the only fields for nodes.
-            2. Generate node_ids by auto-incrementing for each node (n1, n2, n3, ...).
-            3. If a specific ID is given in the extracted information, use it in the 'id' field. Otherwise, leave it as an empty string.
-            4. Add the label of the node in the type filed
-            5. Include all relevant properties from the extracted information in the properties field of each node.
-            6. For predicates (relationships), include type, source, and target fields. The source and target should reference the node_ids.
-            7. Ensure that the output JSON structure matches the sample format provided.
-            8. Make sure all relationships in the extracted information are represented as predicates in the output.
-            9. Make sure all nodes in the relation ship are available in the nodes list
-            10.Dont mention id in the dicitionary
-            Provide only the resulting JSON as your response, without any additional explanation or commentary.
-            """
 
 sample_json_format = """
                 {
                 "nodes": [
                     {
                     "node_id": "n1",
+                    "id":"",
                     "type": "label",
                     "properties": {
                         "key": "value"
@@ -207,6 +148,7 @@ sample_json_format = """
                     },
                     {
                     "node_id": "n2",
+                    "id":"",
                     "type": "label",
                     "properties": {}
                     }
@@ -222,29 +164,3 @@ sample_json_format = """
                 ]
                 }
                 """
-json_constructor_prompt = """
-        The user question is:
-        {query}
-        Given the following extracted information from a query:
-
-        {source_node}
-        {target_node}
-        {relations}
-
-        Convert this information into the following JSON format:
-
-        {sample_json_format}
-
-        Please follow these rules when creating the output:
-        1. For each node, include node_id, id, type, and properties fields. These are mandatory and should be the only fields for nodes.
-        2. Generate node_ids by auto-incrementing for each node (n1, n2, n3, ...).
-        3. If a specific ID is given in the extracted information, use it in the 'id' field. Otherwise, leave it as an empty string.
-        4. Add the label of the node in the type filed
-        5. Include all relevant properties from the extracted information in the properties field of each node.
-        6. For predicates (relationships), include type, source, and target fields. The source and target should reference the node_ids.
-        7. Ensure that the output JSON structure matches the sample format provided.
-        8. Make sure all relationships in the extracted information are represented as predicates in the output.
-        9. Make sure all nodes in the relation ship are available in the nodes list
-        10.Dont mention id in the dicitionary
-        Provide only the resulting JSON as your response, without any additional explanation or commentary.
-        """

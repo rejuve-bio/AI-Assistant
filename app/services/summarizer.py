@@ -2,8 +2,8 @@
 # Group edges by source_node and then process each group
 from collections import defaultdict
 import re
-from llm_handler import Gemini
-
+from llm_handler import Gemini,Open_AI_Model
+import traceback
 
 class Graph_Summarizer:
     
@@ -11,7 +11,7 @@ class Graph_Summarizer:
         self.llm = Gemini()
 
     def clean_and_format_response(self,desc):
-        """Cleans the response from the Gemini model and formats it with multiple lines."""
+        """Cleans the response from a model and formats it with multiple lines."""
         desc = desc.strip()
         desc = re.sub(r'\n\s*\n', '\n', desc)
         desc = re.sub(r'^\s*[\*\-]\s*', '', desc, flags=re.MULTILINE)
@@ -42,7 +42,7 @@ class Graph_Summarizer:
             'protein_name': 'protein_name',
             'synonyms': 'synonyms',
             'accessions': 'accessions',
-            'source': 'source',
+            # 'source': 'source',
             'gene_name': 'gene_name',
             'gene_type': 'gene_type',
             'start': 'start',
@@ -97,24 +97,42 @@ class Graph_Summarizer:
         return descriptions
     
     def graph_description(self,graph):
+
         nodes = {node['data']['id']: node['data'] for node in graph['nodes']}
         edges = [{'source_node': edge['data']['source_node'], 'target_node': edge['data']['target_node'], 'label': edge['data']['label']} for edge in graph['edges']]
         self.description = self.generate_grouped_descriptions(edges, nodes, batch_size=10)
 
-    def summarizer_prompt(self,user_query,graph):
-        # make the description to the llm in chunk not once
-
-        self.graph_description(graph)
-        prompt = (
-        f"you are a biology expert assistant"
-        f"Given a user query question {user_query}"
-        f"Given the following data, please summarize the key points clearly:\n"
-        f"Data:\n{self.description}\n"
-        f"Instructions: Please provide a clear and concise summary of the following data, highlighting the core information and the associations related with the suer query.\n"
-        f"Include the key and must details related with the user question only."
-        f"Summary:")
-
-        response = self.llm(prompt)
-        cleaned_desc = self.clean_and_format_response(response)
-        return cleaned_desc
     
+    def open_ai_summarizer(self,graph,user_query=None,query_json_format = None):
+        try:
+            self.graph_description(graph)
+            
+            if user_query and query_json_format:
+                prompt = (
+                    f"You are an expert biology assistant.\n"
+                    f"User Query: {user_query}\n\n"
+                    f"Given the following data, your task is to summarize the key points clearly and concisely:\n"
+                    f"Data:\n{self.description}\n\n"
+                    f"Instructions:\n"
+                    f"- Start your summary by restating the user's question from {query_json_format} itself.\n"
+                    f"- Focus on the core information and associations relevant to the user query.\n"
+                    f"- Include only the essential details directly related to the user's question.\n\n"
+                    f"Summary:\n"
+                    f"Please provide a summary based solely on the graph information.")
+
+            else:
+                prompt = (
+                    f"You are an expert biology assistant. you are genius on summarizing graph datas \n"
+                    f"Given the following data, your task is to summarize the key points clearly and concisely:\n"
+                    f"Data:\n{self.description}\n\n"
+                    f"Instructions:\n"
+                    f"- Focus on the core information and associations relevant to the user query.\n"
+                    f"- Include only the essential details directly related to the user's question.\n\n"
+                    f"Summary:\n"
+                    f"Please provide a summary based solely on the graph information.")
+
+            response = self.llm(prompt)
+            cleaned_desc = self.clean_and_format_response(response)
+            return cleaned_desc
+        except:
+            traceback.print_exc()

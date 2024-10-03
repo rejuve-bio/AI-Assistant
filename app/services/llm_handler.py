@@ -33,24 +33,21 @@ class Gemini:
         return content
 
 
-class OpenAI():
+class Open_AI_Model():
 
     def __init__(self) -> None:
-        self.api_key = os.getenv("OPENAI_APIKEY")
-        self.client = OpenAI()
+        self.client = OpenAI(api_key=os.getenv("OPENAI_APIKEY"))
 
     def __call__(self, prompt):
         completion = self.client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "system", "content": "you are a biology expert assistant"},
                 {
                     "role": "user",
                     "content": prompt
                 }
             ]
         )
-        
         response = completion.choices[0].message
         return response.content
-    
