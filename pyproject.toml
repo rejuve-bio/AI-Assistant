@@ -8,6 +8,10 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.10"
 Flask = "^3.0.3"
+python-dotenv = "^1.0.1"
+requests = "^2.32.3"
+openai = "^1.51.0"
+PyYAML = "^6.0.2"
 
 
 [build-system]
