@@ -4,6 +4,7 @@ from collections import defaultdict
 import re
 from llm_handler import Gemini,Open_AI_Model
 import traceback
+import json
 
 class Graph_Summarizer:
     
@@ -37,35 +38,26 @@ class Graph_Summarizer:
     def generate_node_description(self,node):
         """Generate a description for a node with available attributes."""
         desc_parts = []
-        attributes = {
-            'type': 'type',
-            'protein_name': 'protein_name',
-            'synonyms': 'synonyms',
-            'accessions': 'accessions',
-            # 'source': 'source',
-            'gene_name': 'gene_name',
-            'gene_type': 'gene_type',
-            'start': 'start',
-            'end': 'end',
-            'chr': 'chr',
-            'transcript_id': 'transcript_id',
-            'transcript_name': 'transcript_name',
-            'transcript_type': 'transcript_type'
-        }
 
-        for key, label in attributes.items():
-            if key in node:
-                if key in ['synonyms', 'accessions']:
-                    # Slice to get top 3 elements if available
-                    top_items = node[key][:3]
-                    if top_items:
-                        desc_parts.append(f"{label}: {', '.join(top_items)}")
-                else:
-                    desc_parts.append(f"{label}: {node[key]}")
+        for key, value in node.items():
+            # Attempt to parse JSON-like strings into lists
+            if isinstance(value, str):
+                try:
+                    parsed_value = json.loads(value)
+                    if isinstance(parsed_value, list):
+                        # Limit to top 3 items
+                        top_items = parsed_value[:3]
+                        if top_items:
+                            desc_parts.append(f"{key.capitalize()}: {', '.join(top_items)}")
+                        continue  # Move to the next attribute after processing
+                except json.JSONDecodeError:
+                    pass  # If not a JSON string, treat it as a regular string
 
+            # For non-list attributes, simply add them to the description
+            desc_parts.append(f"{key.capitalize()}: {value}")
         return " | ".join(desc_parts)
 
-    def generate_grouped_descriptions(self,edges, nodes, batch_size=10):
+    def generate_grouped_descriptions(self,edges, nodes,batch_size=100):
         grouped_edges = self.group_edges_by_source(edges)
         descriptions = []
 
@@ -91,8 +83,8 @@ class Graph_Summarizer:
             descriptions.append(source_and_targets)
 
             # If batch processing is required, we can break or yield after each batch
-            if len(descriptions) >= batch_size:
-                break  # Process the next batch in another iteration
+            # if len(descriptions) >= batch_size:
+            #   break   Process the next batch in another iteration
 
         return descriptions
     
