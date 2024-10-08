@@ -65,7 +65,7 @@ def process_query():
     schema_text = open(config['schema_path'], 'r').read()
     
     try:
-        llm = get_llm_model()
+        llm = get_llm_model(config)
     except ValueError as e:
         return jsonify({"error": str(e)}), 500
 
