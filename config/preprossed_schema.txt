@@ -1,6 +1,6 @@
-Schema
+Schema:
 
-Node properties:
+Schema Nodes:
 
 gene {id: STRING, gene_name: STRING, gene_type: STRING, synonyms: STRING, start: INTEGER, end: INTEGER, chr: STRING}
 transcript {id: STRING, start: INTEGER, end: INTEGER, chr: STRING, transcript_id: STRING, transcript_name: STRING, transcript_type: STRING, label: STRING}
