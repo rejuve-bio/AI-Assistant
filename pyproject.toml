@@ -12,6 +12,7 @@ python-dotenv = "^1.0.1"
 requests = "^2.32.3"
 openai = "^1.51.0"
 PyYAML = "^6.0.2"
+biocypher = "^0.6.0"
 
 
 [build-system]
