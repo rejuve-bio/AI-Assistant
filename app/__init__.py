@@ -1,10 +1,11 @@
+from app.services.schema_handler import SchemaHandler
 from flask import Flask
 from dotenv import load_dotenv
 from .routes import main_bp
 import os
 import yaml
 
-
+schema_handler = SchemaHandler('./config/schema_config.yaml', './config/biocypher_config.yaml')
 def load_config():
     load_dotenv()
     

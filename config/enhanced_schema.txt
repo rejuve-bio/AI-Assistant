@@ -1,49 +1,51 @@
 Node properties:
-- **gene**
-  - `id`: STRING Example: "ensg00000101349"
-  - `gene_name`: STRING Example: "PAK5"
-  - `gene_type`: STRING Available options: ['protein_coding', 'lncRNA', 'misc_RNA', 'processed_pseudogene', 'miRNA']
-  - `synonyms`: STRING Example: "["PAK7", "serine/threonine-protein kinase PAK7"]"
-  - `start`: INTEGER Min: 1591604, Max: 13008972
-  - `end`: INTEGER Min: 1602520, Max: 13169103
-  - `chr`: STRING Available options: ['chr20', 'chrX', 'chrY']
-- **transcript**
-  - `id`: STRING Example: "enst00000353224"
-  - `start`: INTEGER Min: 1591604, Max: 13009349
-  - `end`: INTEGER Min: 1600303, Max: 13169103
-  - `chr`: STRING Available options: ['chr20', 'chrX', 'chrY']
-  - `transcript_id`: STRING Example: "ENST00000353224.10"
-  - `transcript_name`: STRING Example: "PAK5-201"
-  - `transcript_type`: STRING Available options: ['protein_coding', 'lncRNA', 'protein_coding_CDS_not_defined', 'misc_RNA', 'retained_intron', 'processed_pseudogene', 'nonsense_mediated_decay', 'miRNA']
-  - `label`: STRING Available options: ['transcript']
-- **exon**
-  - `id`: STRING Example: "ense00001477490"
-  - `start`: INTEGER Min: 9557608, Max: 13009349
-  - `end`: INTEGER Min: 9557734, Max: 13009384
-  - `chr`: STRING Available options: ['chr20']
-  - `exon_number`: INTEGER Min: 1, Max: 26
-  - `exon_id`: STRING Example: "ENSE00001477490"
-- **protein**
-  - `id`: STRING Example: "q9nu02"
-  - `protein_name`: STRING Example: "ANKE1"
-  - `accessions`: STRING Example: "["B3KUQ0", "Q9H6Y9"]"
-- **promoter**
-  - `id`: STRING Example: "chr1_959246_959305_grch38"
-  - `start`: INTEGER Example: "959246"
-  - `end`: INTEGER Example: "959305"
-  - `chr`: STRING Example: "chr1"
-- **enhancer**
-  - `id`: STRING Example: "chr1_875311_876520_grch38"
-  - `start`: INTEGER Example: "875311"
-  - `end`: INTEGER Example: "876520"
-  - `chr`: STRING Example: "chr1"
+gene {end: STRING, gene_type: STRING, start: STRING, id: STRING, synonyms: STRING, label: STRING, chr: STRING, gene_name: STRING}
+transcript {transcript_type: STRING, transcript_name: STRING, transcript_id: STRING, end: STRING, label: STRING, gene_name: STRING, start: STRING, id: STRING, chr: STRING}
+exon {gene_id: STRING, exon_id: STRING, transcript_id: STRING, end: STRING, label: STRING, chr: STRING, exon_number: STRING, id: STRING, start: STRING}
+super_enhancer {end: STRING, se_id: STRING, start: STRING, id: STRING, label: STRING, chr: STRING}
+clo {term_name: STRING, label: STRING, id: STRING, synonyms: STRING}
+ontology_term {term_name: STRING, label: STRING, id: STRING, synonyms: STRING}
+enhancer {start: STRING, end: STRING, id: STRING, label: STRING, chr: STRING, data_source: STRING, enhancer_id: STRING}
+go {id: STRING, synonyms: STRING, term_name: STRING, label: STRING, subontology: STRING}
+pathway {pathway_name: STRING, label: STRING, id: STRING}
+tfbs {end: STRING, id: STRING, label: STRING, chr: STRING, start: STRING}
+uberon {term_name: STRING, synonyms: STRING, label: STRING, id: STRING}
+bto {term_name: STRING, synonyms: STRING, label: STRING, id: STRING}
+cl {term_name: STRING, label: STRING, id: STRING, synonyms: STRING}
+promoter {start: STRING, end: STRING, id: STRING, label: STRING, chr: STRING}
+protein {id: STRING, synonyms: STRING, accessions: STRING, label: STRING, protein_name: STRING}
+snp {end: STRING, label: STRING, chr: STRING, id: STRING, start: STRING, ref: STRING, caf_ref: STRING, alt: STRING, caf_alt: STRING}
+efo {label: STRING, id: STRING, synonyms: STRING, term_name: STRING, description: STRING}
+non_coding_rna {start: STRING, end: STRING, rna_type: STRING, id: STRING, label: STRING, chr: STRING}
+tad {end: STRING, id: STRING, label: STRING, chr: STRING, genes: STRING, start: STRING}
 
 The relationships:
 (:gene)-[:transcribed_to]->(:transcript)
+(:gene)-[:in_tad_region]->(:tad)
+(:gene)-[:genes_pathways]->(:pathway)
+(:gene)-[:regulates]->(:gene)
+(:gene)-[:binds_to]->(:tfbs)
 (:transcript)-[:transcribed_from]->(:gene)
 (:transcript)-[:translates_to]->(:protein)
-(:protein)-[:translation_of]->(:transcript)
+(:super_enhancer)-[:associated_with]->(:gene)
+(:clo)-[:subclass_of]->(:clo)
+(:clo)-[:subclass_of]->(:ontology_term)
+(:ontology_term)-[:subclass_of]->(:clo)
+(:ontology_term)-[:subclass_of]->(:ontology_term)
+(:ontology_term)-[:subclass_of]->(:cl)
 (:enhancer)-[:associated_with]->(:gene)
+(:go)-[:subclass_of]->(:go)
+(:pathway)-[:child_pathway_of]->(:pathway)
+(:pathway)-[:parent_pathway_of]->(:pathway)
+(:uberon)-[:subclass_of]->(:uberon)
+(:cl)-[:capable_of]->(:go)
+(:cl)-[:subclass_of]->(:ontology_term)
+(:cl)-[:subclass_of]->(:cl)
 (:promoter)-[:associated_with]->(:gene)
-(:transcript)-[:includes]->(:exon)
-(:transcript)-[:includes]->(:exon)
+(:protein)-[:translation_of]->(:transcript)
+(:protein)-[:interacts_with]->(:protein)
+(:snp)-[:closest_gene]->(:gene)
+(:snp)-[:eqtl_association]->(:gene)
+(:snp)-[:activity_by_contact]->(:gene)
+(:efo)-[:subclass_of]->(:efo)
+(:non_coding_rna)-[:belongs_to]->(:go)
