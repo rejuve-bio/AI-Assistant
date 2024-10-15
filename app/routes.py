@@ -26,7 +26,10 @@ def query_knowledge_graph(kg_service_url, json_query):
         response = requests.post(kg_service_url, json=payload)
         print("response from annotation", response)
         response.raise_for_status()
-        return response
+        return {
+            "status_code": response.status_code,
+            "response": response.json()
+        }
     
     except requests.RequestException as e:
         # Capture the status code if the response is available

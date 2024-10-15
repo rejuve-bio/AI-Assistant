@@ -1,130 +1,33 @@
-from collections import defaultdict
-
-def generate_schema_relationship():
-    # GET THE SCHEMA FROM annotation
-    
-    # RETURN schema_relationship
-    # refactor the schema rnship to get a schema_relationship
-    pass
-
-schema_relationship={
-                    "gene": {
-                        "transcribed to": "transcript",
-                        "coexpressed_with": "gene",
-                        "expressed_in": "ontology_term",
-                        "genes_pathways": "pathway",
-                        "regulates": ["gene","regulatory_region"],
-                        "associated with":["enhancer","promoter","super_enhancer"],
-                        "tfbs_snp": "snp",
-                        "binds_to": "transcription_binding_site",
-                        "in_tad_region": "tad",
-                    },
-                    "transcript": {
-                        "transcribed_from": "gene",
-                        "translates to": "protein",
-                    },
-                    "protein": {
-                        "translation of": "transcript",
-                        "interacts_with": "protein",
-                        "go_gene_product": "go",
-                    },
-                    "ontology_term": {
-                        "has_part": "ontology_term",
-                        "part_of": "ontology_term",
-                        "subclass_of": "ontology_term",
-                    },
-                    "cl": {
-                        "capable_of": "go",
-                        "part_of": "uberon",
-                        "subclass_of": "cl",
-                    },
-                    "bto": {
-                        "subclass_of": "bto",
-                    },
-                    "efo": {
-                        "subclass_of": "efo",
-                    },
-                    "uberon": {
-                        "subclass_of": "uberon",
-                    },
-                    "clo": {
-                        "subclass_of": "clo",
-                    },
-                    "go": {
-                        "subclass_of": "go",
-                    },
-                    "pathway": {
-                        "parent_pathway_of": "pathway",
-                        "child_pathway_of": "pathway",
-                    },
-                    "snp": {
-                        "eqtl_association": "gene",
-                        "closest_gene": "gene",
-                        "upstream_gene": "gene",
-                        "downstream_gene": "gene",
-                        "in_gene": "gene",
-                        "in_ld_with": "snp",
-                        "activity_by_contact": "gene",
-                        "chromatin_state": "uberon",
-                        "in_dnase_I_hotspot": "uberon",
-                        "histone_modification": "uberon",
-                    },
-                    "chromosome_chain": {
-                        "lower_resolution": "chromosome_chain",
-                    },
-                    "position_entity": {
-                        "located_on_chain": "chromosome_chain",
-                    },
-                    "regulatory_region": {
-                        "regulates": "gene",
-                    },
-                }
-
- 
-
-def build_graph(schema_relationship):
-    # schema_relationship = generate_schema_relationship()
-
-    graph = defaultdict(list)
-    for node, relationships in schema_relationship.items():
-        for rel, target in relationships.items():
-            if isinstance(target, list):
-                for t in target:
-                    graph[node].append((t, rel))
-            else:
-                graph[node].append((target, rel))
-    # store the graph in file
-    return graph
-
 
 def extract_relations_between_nodes_dfs(current, target, path=None, relationships=None, visited=None):
-        # read the file 
-        # return the graph
-        graph = build_graph(schema_relationship)
-        if visited is None:
-            visited = set()
-        if path is None:
-            path = []
-        if relationships is None:
-            relationships = []
+    from app import schema_handler
+    # read the file 
+    # return the graph
+    graph = schema_handler.schema_graph
+    if visited is None:
+        visited = set()
+    if path is None:
+        path = []
+    if relationships is None:
+        relationships = []
 
-        visited.add(current)
-        path.append(current)
+    visited.add(current)
+    path.append(current)
 
-        if current == target:
-            # Combine the nodes and relationships into a single explanatory string
-            explanation = " -> ".join(f"{path[i]} -> {relationships[i]}" for i in range(len(relationships)))
-            explanation += f" -> {path[-1]}"
-            return explanation
+    if current == target:
+        # Combine the nodes and relationships into a single explanatory string
+        explanation = " -> ".join(f"{path[i]} -> {relationships[i]}" for i in range(len(relationships)))
+        explanation += f" -> {path[-1]}"
+        return explanation
 
-        for neighbor, rel in graph[current]:
-            if neighbor not in visited:
-                explanation = extract_relations_between_nodes_dfs(
-                    neighbor, target, path.copy(), relationships + [rel], visited.copy()
-                )
-                if explanation:
-                    return explanation
-        return None
+    for neighbor, rel in graph[current]:
+        if neighbor not in visited:
+            explanation = extract_relations_between_nodes_dfs(
+                neighbor, target, path.copy(), relationships + [rel], visited.copy()
+            )
+            if explanation:
+                return explanation
+    return None
         
     
 def generate_json_from_schema_and_traversal(schema, prompt_answer, traversal_data=None):
