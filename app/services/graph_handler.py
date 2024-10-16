@@ -1,5 +1,8 @@
-from app.services.dfs_traversal import extract_relations_between_nodes_dfs, generate_json_from_schema_and_traversal
+from app.services.dfs_traversal import extract_relations_between_nodes_dfs, generate_json_from_schema_and_json_query
+import logging
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 class DFSHandler:
 
     def __init__(self,llm,schema) -> None:
@@ -37,7 +40,7 @@ class DFSHandler:
                 If no id is given place "id" with "" value string don't put null,none or anything   
                 """
         extracted_info = self.llm.generate(prompt)
-        print("intial prompt", extracted_info)
+        logger.info(f"intial prompt for the given {query} is {extracted_info}")
         return extracted_info
 
     def json_format(self,query):
@@ -49,10 +52,10 @@ class DFSHandler:
             target_node = extracted_info["target_node"]
             target_node = target_node["type"]
             relations = extract_relations_between_nodes_dfs(source_node, target_node)
-            print("travesed relations are", relations)
-            json_format = generate_json_from_schema_and_traversal(self.schema, extracted_info, relations)
+            logger.info(f"travesed relations in user query are {relations}")
+            json_format = generate_json_from_schema_and_json_query(extracted_info, relations)
         else:
-            json_format = generate_json_from_schema_and_traversal(self.schema, extracted_info)
+            json_format = generate_json_from_schema_and_json_query(extracted_info)
         return json_format
 
         

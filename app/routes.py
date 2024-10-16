@@ -83,19 +83,23 @@ def process_query():
     json_query = ai_system.process_query_traversing(query)
     print("================== Json query Traversing ===============")
     print(json_query)
+
     kg_response = query_knowledge_graph(config['annotation_service_url'], json_query)
     if kg_response['status_code'] == 200:
         kg_responses = kg_response['response']
         print("Using the response from the first method.")
+
     else:
         print(f"Error from the first method: {kg_response['error']}, Status Code: {kg_response['status_code']} Attempting to generate query from the second method.")       
         json_query = ai_system.process_query(query)
         print("================== Generated Json query ===============")
         print(json_query)
         kg_response = query_knowledge_graph(config['annotation_service_url'], json_query)
+
         if kg_response['status_code'] == 200:
             kg_responses = kg_response['response']
             print("Using the response from the second method.")
+            
         else:
             print(f"annotating user query failed {kg_response}")
             return Response("Empty_page", status=400)

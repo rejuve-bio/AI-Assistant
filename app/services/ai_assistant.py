@@ -4,8 +4,11 @@ from typing import Any, Dict
 from app.services.llm_handler import LLMPromptHandler
 from .llm_models import LLMInterface
 from app.services.graph_handler import DFSHandler
+import logging
+import traceback
 
-
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 class AIAssistantSystem:
     def __init__(self, llm: LLMInterface, schema: str):
         self.prompt_handler = LLMPromptHandler(llm, schema)
@@ -18,9 +21,15 @@ class AIAssistantSystem:
         return self.prompt_handler.convert_to_json_format(extracted_info, query)
     
     def process_query_traversing(self, query: str) -> Dict[str, Any]:
-        extracted_info = self.dfs_traversal.json_format(query)
-        print("================== Extracted Info ===============")
-        return extracted_info
+        try:
+            extracted_info = self.dfs_traversal.json_format(query)
+            logger.info("================== Extracted Info ===============")
+            return extracted_info
+        except Exception as e:
+            logger.error(f"Error traversing json: {e}")
+            traceback.print_exc()
+            return None
+
 
     def process_kg_response(self, original_query: str, json_query: Dict[str, Any], kg_response: Dict[str, Any]):
         return self.prompt_handler.process_kg_response(original_query, json_query, kg_response)
