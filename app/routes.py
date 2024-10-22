@@ -1,12 +1,10 @@
 import json
 from flask import Blueprint, request, jsonify, current_app,Response
-from dotenv import load_dotenv
+import requests
 from .services.ai_assistant import AIAssistantSystem
-from .services.llm_models import GeminiModel, OpenAIModel
+from .services.llm_models import get_llm_model
 from .services.summarizer import Graph_Summarizer
 
-import requests
-import os
 
 main_bp = Blueprint('main', __name__)
 
@@ -48,23 +46,6 @@ def query_knowledge_graph(kg_service_url, json_query):
             "error": str(e),
             "status_code": "Invalid JSON query structure"
         }
- 
-def get_llm_model(config):
-    model_type = config['llm_model']
-
-    if model_type == 'openai':
-        openai_api_key = os.getenv('OPENAI_API_KEY')
-        if not openai_api_key:
-            raise ValueError("OpenAI API key not found")
-        return OpenAIModel(openai_api_key)
-    elif model_type == 'gemini':
-        gemini_api_key = os.getenv('GEMINI_API_KEY')
-        if not gemini_api_key:
-            raise ValueError("Gemini API key not found")
-        return GeminiModel(gemini_api_key)
-    else:
-        raise ValueError("Invalid model type in configuration")
-
 
 @main_bp.route('/query', methods=['POST'])
 def process_query():

@@ -1,8 +1,29 @@
 import json
+import os
 from typing import Any, Dict
 import requests
 import openai
 
+
+def get_llm_model(config):
+    model_type = config['llm_model']
+
+    if model_type == 'openai':
+        openai_api_key = os.getenv('OPENAI_API_KEY')
+        if not openai_api_key:
+            raise ValueError("OpenAI API key not found")
+        return OpenAIModel(openai_api_key)
+    elif model_type == 'gemini':
+        gemini_api_key = os.getenv('GEMINI_API_KEY')
+        if not gemini_api_key:
+            raise ValueError("Gemini API key not found")
+        return GeminiModel(gemini_api_key)
+    else:
+        raise ValueError("Invalid model type in configuration")
+
+class LLMInterface:
+    def generate(self, prompt: str) -> Dict[str, Any]:
+        raise NotImplementedError("Subclasses must implement the generate method")
 
 class LLMInterface:
     def generate(self, prompt: str) -> Dict[str, Any]:
