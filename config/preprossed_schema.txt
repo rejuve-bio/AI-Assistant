@@ -1,21 +1,77 @@
-Schema:
+Node properties:
+gene {end: STRING, gene_type: STRING, start: STRING, id: STRING, synonyms: STRING, label: STRING, chr: STRING, gene_name: STRING}
+transcript {transcript_type: STRING, transcript_name: STRING, transcript_id: STRING, end: STRING, label: STRING, gene_name: STRING, start: STRING, id: STRING, chr: STRING}
+exon {gene_id: STRING, exon_id: STRING, exon_number: STRING, chr: STRING, transcript_id: STRING, start: STRING, end: STRING, id: STRING, label: STRING}
+super_enhancer {end: STRING, se_id: STRING, start: STRING, id: STRING, label: STRING, chr: STRING}
+clo {term_name: STRING, label: STRING, id: STRING, synonyms: STRING}
+enhancer {start: STRING, end: STRING, id: STRING, label: STRING, chr: STRING, data_source: STRING, enhancer_id: STRING}
+go {term_name: STRING, id: STRING, synonyms: STRING, label: STRING, subontology: STRING}
+pathway {pathway_name: STRING, label: STRING, id: STRING}
+tfbs {end: STRING, id: STRING, label: STRING, chr: STRING, start: STRING}
+uberon {synonyms: STRING, term_name: STRING, label: STRING, id: STRING}
+bto {synonyms: STRING, term_name: STRING, id: STRING, label: STRING}
+cl {term_name: STRING, label: STRING, id: STRING, synonyms: STRING}
+promoter {start: STRING, end: STRING, id: STRING, label: STRING, chr: STRING}
+protein {id: STRING, accessions: STRING, label: STRING, protein_name: STRING, synonyms: STRING}
+snp {chr: STRING, start: STRING, end: STRING, caf_alt: STRING, id: STRING, ref: STRING, caf_ref: STRING, alt: STRING, label: STRING, raw_cadd_score: STRING, phred_score: STRING}
+efo {label: STRING, id: STRING, synonyms: STRING, term_name: STRING, description: STRING}
+non_coding_rna {chr: STRING, start: STRING, id: STRING, end: STRING, label: STRING, rna_type: STRING}
+tad {end: STRING, id: STRING, label: STRING, chr: STRING, genes: STRING, start: STRING}
+structural_variant {end: STRING, id: STRING, evidence: STRING, variant_type: STRING, variant_accession: STRING, start: STRING, label: STRING, chr: STRING}
+Relationship properties:
+activity_by_contact {score: STRING, biological_context: STRING}
+subclass_of {rel_type: STRING}
+associated_with {biological_context: STRING, score: STRING}
+binds_to {score: STRING}
+eqtl_association {maf: STRING, slope: STRING, biological_context: STRING, p_value: STRING}
+closest_gene {pos: STRING, distance: STRING, chr: STRING}
+regulates {evidence_type: STRING, evidence: STRING, databases: STRING, detection_method: STRING}
+capable_of {rel_type: STRING}
+interacts_with {score: STRING}
+part_of {rel_type: STRING}
+go_gene_product {db_reference: STRING, evidence: STRING, qualifier: STRING}
+tfbs_snp {effect: STRING, score: STRING}
+expressed_in {score: STRING, p_value: STRING}
 
-Schema Nodes:
-
-gene {id: STRING, gene_name: STRING, gene_type: STRING, synonyms: STRING, start: INTEGER, end: INTEGER, chr: STRING}
-transcript {id: STRING, start: INTEGER, end: INTEGER, chr: STRING, transcript_id: STRING, transcript_name: STRING, transcript_type: STRING, label: STRING}
-exon {id: STRING, start: INTEGER, end: INTEGER, chr: STRING, exon_number: INTEGER, exon_id: STRING}
-protein {id: STRING, protein_name: STRING, accessions: STRING}
-promoter {id: STRING, start: INTEGER, end: INTEGER, chr: STRING}
-enhancer {id: STRING, start: INTEGER, end: INTEGER, chr: STRING}
 
 The relationships:
-
+(:gene)-[:expressed_in]->(:uberon)
+(:gene)-[:expressed_in]->(:efo)
+(:gene)-[:expressed_in]->(:clo)
+(:gene)-[:expressed_in]->(:cl)
 (:gene)-[:transcribed_to]->(:transcript)
+(:gene)-[:genes_pathways]->(:pathway)
+(:gene)-[:binds_to]->(:tfbs)
+(:gene)-[:regulates]->(:gene)
+(:gene)-[:in_tad_region]->(:tad)
+(:gene)-[:tfbs_snp]->(:snp)
+(:transcript)-[:includes]->(:exon)
 (:transcript)-[:transcribed_from]->(:gene)
 (:transcript)-[:translates_to]->(:protein)
-(:protein)-[:translation_of]->(:transcript)
+(:super_enhancer)-[:associated_with]->(:gene)
+(:clo)-[:subclass_of]->(:clo)
 (:enhancer)-[:associated_with]->(:gene)
+(:go)-[:go_gene_product]->(:protein)
+(:go)-[:subclass_of]->(:go)
+(:pathway)-[:child_pathway_of]->(:pathway)
+(:pathway)-[:parent_pathway_of]->(:pathway)
+(:uberon)-[:subclass_of]->(:uberon)
+(:bto)-[:subclass_of]->(:bto)
+(:cl)-[:capable_of]->(:go)
+(:cl)-[:part_of]->(:uberon)
+(:cl)-[:subclass_of]->(:cl)
 (:promoter)-[:associated_with]->(:gene)
-(:transcript)-[:includes]->(:exon)
-(:transcript)-[:includes]->(:exon)
+(:protein)-[:interacts_with]->(:protein)
+(:protein)-[:translation_of]->(:transcript)
+(:snp)-[:closest_gene]->(:gene)
+(:snp)-[:activity_by_contact]->(:gene)
+(:snp)-[:eqtl_association]->(:gene)
+(:snp)-[:chromatin_state]->(:uberon)
+(:snp)-[:chromatin_state]->(:efo)
+(:snp)-[:chromatin_state]->(:clo)
+(:snp)-[:chromatin_state]->(:cl)
+(:snp)-[:histone_modification]->(:uberon)
+(:snp)-[:histone_modification]->(:clo)
+(:snp)-[:histone_modification]->(:cl)
+(:efo)-[:subclass_of]->(:efo)
+(:non_coding_rna)-[:belongs_to]->(:go)

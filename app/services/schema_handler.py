@@ -98,7 +98,7 @@ class SchemaHandler:
             if value['represented_as'] == 'edge':
                 if 'source' in value and 'target' in value:
                     if value['source'] == node_label or value['target'] == node_label:
-                        label = value.get('output_lable', value['input_label'])
+                        label = value.get('output_label', value['input_label'])
                         relation = {
                             'type': key,
                             'label': label,
