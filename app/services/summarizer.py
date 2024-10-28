@@ -102,7 +102,7 @@ class Graph_Summarizer:
         nodes = {node['data']['id']: node['data'] for node in graph['nodes']}
     
         # Check if the 'edges' key exists in the graph
-        if 'edges' in graph:  # Corrected to check for 'edges' key
+        if len(graph['edges']) > 0:
             edges = [{'source_node': edge['data']['source_node'],
                     'target_node': edge['data']['target_node'],
                     'label': edge['data']['label']} for edge in graph['edges']]
