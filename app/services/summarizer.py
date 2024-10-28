@@ -86,14 +86,30 @@ class Graph_Summarizer:
             #   break   Process the next batch in another iteration
 
         return descriptions
+
+    def nodes_description(self,nodes):
+        nodes_descriptions = []
+        # Process each source node and its related target nodes
+        for source_node_id in nodes:
+            source_node = nodes.get(source_node_id, {})
+            source_desc = self.generate_node_description(source_node)
+            nodes_descriptions.append(source_desc)
+        return nodes_descriptions
     
     def graph_description(self,graph):
-
         nodes = {node['data']['id']: node['data'] for node in graph['nodes']}
-        edges = [{'source_node': edge['data']['source_node'], 'target_node': edge['data']['target_node'], 'label': edge['data']['label']} for edge in graph['edges']]
-        self.description = self.generate_grouped_descriptions(edges, nodes, batch_size=10)
-
     
+        # Check if the 'edges' key exists in the graph
+        if 'edges' in graph:  # Corrected to check for 'edges' key
+            edges = [{'source_node': edge['data']['source_node'],
+                    'target_node': edge['data']['target_node'],
+                    'label': edge['data']['label']} for edge in graph['edges']]
+            self.description = self.generate_grouped_descriptions(edges, nodes, batch_size=10)
+        else:
+            self.description = self.nodes_description(nodes)
+        
+        return self.description
+
     def open_ai_summarizer(self,graph,user_query=None,query_json_format = None):
         try:
             self.graph_description(graph)
