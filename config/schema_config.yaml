@@ -872,7 +872,7 @@ chromatin state:
   represented_as: edge
   input_label: chromatin_state
   source: snp
-  target: [uberon, cl, clo] #TODO replace by cell ontology
+  target: uberon #TODO replace by [uberon, cl, clo]
   properties:
     state: str
 
@@ -883,7 +883,7 @@ dnase I hotspot:
   represented_as: edge
   input_label: in_dnase_I_hotspot
   source: snp
-  target: [uberon, cl, clo] #TODO replace by cell ontology
+  target: uberon #TODO replace by [uberon, cl, clo]
 
 histone modification:
   is_a: related to at instance level
@@ -892,7 +892,7 @@ histone modification:
   represented_as: edge
   input_label: histone_modification
   source: snp
-  target: [uberon, cl, clo] #TODO replace by cell ontology
+  target: uberon #TODO replace by [uberon, cl, clo]
   properties:
     modification: str
 
