@@ -33,12 +33,9 @@ def process_query():
     without any graph-related information.
     '''
     data = request.json
-    query = data.get('query', '')
+    query = data.get('query', None)
     graph = data.get('graph', None)
     user = data.get('user')
-
-    if not query:
-        return jsonify({"error": "No query provided"}), 400
 
     config = current_app.config
     schema_text = open(config['schema_path'], 'r').read()
