@@ -28,3 +28,53 @@ class Neo4jConnection:
             self._driver.close()
             self._driver = None
     
+    def get_similar_property_values(self, label: str, 
+                                    property_key: str, 
+                                    search_value: str, 
+                                    top_k: int = 10, 
+                                    threshold: float = 0.3) -> List[str]:
+        """
+        Get distinct top k similar property values from Neo4j using Levenshtein similarity.
+        
+        Args:
+            label (str): Node label to search (e.g., "gene")
+            property_key (str): Property key to search (e.g., "gene_name")
+            search_value (str): Value to search for
+            threshold (float): Similarity threshold (0 to 1)
+        
+        Returns:
+            List[str]: List of distinct similar property values sorted by similarity score
+        """     
+        query = f"""
+        MATCH (n:{label})
+        WITH DISTINCT n.{property_key} as value
+        WHERE value IS NOT NULL
+        WITH collect(value) as all_values
+        UNWIND all_values as value
+        WITH DISTINCT value, apoc.text.levenshteinSimilarity(
+            LOWER(value), 
+            LOWER($search_value)
+        ) AS similarity
+        WHERE similarity > $threshold
+        RETURN value, similarity
+        ORDER BY similarity DESC
+        LIMIT {top_k}
+        """
+        
+        try:
+            driver = self.get_driver()
+            with driver.session() as session:
+                result = session.run(
+                    query,
+                    search_value=search_value,
+                    threshold=threshold
+                )
+                similar_values = [(record["value"], record["similarity"]) 
+                                for record in result]
+            
+            # Return just the values (without scores)
+            return [(value, round(score, 2)) for value, score in similar_values]
+        
+        except Exception as e:
+            logger.error(f"Error querying Neo4j: {str(e)}")
+            return []
