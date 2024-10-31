@@ -20,7 +20,7 @@ EXTRACT_RELEVANT_INFORMATION_PROMPT = """
 
 Query: {query}
 
-### TASK:
+## TASK:
 Let's think step by step to extract the relevant information needed to build the query based on the schema.
 
 1. Identify relevant nodes and their properties based on the schema.
@@ -76,4 +76,52 @@ For each relationship, specify the details as follows:
      - ID: `""`
 
 (Continue for all relevant relationships)
+"""
+
+JSON_CONVERSION_PROMPT = """
+## TASK:
+Convert the Extacted information into the target JSON format based on the schema. 
+
+Query: {query}
+Extracted information:
+{extracted_information}
+
+Schema:
+{schema}
+
+### Conversion rules:
+1. Generate unique `node_ids` for each node in the format "label_X".
+2. Include **ALL nodes** mentioned in the extracted information in the "nodes" list.
+3. Ensure all nodes that appear in the predicates (relationships) are also included in the "nodes" list, even if they were not explicitly extracted.
+4. Ensure all predicates (relationships) **exactly match** those defined in the schema.
+5. **Do NOT add** any information not present in the extracted information or schema.
+
+### Response format (JSON):
+{
+  "nodes": [
+    {
+      "node_id": "label_1",
+      "id": "id_or_empty_string",
+      "type": "label",
+      "properties": {
+        "key": "value"
+      }
+    },
+    {
+      "node_id": "label_2",
+      "id": "",
+      "type": "label",
+      "properties": {}
+    }
+    ...
+  ],
+  "predicates": [
+    {
+      "type": "predicate",
+      "source": "label_1",
+      "target": "label_2"
+    }
+    ...
+  ]
+}
 """

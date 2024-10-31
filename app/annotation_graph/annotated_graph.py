@@ -1,7 +1,7 @@
 import logging
 
 from app.llm_handle.llm_models import LLMInterface
-from app.llm_handle.prompt import EXTRACT_RELEVANT_INFORMATION_PROMPT
+from app.llm_handle.prompt import EXTRACT_RELEVANT_INFORMATION_PROMPT, JSON_CONVERSION_PROMPT
 from .dfs_handler import *
 from .llm_handler import *
 
@@ -40,9 +40,7 @@ class Graph:
     def _extract_relevant_information(self, query):
         try:
             logger.info("Extracting relevant information from the query.")
-            schema = self.schema
-            prompt = EXTRACT_RELEVANT_INFORMATION_PROMPT.format(schema=schema, query=query)
-
+            prompt = EXTRACT_RELEVANT_INFORMATION_PROMPT.format(schema=self.schema, query=query)
             extracted_info =  self.llm.generate(prompt)
             logger.debug(f"Extracted data: {extracted_info}")
             return extracted_info
@@ -50,11 +48,11 @@ class Graph:
             logger.error(f"Failed to extract relevant information: {e}")
             raise
 
-    def _convert_to_annotation_json(self, relevant_information):
+    def _convert_to_annotation_json(self, relevant_information, query):
         try:
             logger.info("Converting relevant information to annotation JSON format.")
-            # Conversion logic goes here.
-            json_data = {}  # Simulated JSON conversion
+            prompt = JSON_CONVERSION_PROMPT.format(schema=self.schema, query=query, extracted_information=relevant_information)
+            json_data = self.llm.generate(prompt)
             logger.debug(f"Converted JSON: {json_data}")
             return json_data
         except Exception as e:
