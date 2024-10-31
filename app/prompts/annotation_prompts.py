@@ -66,7 +66,7 @@ For each relationship, specify the details as follows:
 
 JSON_CONVERSION_PROMPT = """
 ## TASK:
-Convert the Extacted information into the target JSON format based on the schema. 
+Convert the Extracted information into the target JSON format based on the schema. 
 
 ### Query: {query}
 
@@ -84,33 +84,34 @@ Convert the Extacted information into the target JSON format based on the schema
 5. **Do NOT add** any information not present in the extracted information or schema.
 
 ### Response format (JSON):
-{
+{{
   "nodes": [
-    {
+    {{
       "node_id": "label_1",
       "id": "id_or_empty_string",
       "type": "label",
-      "properties": {
+      "properties": {{
         "key": "value"
-      }
-    },
-    {
+      }}
+    }},
+    {{
       "node_id": "label_2",
       "id": "",
       "type": "label",
-      "properties": {}
-    }
+      "properties": {{
+      }}
+    }}
     ...
   ],
   "predicates": [
-    {
+    {{
       "type": "predicate",
       "source": "label_1",
       "target": "label_2"
-    }
+    }}
     ...
   ]
-}
+}}
 """
 
 SELECT_PROPERTY_VALUE_PROMPT = """

@@ -1,6 +1,6 @@
 ## Schema:
 
-#### Nodes:
+#### Node Properties:
 - **gene**
   - `end`: STRING Example: "14409"
   - `gene_type`: STRING Example: "lncRNA"

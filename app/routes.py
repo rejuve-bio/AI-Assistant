@@ -9,13 +9,13 @@ from .main import AiAssistance
 
 main_bp = Blueprint('main', __name__) 
 def get_llm_model(config):
-    model_type = config['llm_model']
+    model_type = config['LLM_MODEL']
 
     if model_type == 'openai':
         openai_api_key = os.getenv('OPENAI_API_KEY')
         if not openai_api_key:
             raise ValueError("OpenAI API key not found")
-        return OpenAIModel(openai_api_key)
+        return OpenAIModel(openai_api_key, 'gpt-4o')
     elif model_type == 'gemini':
         gemini_api_key = os.getenv('GEMINI_API_KEY')
         if not gemini_api_key:
@@ -35,13 +35,13 @@ def process_query():
     data = request.json
     query = data.get('query', '')
     graph = data.get('graph', None)
-    user = data.get('user')
+    user = data.get('user', None)
 
     if not query:
         return jsonify({"error": "No query provided"}), 400
 
     config = current_app.config
-    schema_text = open(config['schema_path'], 'r').read()
+    schema_text = open(config['SCHEMA_PATH'], 'r').read()
     llm = get_llm_model(config)   
     
     try:
