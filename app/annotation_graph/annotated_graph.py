@@ -1,4 +1,7 @@
 import logging
+
+from app.llm_handle.llm_models import LLMInterface
+from app.llm_handle.prompt import EXTRACT_RELEVANT_INFORMATION_PROMPT
 from .dfs_handler import *
 from .llm_handler import *
 
@@ -6,9 +9,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class Graph:
-    def __init__(self, llm, schema) -> None:
+    def __init__(self, llm: LLMInterface, schema: str) -> None:
         self.llm = llm
-        self.schema = schema
+        self.schema = schema # Enhanced or preprocessed schema
         logger.info("Graph instance created with LLM and schema.")
 
     def query_knowledge_graph(self, validated_json):
@@ -37,8 +40,10 @@ class Graph:
     def _extract_relevant_information(self, query):
         try:
             logger.info("Extracting relevant information from the query.")
-            # Extraction logic goes here.
-            extracted_info = {}  # Simulated extraction
+            schema = self.schema
+            prompt = EXTRACT_RELEVANT_INFORMATION_PROMPT.format(schema=schema, query=query)
+
+            extracted_info =  self.llm.generate(prompt)
             logger.debug(f"Extracted data: {extracted_info}")
             return extracted_info
         except Exception as e:
