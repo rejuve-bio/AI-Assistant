@@ -1,4 +1,7 @@
+import json
 import logging
+from flask import app
+import requests
 import os
 from dotenv import load_dotenv
 from app.annotation_graph.neo4j_handler import Neo4jConnection
@@ -20,14 +23,37 @@ class Graph:
                                             username=os.getenv('NEO4J_USERNAME'), 
                                             password=os.getenv('NEO4J_PASSWORD'))
 
-    def query_knowledge_graph(self, validated_json):
+    def query_knowledge_graph(json_query):
+        """
+        Query the knowledge graph service.
+
+        Args:
+            json_query (dict): The JSON query to be sent.
+
+        Returns:
+            dict: The JSON response from the knowledge graph service or an error message.
+        """
+        logger.info("Starting knowledge graph query...")
+
+        payload = {"requests": json_query}
+        kg_service_url = app.config['ANNOTATION_SERVICE_URL']
+        auth_token = app.config['ANNOTATION_AUTH_TOKEN']
+        
         try:
-            logger.info("Querying knowledge graph.")
-            # Implement the actual query logic here.
-            return {}
-        except Exception as e:
-            logger.error(f"Failed to query knowledge graph: {e}")
-            raise
+            logger.debug(f"Sending request to {kg_service_url} with payload: {payload}")
+            response = requests.post(
+                kg_service_url,
+                json=payload,
+                headers={"Authorization": f"Bearer {auth_token}"}
+            )
+            response.raise_for_status()
+            logger.info("Successfully queried the knowledge graph.")
+            return response.json()
+        except requests.RequestException as e:
+            logger.error(f"Error querying knowledge graph: {e}")
+            if e.response is not None:
+                logger.error(f"Response content: {e.response.text}")
+            return {"error": f"Failed to query knowledge graph: {str(e)}"}
 
     def process_query(self, query):
         try:
@@ -59,7 +85,7 @@ class Graph:
             logger.info("Converting relevant information to annotation JSON format.")
             prompt = JSON_CONVERSION_PROMPT.format(schema=self.schema, query=query, extracted_information=relevant_information)
             json_data = self.llm.generate(prompt)
-            logger.debug(f"Converted JSON: {json_data}")
+            logger.debug(f"Converted JSON: {json.dumbs(json_data, indent=2)}")
             return json_data
         except Exception as e:
             logger.error(f"Failed to convert information to annotation JSON: {e}")
@@ -94,7 +120,7 @@ class Graph:
                             logger.debug(f"No suitable property found for {node_type} with key {property_key} and value {property_value}.")
                             raise ValueError(f"No suitable property found for {node_type} with key {property_key} and value {property_value}.")
 
-            logger.debug(f"Validated and updated JSON: {initial_json}")
+            logger.debug(f"Validated and updated JSON: {json.dumps(initial_json, indent=2)}")
             return initial_json
         except Exception as e:
             logger.error(f"Validation and update of JSON failed: {e}")
