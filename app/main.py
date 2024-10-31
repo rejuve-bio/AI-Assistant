@@ -15,6 +15,7 @@ class AiAssistance:
         self.llm = llm
         self.schema = schema
         self.cache = ConversationCache()
+        self.graph = Graph(llm, schema)
 
     def clarification(self):
         pass    
@@ -35,9 +36,9 @@ class AiAssistance:
 
 
 
-    def annotate_graph(self,query):
+    def annotate_graph(self,query, user_id):
         try:
-            annotated_response = Graph(self.llm,self.schema).generate_graph(query)
+            annotated_response = self.graph.generate_graph(query)
             return annotated_response
         except:
             pass

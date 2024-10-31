@@ -1,0 +1,162 @@
+## Schema:
+
+#### Node Properties:
+- **gene**
+  - `end`: STRING Example: "14409"
+  - `gene_type`: STRING Example: "lncRNA"
+  - `start`: STRING Example: "11869"
+  - `id`: STRING Example: "ensg00000290825"
+  - `synonyms`: STRING Example: "["HGNC:37102", "DEAD/H (Asp-Glu-Ala-Asp/His) box p"]"
+  - `chr`: STRING Example: "chr1"
+  - `gene_name`: STRING Example: "DDX11L2"
+- **transcript**
+  - `transcript_name`: STRING Example: "TP73-AS1-213"
+  - `transcript_type`: STRING Example: "processed_transcript"
+  - `transcript_id`: STRING Example: "ENST00000647831.1"
+  - `end`: STRING Example: "3747336"
+  - `gene_name`: STRING Example: "TP73-AS1"
+  - `start`: STRING Example: "3736193"
+  - `id`: STRING Example: "enst00000647831"
+  - `chr`: STRING Example: "chr1"
+- **exon**
+  - `gene_id`: STRING Example: "ENSG00000127054"
+  - `exon_id`: STRING Example: "ENSE00003521162"
+  - `exon_number`: STRING Example: "13"
+  - `chr`: STRING Example: "chr1"
+  - `transcript_id`: STRING Example: "ENST00000540437"
+  - `start`: STRING Example: "1313035"
+  - `end`: STRING Example: "1313124"
+  - `id`: STRING Example: "ense00003521162"
+- **super_enhancer**
+  - `end`: STRING Example: "12620027"
+  - `se_id`: STRING Example: "SE_03009"
+  - `start`: STRING Example: "12590973"
+  - `id`: STRING Example: "chr1_12590973_12620027_grch38"
+  - `chr`: STRING Example: "chr1"
+- **clo**
+  - `term_name`: STRING Example: "GM03398 cell"
+  - `id`: STRING Example: "clo_0016338"
+  - `synonyms`: STRING Example: "[]"
+- **enhancer**
+  - `start`: STRING Example: "16383001"
+  - `end`: STRING Example: "16383360"
+  - `id`: STRING Example: "chr1_16383001_16383360_grch38"
+  - `chr`: STRING Example: "chr1"
+  - `data_source`: STRING 
+  - `enhancer_id`: STRING 
+- **go**
+  - `id`: STRING Example: "go_1903719"
+  - `synonyms`: STRING Example: "["regulation of IKB phosphorylation", "regulation "]"
+  - `term_name`: STRING Example: "regulation of I-kappaB phosphorylation"
+  - `subontology`: STRING Example: "biological_process"
+- **pathway**
+  - `pathway_name`: STRING Example: "2-LTR circle formation"
+  - `id`: STRING Example: "r-hsa-164843"
+- **tfbs**
+  - `end`: STRING Example: "905085"
+  - `id`: STRING Example: "chr1_904520_905085_grch38"
+  - `chr`: STRING Example: "chr1"
+  - `start`: STRING Example: "904520"
+- **uberon**
+  - `synonyms`: STRING Example: "["r5"]"
+  - `term_name`: STRING Example: "rhombomere 5"
+  - `id`: STRING Example: "uberon_0005515"
+- **bto**
+  - `synonyms`: STRING Example: "[]"
+  - `term_name`: STRING Example: "HVEC cell"
+  - `id`: STRING Example: "bto_0005845"
+- **cl**
+  - `term_name`: STRING Example: "kidney inner medulla interstitial cell"
+  - `label`: STRING Available options: ['cl']
+  - `id`: STRING Example: "cl_1000803"
+  - `synonyms`: STRING Example: "[]"
+- **promoter**
+  - `start`: STRING Example: "959246"
+  - `end`: STRING Example: "959305"
+  - `id`: STRING Example: "chr1_959246_959305_grch38"
+  - `chr`: STRING Example: "chr1"
+- **protein**
+  - `id`: STRING Example: "q9nr81"
+  - `synonyms`: STRING Example: "["AGR:HGNC:683", "AlphaFoldDB:Q9NR81", "Antibodype"]"
+  - `accessions`: STRING Example: "["A8K5U7", "Q4FZB6", "Q4QQI5", "Q4QQQ0", "Q59F00","]"
+  - `protein_name`: STRING Example: "ARHG3"
+- **snp**
+  - `chr`: STRING Example: "chr1"
+  - `start`: STRING Example: "733014"
+  - `end`: STRING Example: "733014"
+  - `caf_alt`: STRING Example: "0.006989"
+  - `id`: STRING Example: "rs201221815"
+  - `ref`: STRING Example: "AG"
+  - `caf_ref`: STRING Example: "0.993"
+  - `alt`: STRING Example: "A"
+  - `raw_cadd_score`: STRING Example: "0.132004"
+  - `phred_score`: STRING Example: "4.787"
+- **efo**
+  - `synonyms`: STRING Example: "[]"
+  - `id`: STRING Example: "efo_0008843"
+  - `term_name`: STRING Example: "PAL-seq"
+  - `description`: STRING Example: "Poly(A)-tail length profiling by sequencing (PAL-s"
+- **non_coding_rna**
+  - `chr`: STRING Example: "chr9"
+  - `start`: STRING Example: "10297"
+  - `id`: STRING Example: "urs000035f234"
+  - `end`: STRING Example: "10320"
+  - `rna_type`: STRING Example: "piRNA"
+- **tad**
+  - `end`: STRING Example: "113000000"
+  - `id`: STRING Example: "chrx_111750000_113000000_grch38"
+  - `chr`: STRING Example: "chrX"
+  - `genes`: STRING Example: "["ENSG00000101901", "ENSG00000072315", "ENSG000002"]"
+  - `start`: STRING Example: "111750000"
+- **structural_variant**
+  - `start`: STRING Example: "10002"
+  - `end`: STRING Example: "22118"
+  - `id`: STRING Example: "chr1_10002_22118_grch38"
+  - `evidence`: STRING Example: "pubmed:23825009"
+  - `variant_accession`: STRING Example: "dgv1n82"
+  - `variant_type`: STRING Example: "duplication"
+  - `chr`: STRING Example: "chr1"
+
+Note transcription factor have label `gene`
+
+#### Relationships:
+(:gene)-[:expressed_in]->(:uberon)
+(:gene)-[:expressed_in]->(:efo)
+(:gene)-[:expressed_in]->(:clo)
+(:gene)-[:expressed_in]->(:cl)
+(:gene)-[:transcribed_to]->(:transcript)
+(:gene)-[:genes_pathways]->(:pathway)
+(:gene)-[:in_tad_region]->(:tad)
+(:gene)-[:regulates]->(:gene)
+(:gene)-[:tfbs_snp]->(:snp)
+(:gene)-[:binds_to]->(:tfbs)
+(:transcript)-[:includes]->(:exon)
+(:transcript)-[:transcribed_from]->(:gene)
+(:transcript)-[:translates_to]->(:protein)
+(:super_enhancer)-[:associated_with]->(:gene)
+(:clo)-[:subclass_of]->(:clo)
+(:enhancer)-[:associated_with]->(:gene)
+(:go)-[:subclass_of]->(:go)
+(:go)-[:go_gene_product]->(:protein)
+(:pathway)-[:child_pathway_of]->(:pathway)
+(:pathway)-[:parent_pathway_of]->(:pathway)
+(:uberon)-[:subclass_of]->(:uberon)
+(:bto)-[:subclass_of]->(:bto)
+(:cl)-[:part_of]->(:uberon)
+(:cl)-[:subclass_of]->(:cl)
+(:cl)-[:capable_of]->(:go)
+(:promoter)-[:associated_with]->(:gene)
+(:protein)-[:interacts_with]->(:protein)
+(:protein)-[:translation_of]->(:transcript)
+(:snp)-[:closest_gene]->(:gene)
+(:snp)-[:eqtl_association]->(:gene)
+(:snp)-[:activity_by_contact]->(:gene)
+(:snp)-[:chromatin_state]->(:uberon)
+(:snp)-[:chromatin_state]->(:efo)
+(:snp)-[:chromatin_state]->(:clo)
+(:snp)-[:chromatin_state]->(:cl)
+(:snp)-[:histone_modification]->(:uberon)
+(:snp)-[:histone_modification]->(:clo)
+(:snp)-[:histone_modification]->(:cl)
+(:efo)-[:subclass_of]->(:efo)
+(:non_coding_rna)-[:belongs_to]->(:go)

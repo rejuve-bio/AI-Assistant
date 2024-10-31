@@ -17,6 +17,7 @@ def create_app():
     
     config = load_config()
     app.config.update(config)
+    app.config['ANNOTATION_AUTH_TOKEN'] = os.getenv('ANNOTATION_AUTH_TOKEN')
     
     app.register_blueprint(main_bp)
     
