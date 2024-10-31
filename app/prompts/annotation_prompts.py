@@ -1,28 +1,14 @@
 
-RETRIEVE_PROMPT = """
-user asked {query} and similiar result filtered are {retrieved_content}
-Using the results from a similarity search, your job is to evaluate and rank the information based on relevance to the user's query. 
-Consider the context, accuracy, and timeliness of each result. Sort the information so that the most relevant and useful answers are presented first.
-Provide the final answer in a clear, concise format that directly addresses the user's needs. 
-If some results are not directly relevant, you may omit them from your response, but avoid stating irrelevance explicitly. 
-If the search yields no useful information, simply return coudn't find anything would you elaborate you question
-"""
-
-SYSTEM_PROMPT = """
-You are an intelligent AI assistant designed to provide accurate, relevant, and contextually appropriate answers. 
-Your task is to craft well-structured and informative responses by analyzing the user's query and the provided search results.
-Prioritize clarity and helpfulness in your answers, ensuring that the user receives the most relevant information based on their question.
-"""
-
 EXTRACT_RELEVANT_INFORMATION_PROMPT = """
-### Schema:
-{schema}
-
-Query: {query}
-
 ## TASK:
 Let's think step by step to extract the relevant information needed to build the query based on the schema.
 
+### Query: {query}
+
+### Schema:
+{schema}
+
+### EXTRACTION RULES:
 1. Identify relevant nodes and their properties based on the schema.
 2. Identify necessary relationships between the nodes.
 3. Construct a path using relationships from the schema (connect from one node to the other to achive the query).
@@ -82,11 +68,12 @@ JSON_CONVERSION_PROMPT = """
 ## TASK:
 Convert the Extacted information into the target JSON format based on the schema. 
 
-Query: {query}
-Extracted information:
+### Query: {query}
+
+### Extracted information:
 {extracted_information}
 
-Schema:
+### Schema:
 {schema}
 
 ### Conversion rules:

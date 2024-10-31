@@ -1,7 +1,7 @@
 import logging
 
 from app.llm_handle.llm_models import LLMInterface
-from app.llm_handle.prompt import EXTRACT_RELEVANT_INFORMATION_PROMPT, JSON_CONVERSION_PROMPT
+from prompts.annotation_prompts import EXTRACT_RELEVANT_INFORMATION_PROMPT, JSON_CONVERSION_PROMPT
 from .dfs_handler import *
 from .llm_handler import *
 

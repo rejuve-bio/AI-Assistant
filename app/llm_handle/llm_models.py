@@ -1,4 +1,4 @@
-from .prompt import SYSTEM_PROMPT,RETRIEVE_PROMPT
+from prompts.prompts import SYSTEM_PROMPT,RETRIEVE_PROMPT
 from openai import OpenAI
 from dotenv import load_dotenv
 import openai
