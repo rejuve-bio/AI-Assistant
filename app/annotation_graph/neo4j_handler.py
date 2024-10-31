@@ -27,12 +27,12 @@ class Neo4jConnection:
         if self._driver:
             self._driver.close()
             self._driver = None
-    
+
     def get_similar_property_values(self, label: str, 
                                     property_key: str, 
                                     search_value: str, 
                                     top_k: int = 10, 
-                                    threshold: float = 0.3) -> List[str]:
+                                    threshold: float = 0.3):
         """
         Get distinct top k similar property values from Neo4j using Levenshtein similarity.
         
@@ -43,8 +43,10 @@ class Neo4jConnection:
             threshold (float): Similarity threshold (0 to 1)
         
         Returns:
-            List[str]: List of distinct similar property values sorted by similarity score
-        """     
+            List[Tuple[str, float]]: List of tuples containing distinct similar property values and their similarity scores
+        """
+        logger.info(f"Searching for similar values for '{search_value}' in label '{label}' with property key '{property_key}'.")
+
         query = f"""
         MATCH (n:{label})
         WITH DISTINCT n.{property_key} as value
@@ -64,16 +66,17 @@ class Neo4jConnection:
         try:
             driver = self.get_driver()
             with driver.session() as session:
+                logger.debug("Executing Neo4j query...")
                 result = session.run(
                     query,
                     search_value=search_value,
                     threshold=threshold
                 )
-                similar_values = [(record["value"], record["similarity"]) 
+                similar_values = [(record["value"], round(record["similarity"], 2)) 
                                 for record in result]
-            
-            # Return just the values (without scores)
-            return [(value, round(score, 2)) for value, score in similar_values]
+                logger.info(f"Found {len(similar_values)} similar values: {similar_values}.")
+
+            return similar_values
         
         except Exception as e:
             logger.error(f"Error querying Neo4j: {str(e)}")

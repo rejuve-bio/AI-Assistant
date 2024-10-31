@@ -112,3 +112,20 @@ Convert the Extacted information into the target JSON format based on the schema
   ]
 }
 """
+
+SELECT_PROPERTY_VALUE_PROMPT = """
+You are given a search query and a list of possible values that are similar to the search query based on edit distance. 
+Your task is to analyze the provided search query and select the most probable value from the list or put None. 
+If none of the values seem appropriate or relevant put empty_string ("") in the selected value.
+
+**Input:**
+- **Search Query:** {search_query}
+- **Possible Values:** [{possible_values}]
+
+**Output Format:**
+```json
+{{
+  "selected_value": "[The selected value]",
+  "confidence_score": [A score between 0 and 1 indicating confidence],
+}}
+"""

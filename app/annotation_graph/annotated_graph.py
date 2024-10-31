@@ -1,9 +1,13 @@
 import logging
-
+import os
+from dotenv import load_dotenv
+from app.annotation_graph.neo4j_handler import Neo4jConnection
 from app.llm_handle.llm_models import LLMInterface
-from prompts.annotation_prompts import EXTRACT_RELEVANT_INFORMATION_PROMPT, JSON_CONVERSION_PROMPT
+from prompts.annotation_prompts import EXTRACT_RELEVANT_INFORMATION_PROMPT, JSON_CONVERSION_PROMPT, SELECT_PROPERTY_VALUE_PROMPT
 from .dfs_handler import *
 from .llm_handler import *
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -12,7 +16,9 @@ class Graph:
     def __init__(self, llm: LLMInterface, schema: str) -> None:
         self.llm = llm
         self.schema = schema # Enhanced or preprocessed schema
-        logger.info("Graph instance created with LLM and schema.")
+        self.neo4j = Neo4jConnection(uri=os.getenv('NEO4J_URI'), 
+                                            username=os.getenv('NEO4J_USERNAME'), 
+                                            password=os.getenv('NEO4J_PASSWORD'))
 
     def query_knowledge_graph(self, validated_json):
         try:
@@ -62,21 +68,44 @@ class Graph:
     def _validate_and_update(self, initial_json):
         try:
             logger.info("Validating and updating the JSON structure.")
-            # Validation and update logic goes here.
-            validated_json = initial_json  # Placeholder for actual validation
-            logger.debug(f"Validated and updated JSON: {validated_json}")
-            return validated_json
+
+            # Validate node properties
+            if "nodes" not in initial_json:
+                raise ValueError("The input JSON must contain a 'nodes' key.")
+            for node in initial_json.get("nodes"):
+                node_type = node.get('type')
+                properties = node.get('properties', {})
+
+                for property_key in list(properties.keys()):
+                    property_value = properties[property_key]
+
+                    if not property_value and property_value != 0:
+                        del properties[property_key]
+                    elif isinstance(property_value, str):
+                        similar_values = self.neo4j.get_similar_property_values(node_type, property_key, property_value)
+                        if similar_values:
+                            selected_property_value = self._select_best_matching_property_value(property_value, similar_values)
+                            if selected_property_value.get("selected_value"):
+                                properties[property_key] = selected_property_value.get("selected_value")
+                            else:
+                                logger.debug(f"No suitable property found for {node_type} with key {property_key} and value {property_value}.")
+                                raise ValueError(f"No suitable property found for {node_type} with key {property_key} and value {property_value}.") 
+                        else:
+                            logger.debug(f"No suitable property found for {node_type} with key {property_key} and value {property_value}.")
+                            raise ValueError(f"No suitable property found for {node_type} with key {property_key} and value {property_value}.")
+
+            logger.debug(f"Validated and updated JSON: {initial_json}")
+            return initial_json
         except Exception as e:
             logger.error(f"Validation and update of JSON failed: {e}")
             raise
 
-    def summarize_graph(self, query, graph):
+    def _select_best_matching_property_value(self, user_input_value, possible_values):
         try:
-            logger.info("Generating summary based on the retrieved graph data.")
-            # Summarization logic goes here.
-            summary = "Summary"  # Placeholder for actual summary generation
-            logger.debug(f"Generated Summary: {summary}")
-            return summary
+            prompt = SELECT_PROPERTY_VALUE_PROMPT.format(search_query = user_input_value, possible_values=possible_values)
+            selected_value = self.llm.generate(prompt)
+            logger.info(f"Selected value: {selected_value}")
+            return selected_value
         except Exception as e:
-            logger.error(f"Failed to summarize graph: {e}")
+            logger.error(f"Failed to select property value: {e}")
             raise
