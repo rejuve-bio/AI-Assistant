@@ -3,15 +3,19 @@ from .qdrant import Qdrant
 from app.llm_handle.llm_models import chat_completion, openai_embedding_model
 import traceback
 import logging
+import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION")
+USER_COLLECTION = os.getenv("USER_COLLECTION")
 class RAG:
 
-    def __init__(self) -> None:
+    def __init__(self,llm) -> None:
         self.client = Qdrant()
 
-    def query(self, query_str, collection_name):
+    def query(self, query_str,user_id):
         try:
             logger.info("Query embedding started")
 
@@ -27,17 +31,19 @@ class RAG:
             embed = np.array(embeddings)
             query["dense"] = embed.reshape(-1, 1536).tolist()[0]
 
-            result = self.client.retrieve_data(collection_name, query)
+            query_result = self.client.retrieve_data(VECTOR_COLLECTION, query)
+            user_query = self.client.retrieve_user_data(USER_COLLECTION, query,user_id)
+
+            result = query_result,user_query
             return result    
         except Exception as e:
             logger.error(f"An error occurred during query processing: {e}")
             traceback.print_exc()
             return None
 
-    def result(self, query_str, collection_name):
+    def result(self, query_str, user_id):
         try:
-            query_result = self.query(query_str, collection_name)
-            print(query_result)
+            query_result = self.query(query_str,user_id)
             if query_result is None:
                 logger.error("No query result to process")
                 return None
