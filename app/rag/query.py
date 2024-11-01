@@ -1,9 +1,11 @@
 import numpy as np
 from .qdrant import Qdrant
-from app.llm_handle.llm_models import chat_completion, openai_embedding_model
+from app.prompts.rag_prompts import SYSTEM_PROMPT, RETRIEVE_PROMPT
+from app.llm_handle.llm_models import LLMInterface, openai_embedding_model
 import traceback
 import logging
 import os
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -12,8 +14,9 @@ VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION")
 USER_COLLECTION = os.getenv("USER_COLLECTION")
 class RAG:
 
-    def __init__(self,llm) -> None:
+    def __init__(self,llm:LLMInterface) -> None:
         self.client = Qdrant()
+        self.llm = llm
 
     def query(self, query_str,user_id):
         try:
@@ -47,8 +50,8 @@ class RAG:
             if query_result is None:
                 logger.error("No query result to process")
                 return None
-
-            result = chat_completion(query_str, query_result)
+            prompt = RETRIEVE_PROMPT.format(query=query_str,retrieved_content=query_result)
+            result = self.llm.generate(prompt)
             return result
 
         except Exception as e:
