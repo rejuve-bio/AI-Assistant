@@ -6,7 +6,7 @@ authors = []
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.10"
+python = ">=3.10,<3.13"
 Flask = "^3.0.3"
 python-dotenv = "^1.0.1"
 requests = "^2.32.3"
@@ -17,6 +17,8 @@ qdrant-client = "^1.12.1"
 pandas = "^2.2.3"
 neo4j = "^4.4"
 biocypher = "^0.6.1"
+scikit-learn = "^1.5.2"
+autogen = "^0.3.1"
 
 
 [build-system]
