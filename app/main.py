@@ -110,7 +110,7 @@ class AiAssistance:
         user_agent.initiate_chat(group_manager, message=message, clear_history=False)
 
         save_history({
-            "rag_agent":rag_agent.chat_messages.get(group_manager),
+            "rag_agent":rag_agent.chat_messages.gets(group_manager),
             "graph_agent":graph_agent.chat_messages.get(group_manager),
             "user_agent":user_agent.chat_messages.get(group_manager)
         })
