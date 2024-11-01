@@ -15,7 +15,8 @@ PyYAML = "^6.0.2"
 numpy = "^2.1.2"
 qdrant-client = "^1.12.1"
 pandas = "^2.2.3"
-neo4j = "^5.25.0"
+neo4j = "^4.4"
+biocypher = "^0.6.1"
 
 
 [build-system]
