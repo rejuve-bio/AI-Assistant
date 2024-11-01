@@ -15,17 +15,14 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-openai.api_key = os.getenv('OPENAI_KEY')
 EMBEDDING_MODEL = "text-embedding-3-small"
-api = os.getenv('OPENAI_KEY')
+api = os.getenv('OPENAI_API_KEY')
 
 def chat_completion(query,retrieved_content,model: str = "gpt-4o") -> str:
         """
         Generate an answer to a user question based on the provided content.
         """
         try:
-            print("chat completion")
-           
             client =  OpenAI(api_key=api)
             response = client.chat.completions.create(
                 model=model,
@@ -54,6 +51,7 @@ todo list: gemini chat completion and embbedding model
 
 # Function to generate OpenAI embeddings
 def openai_embedding_model(batch):
+    openai.api_key = api
     embeddings = []
     batch_size = 1000
     sleep_time = 10
