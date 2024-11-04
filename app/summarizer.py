@@ -3,14 +3,24 @@ from collections import defaultdict
 import re
 import traceback
 import json
+import tiktoken
 from app.prompts.summarizer_prompts import SUMMARY_PROMPT, SUMMARY_PROMPT_BASED_ON_USER_QUERY
-
 class Graph_Summarizer: 
     '''
     Handles graph-related operations like processing nodes, edges, generating responses ...
     '''
     def __init__(self,llm) -> None:
         self.llm = llm
+        self.llm = llm
+        max_token=0
+        self.max_token=max_token
+      
+        if self.llm.__class__.__name__ == 'GeminiModel':
+            max_token=2000
+        else:
+            if self.llm.__class__.__name__ == 'OpenAIModel':
+             max_token=8000     
+        self.tokenizer = tiktoken.get_encoding("cl100k_base")
 
     def clean_and_format_response(self,desc):
         desc = desc.strip()
@@ -96,6 +106,27 @@ class Graph_Summarizer:
             nodes_descriptions.append(source_desc)
         return nodes_descriptions
     
+    def num_tokens_from_string(self, encoding_name: str, max_tokens=2000):
+        """Calculates the number of tokens in each description and groups them into batches under a token limit."""
+        encoding = tiktoken.get_encoding(encoding_name)
+        accumulated_tokens = 0
+        grouped_batched_descriptions = []
+        self.current_batch = []  
+        for i, desc in enumerate(self.description):          
+            desc_tokens = len(encoding.encode(desc))
+            if accumulated_tokens + desc_tokens <= max_tokens:
+                self.current_batch.append(desc)
+                accumulated_tokens += desc_tokens
+            else:
+                grouped_batched_descriptions.append(self.current_batch)
+                self.current_batch = [desc]
+                accumulated_tokens = desc_tokens  
+        if self.current_batch:
+            grouped_batched_descriptions.append(self.current_batch)         
+        return grouped_batched_descriptions
+
+
+    
     def graph_description(self,graph):
         nodes = {node['data']['id']: node['data'] for node in graph['nodes']}
     
@@ -105,21 +136,24 @@ class Graph_Summarizer:
                     'target_node': edge['data']['target_node'],
                     'label': edge['data']['label']} for edge in graph['edges']]
             self.description = self.generate_grouped_descriptions(edges, nodes, batch_size=10)
+            self.batched_descriptions = self.num_tokens_from_string("cl100k_base")
         else:
             self.description = self.nodes_description(nodes)
         
         return self.description
 
     def summary(self,graph,user_query=None,query_json_format = None):
+        prev_summery=[]
         try:
             self.graph_description(graph)
-            
-            if user_query:
-                prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(description=self.description,user_query=user_query)
-            else:
-                prompt = SUMMARY_PROMPT.format(description=self.description)
+            for i, batch in enumerate(self.batched_descriptions):                  
+                if user_query:
+                    prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(description=batch,user_query=user_query)
+                else:
+                    prompt = SUMMARY_PROMPT.format(description=batch)
 
-            response = self.llm.generate(prompt)
+                response = self.llm.generate(prompt)
+                prev_summery.append(response)
             # cleaned_desc = self.clean_and_format_response(response)
             return response
         except:
