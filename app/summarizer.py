@@ -11,6 +11,16 @@ class Graph_Summarizer:
     '''
     def __init__(self,llm) -> None:
         self.llm = llm
+        self.llm = llm
+        max_token=0
+        self.max_token=max_token
+      
+        if self.llm.__class__.__name__ == 'GeminiModel':
+            max_token=2000
+        else:
+            if self.llm.__class__.__name__ == 'OpenAIModel':
+             max_token=8000     
+        self.tokenizer = tiktoken.get_encoding("cl100k_base")
 
     def clean_and_format_response(self,desc):
         desc = desc.strip()
