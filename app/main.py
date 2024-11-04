@@ -37,8 +37,8 @@ class AiAssistance:
             "user_agent": []
             }
      
-    def summarize_graph(self,query,graph):
-        summary = Graph_Summarizer().summary(query,graph)
+    def summarize_graph(self,graph,query):
+        summary = Graph_Summarizer(self.llm).summary(graph,query)
         return summary,None
 
     def agent(self,message,user_id):
@@ -110,26 +110,20 @@ class AiAssistance:
         user_agent.initiate_chat(group_manager, message=message, clear_history=False)
 
         save_history({
-            "rag_agent":rag_agent.chat_messages.gets(group_manager),
+            "rag_agent":rag_agent.chat_messages.get(group_manager),
             "graph_agent":graph_agent.chat_messages.get(group_manager),
             "user_agent":user_agent.chat_messages.get(group_manager)
         })
-        response = group_chat.messages[-1]
+        response = group_chat.messages[2]['content']
         return response
 
     def assistant_response(self,query,graph,user_id):
         
         if graph:
             logger.info("summarizing graph")
-            summary = self.summarize_graph(query,graph)
+            summary = self.summarize_graph(graph,query)
             return summary
 
         logger.info("agent calling")
         response = self.agent(query, user_id)
         return response
-
-# import os
-# openai_api_key = os.getenv('OPENAI_API_KEY')
-# llm = OpenAIModel(openai_api_key)
-# a = AiAssistance(llm,"").assistant_response("What is the purpose of the Rejuve platform?", "","1","annotation")
-# print(a)

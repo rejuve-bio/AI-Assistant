@@ -6,6 +6,7 @@ from .llm_handle.llm_models import GeminiModel, OpenAIModel
 import requests
 import os
 from .main import AiAssistance
+import traceback
 
 main_bp = Blueprint('main', __name__) 
 def get_llm_model(config):
@@ -32,18 +33,18 @@ def process_query():
     and an optional graph (if the query is graph-related), or just content for queries 
     without any graph-related information.
     '''
-    data = request.json
-    query = data.get('query', None)
-    graph = data.get('graph', None)
-    user = data.get('user', None)
-
-    config = current_app.config
-    schema_text = open(config['SCHEMA_PATH'], 'r').read()
-    llm = get_llm_model(config)   
-    
     try:
+        data = request.json
+        query = data.get('query', None)
+        graph = data.get('graph', None)
+        user = data.get('user', None)
+
+        config = current_app.config
+        schema_text = open(config['SCHEMA_PATH'], 'r').read()
+        llm = get_llm_model(config)   
         response = AiAssistance(llm,schema_text).assistant_response(query,graph,user)
         return response
     except:
-        return "empty page", 400
+        traceback.print_exc()
+        return "Bad Response", 400
   
