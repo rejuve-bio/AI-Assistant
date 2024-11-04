@@ -10,6 +10,9 @@ SUMMARY_PROMPT_BASED_ON_USER_QUERY = """
                                 - Format the response in a clear, concise, and easy-to-read manner.\n\n
                                 Please provide a summary based solely on the information shown in the graph.
                                 """
+SUMMARY_PROMPT_CHUNKING = """"""
+SUMMARY_PROMPT_CHUNKING_USER_QUERY =""""""
+
                 
 SUMMARY_PROMPT = """
                 You are an expert biology assistant on summarizing graph data.\n\n
