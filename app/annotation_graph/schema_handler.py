@@ -1,5 +1,7 @@
 from collections import defaultdict
+import json
 from biocypher import BioCypher
+from flask import jsonify
 import yaml
 
 class SchemaHandler:
@@ -8,9 +10,9 @@ class SchemaHandler:
         self.schema = self.bcy._get_ontology_mapping()._extend_schema()
         self.processed_schema = self.process_schema(self.schema) 
         self.parent_nodes = self.get_parent_nodes()
-        self.parent_edges = self.get_parent_edges()
         self.adj_list = self.get_adjacency_list()
         self.schema_graph = self.build_graph(self.adj_list)
+        self.graph_file = 'graph.pkl'
 
     def process_schema(self, schema):
         process_schema = {}
@@ -163,6 +165,15 @@ class SchemaHandler:
     def build_graph(self, schema_relationship):
         # schema_relationship = generate_schema_relationship()
 
+        import os
+        import pickle
+        if os.path.exists(self.graph_file):
+            with open(self.graph_file, 'rb') as f:
+                graph = pickle.load(f)
+            print("Retrieved graph from storage.")
+            return graph
+
+        # If no stored graph, build a new one
         graph = defaultdict(list)
         for node, relationships in schema_relationship.items():
             for rel, target in relationships.items():
@@ -173,7 +184,5 @@ class SchemaHandler:
                     graph[node].append((target, rel))
         # store the graph in file
         return graph
-
+        
                 
-
-

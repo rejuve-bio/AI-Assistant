@@ -51,6 +51,10 @@ class Qdrant:
             payloads_list = [
                         {col: getattr(item, col) for col in payload_columns}
                         for item in df.itertuples(index=False)]
+            
+            import random
+            if 'id' not in df.columns:
+                df['id'] = [random.randint(100000, 999999) for _ in range(len(df))]
 
             self.get_create_collection(collection_name)
             self.client.upsert(
@@ -72,6 +76,7 @@ class Qdrant:
                 collection_name=collection,
                 query_vector=query["dense"],
                 with_payload=True,
+                score_threshold=0.5,
                 limit=1000)
         response = {}
         
@@ -81,6 +86,24 @@ class Qdrant:
                 "id": point.id,
                 "score": point.score,
                 "authors": point.payload.get('authors', 'Unknown'),
+                "content": point.payload.get('content', 'No content available')
+            }
+        return response
+
+    def retrieve_user_data(self,collection_name, query,user_id):
+        result = self.client.search(
+                collection_name=collection_name,
+                query_vector=query["dense"],
+                with_payload=True,
+                score_threshold=0.5,
+                limit=1000)
+        response = {}
+        
+        # add user payload filter
+
+        for i, point in enumerate(result):
+            response[i] = {
+                "score": point.score,
                 "content": point.payload.get('content', 'No content available')
             }
         return response
