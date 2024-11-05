@@ -4,24 +4,19 @@ import re
 import traceback
 import json
 import tiktoken
-from app.prompts.summarizer_prompts import SUMMARY_PROMPT, SUMMARY_PROMPT_BASED_ON_USER_QUERY
+from app.prompts.summarizer_prompts import SUMMARY_PROMPT, SUMMARY_PROMPT_BASED_ON_USER_QUERY, SUMMARY_PROMPT_CHUNKING, SUMMARY_PROMPT_CHUNKING_USER_QUERY
 class Graph_Summarizer: 
     '''
     Handles graph-related operations like processing nodes, edges, generating responses ...
     '''
     def __init__(self,llm) -> None:
         self.llm = llm
-        self.llm = llm
-        max_token=0
-        self.max_token=max_token
-      
-        if self.llm.__class__.__name__ == 'GeminiModel':
-            max_token=2000
+        if  self.llm.__class__.__name__ == 'GeminiModel':
+            self.max_token=20000
+        elif self.llm.__class__.__name__ == 'OpenAIModel':
+             self.max_token=20000
         else:
-            if self.llm.__class__.__name__ == 'OpenAIModel':
-             max_token=8000     
-        self.tokenizer = tiktoken.get_encoding("cl100k_base")
-
+            self.max_token=0
     def clean_and_format_response(self,desc):
         desc = desc.strip()
         desc = re.sub(r'\n\s*\n', '\n', desc)
@@ -106,26 +101,25 @@ class Graph_Summarizer:
             nodes_descriptions.append(source_desc)
         return nodes_descriptions
     
-    def num_tokens_from_string(self, encoding_name: str, max_tokens=2000):
+    def num_tokens_from_string(self, encoding_name: str, description):
         """Calculates the number of tokens in each description and groups them into batches under a token limit."""
         encoding = tiktoken.get_encoding(encoding_name)
         accumulated_tokens = 0
-        grouped_batched_descriptions = []
+        self.grouped_batched_descriptions = []
         self.current_batch = []  
-        for i, desc in enumerate(self.description):          
-            desc_tokens = len(encoding.encode(desc))
-            if accumulated_tokens + desc_tokens <= max_tokens:
+    
+        for i, desc in enumerate(self.description):   
+            desc_tokens = len(encoding.encode(desc)) 
+            if accumulated_tokens + desc_tokens <=  self.max_token:
                 self.current_batch.append(desc)
                 accumulated_tokens += desc_tokens
             else:
-                grouped_batched_descriptions.append(self.current_batch)
+                self.grouped_batched_descriptions.append(self.current_batch)
                 self.current_batch = [desc]
                 accumulated_tokens = desc_tokens  
         if self.current_batch:
-            grouped_batched_descriptions.append(self.current_batch)         
-        return grouped_batched_descriptions
-
-
+            self.grouped_batched_descriptions.append(self.current_batch)
+        return self.grouped_batched_descriptions
     
     def graph_description(self,graph):
         nodes = {node['data']['id']: node['data'] for node in graph['nodes']}
@@ -136,7 +130,7 @@ class Graph_Summarizer:
                     'target_node': edge['data']['target_node'],
                     'label': edge['data']['label']} for edge in graph['edges']]
             self.description = self.generate_grouped_descriptions(edges, nodes, batch_size=10)
-            self.batched_descriptions = self.num_tokens_from_string("cl100k_base")
+            self.num_tokens_from_string("cl100k_base", self.description)
         else:
             self.description = self.nodes_description(nodes)
         
@@ -146,13 +140,25 @@ class Graph_Summarizer:
         prev_summery=[]
         try:
             self.graph_description(graph)
-            for i, batch in enumerate(self.batched_descriptions):                  
-                if user_query:
-                    prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(description=batch,user_query=user_query)
+            for i, batch in enumerate(self.batched_descriptions):  
+                print('batch', batch)   
+                if prev_summery:
+                    if user_query:
+                        prompt = SUMMARY_PROMPT_CHUNKING_USER_QUERY.format(description=batch,user_query=user_query,previous=prev_summery)
+                        print("prompt", prompt)
+                    else:
+                        prompt = SUMMARY_PROMPT_CHUNKING.format(description=batch,previous=prev_summery)
+                        print("prompt", prompt)
                 else:
-                    prompt = SUMMARY_PROMPT.format(description=batch)
+                    if user_query:
+                        prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(description=batch,user_query=user_query)
+                        print("prompt", prompt)
+                    else:
+                        prompt = SUMMARY_PROMPT.format(description=batch)
+                        print("prompt", prompt)
 
                 response = self.llm.generate(prompt)
+
                 prev_summery.append(response)
             # cleaned_desc = self.clean_and_format_response(response)
             return response
