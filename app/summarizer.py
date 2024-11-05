@@ -158,8 +158,7 @@ class Graph_Summarizer:
                         print("prompt", prompt)
 
                 response = self.llm.generate(prompt)
-
-                prev_summery.append(response)
+                prev_summery = [response]  
             # cleaned_desc = self.clean_and_format_response(response)
             return response
         except:
