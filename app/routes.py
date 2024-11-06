@@ -38,11 +38,12 @@ def process_query():
         query = data.get('query', None)
         graph = data.get('graph', None)
         user = data.get('user', None)
+        graph_id = data.get('graph_id',None)
 
         config = current_app.config
         schema_text = open(config['SCHEMA_PATH'], 'r').read()
         llm = get_llm_model(config)   
-        response = AiAssistance(llm,schema_text).assistant_response(query,graph,user)
+        response = AiAssistance(llm,schema_text).assistant_response(query,graph,user,graph_id)
         return response
     except:
         traceback.print_exc()

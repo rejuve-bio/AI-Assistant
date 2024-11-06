@@ -142,7 +142,12 @@ class Graph_Summarizer:
         
         return self.description
 
-    def summary(self,graph,user_query=None,query_json_format = None):
+
+    def get_graph_info(self):
+        # get the graph from the database
+        pass
+
+    def summary(self,graph,user_query=None,graph_id=None,query_json_format = None):
         prev_summery=[]
         try:
             self.graph_description(graph)
@@ -162,10 +167,24 @@ class Graph_Summarizer:
                         prompt = SUMMARY_PROMPT.format(description=batch)
                         print("prompt", prompt)
 
+            if graph_id and user_query:
+                graph = self.get_graph_info()
+                prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(description=graph,user_query=user_query)
                 response = self.llm.generate(prompt)
-                prev_summery.append(response)
-            # cleaned_desc = self.clean_and_format_response(response)
-            return response
+                return response
+
+            if graph:
+                self.graph_description(graph)
+                for i, batch in enumerate(self.batched_descriptions):                  
+                    if user_query:
+                        prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(description=batch,user_query=user_query)
+                    else:
+                        prompt = SUMMARY_PROMPT.format(description=batch)
+
+                    response = self.llm.generate(prompt)
+                    prev_summery.append(response)
+                # cleaned_desc = self.clean_and_format_response(response)
+                return response
         except:
             traceback.print_exc()
    
