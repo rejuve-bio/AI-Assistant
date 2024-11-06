@@ -42,23 +42,3 @@ class ConversationCache:
             del self.cache[user_id]
             self.save_cache()  # Save to JSON file after clearing
 
-
-
-
-conversation_cache = ConversationCache()
-# Add sample data for user1
-conversation_cache.add_conversation(
-    user_id='user1', 
-    user_query='Hello, what can you do?', 
-    assistant_message='I can help you with various tasks like answering questions and providing information.'
-)
-
-conversation_cache.add_conversation(
-    user_id='user1', 
-    user_query='What is the weather today?', 
-    assistant_message='I cannot check the weather at the moment.'
-)
-
-# Retrieve the conversation for user1
-conversation_data = conversation_cache.get_conversation('user1')
-# print("Retrieved Conversation:", conversation_data)
