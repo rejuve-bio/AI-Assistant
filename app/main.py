@@ -42,59 +42,49 @@ class AiAssistance:
         return summary,None
 
     def agent(self,message,user_id):
-        
-        def save_history(history):
-            self.message_history = history
-            
-        def get_history():
-            return self.message_history
-
-        def get_general_response(query:str, user_id: str) -> str:
-            try:
-                response = self.rag.result(query, user_id)
-                return response
-            except Exception as e:
-                logger.error("Error in retrieving response", exc_info=True)
-                return "Error in retrieving response."
-   
-        def generate_graph(query:str):
-            try:
-                response = self.annotation_graph.generate_graph(query)
-                return response
-            except Exception as e:
-                logger.error("Error in generating graph", exc_info=True)
-                return "Error in generating graph."
 
         graph_agent = AssistantAgent(
             name="gragh_generate",
             llm_config=llm_config,
-            system_message="you are helpful assistant capable of callign graph generation function to assist users asking graph",
-            description="An AI assistant for handling graph generation",
-            human_input_mode="NEVER")
-        graph_agent.register_for_llm(name="generate_graph", description="Generates a graph for graph-based queries")(generate_graph)
+            system_message="you are helpful assistant capable of calling graph generation function to assist users asking graph only use the functions you have been provided with. Reply TERMINATE "
+                   "when the task is done.",)
         
         rag_agent = AssistantAgent(
             name="rag_retrival",
             llm_config=llm_config,
-            system_message="you are helpful assistant on retriving similiar information from rag",
-            description="answer for general questions",
-            human_input_mode="NEVER")
-        rag_agent.register_for_llm(name="get_general_response", description="Provides responses for general queries")(get_general_response)
+            system_message="you are helpful assistant on retriving similiar information from rag only use the functions you have been provided with. Reply TERMINATE "
+                   "when the task is done.",)
 
-        def should_terminate_user(message):
-            return "tool_calls" not in message and message["role"] != "tool"
 
         user_agent = UserProxyAgent(
             name="user",
             llm_config=False,
-            description="A human user capable of interacting with AI agents.",
             code_execution_config=False,
             human_input_mode="NEVER",
-            is_termination_msg=should_terminate_user
-        )
+            is_termination_msg=lambda x: x.get("content", "") and x.get("content", "").rstrip().endswith("TERMINATE"))
 
-        user_agent.register_for_execution(name="generate_graph")(generate_graph)
-        user_agent.register_for_execution(name="get_general_response")(get_general_response)
+
+        @user_agent.register_for_execution()
+        @rag_agent.register_for_llm(description="answer for general questions")
+        def get_general_response(query:str, user_id: str) -> str:
+            try:
+                response = self.rag.result(query, user_id)
+                return response + "TERMINATE"
+            except Exception as e:
+                logger.error("Error in retrieving response", exc_info=True)
+                return "Error in retrieving response." + "TERMINATE"
+
+        
+        @user_agent.register_for_execution()
+        @graph_agent.register_for_llm(description="handling graph generation")
+        def generate_graph(query:str):
+            try:
+                response = self.annotation_graph.generate_graph(query)
+                return response + "TERMINATE"
+            except Exception as e:
+                logger.error("Error in generating graph", exc_info=True)
+                return "Error in generating graph." +"TERMINATE"
+
 
         group_chat = GroupChat(agents=[user_agent, rag_agent, graph_agent], messages=[],max_round=120)
         group_manager = GroupChatManager(
@@ -102,28 +92,28 @@ class AiAssistance:
             llm_config=llm_config,
             human_input_mode="NEVER")
 
-
-        history = get_history()
-        rag_agent._oai_messages={group_manager:history["rag_agent"]}
-        graph_agent._oai_messages={group_manager:history["graph_agent"]}
-        user_agent._oai_messages = {group_manager:history["user_agent"]}
+        
         user_agent.initiate_chat(group_manager, message=message, clear_history=False)
 
-        save_history({
-            "rag_agent":rag_agent.chat_messages.get(group_manager),
-            "graph_agent":graph_agent.chat_messages.get(group_manager),
-            "user_agent":user_agent.chat_messages.get(group_manager)
-        })
         response = group_chat.messages[2]['content']
         return response
 
-    def assistant_response(self,query,graph,user_id):
+    def assistant_response(self,query,graph,user_id,graph_id):
         
         if graph:
             logger.info("summarizing graph")
             summary = self.summarize_graph(graph,query)
+            return 
+            
+        if graph_id and query:
+            logger.info("summarizing graph")
+            summary = self.summarize_graph(graph,query)
             return summary
 
-        logger.info("agent calling")
-        response = self.agent(query, user_id)
-        return response
+        if query:
+            logger.info("agent calling")
+            response = self.agent(query, user_id)
+            return response
+
+        else:
+            return "please provide appropriate question"
