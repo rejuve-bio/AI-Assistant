@@ -103,12 +103,12 @@ class AiAssistance:
         
         if graph:
             logger.info("summarizing graph")
-            summary = self.summarize_graph(graph,query)
-            return 
+            summary = self.summarize_graph(graph=graph,query=query)
+            return summary
             
         if graph_id and query:
             logger.info("summarizing graph")
-            summary = self.summarize_graph(graph,query)
+            summary = self.summarize_graph(graph_id=graph_id,query=query)
             return summary
 
         if query:
