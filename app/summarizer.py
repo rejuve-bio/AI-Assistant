@@ -12,14 +12,11 @@ class Graph_Summarizer:
     def __init__(self,llm) -> None:
         self.llm = llm
         self.llm = llm
-        max_token=0
-        self.max_token=max_token
       
         if self.llm.__class__.__name__ == 'GeminiModel':
-            max_token=8000  #default gemini model token length for creating batch graph data's
-        else:
-            if self.llm.__class__.__name__ == 'OpenAIModel':
-             max_token=128000  #default gemini model token length for creating batch graph data's
+            self.max_token=2000
+        elif self.llm.__class__.__name__ == 'OpenAIModel':
+            self.max_token=100000     
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
 
     def clean_and_format_response(self,desc):
@@ -38,11 +35,11 @@ class Graph_Summarizer:
 
 
     def group_edges_by_source(self,edges):
-        """Group edges by source."""
+        """Group edges by source_node."""
         grouped_edges = defaultdict(list)
         for edge in edges:
-            source_id = edge["source"].split(' ')[-1]  # Extract ID
-            grouped_edges[source_id].append(edge)
+            source_node_id = edge["source"].split(' ')[-1]  # Extract ID
+            grouped_edges[source_node_id].append(edge)
         return grouped_edges
 
     def generate_node_description(self,node):
@@ -72,23 +69,23 @@ class Graph_Summarizer:
         descriptions = []
 
         # Process each source node and its related target nodes
-        for source_id, related_edges in grouped_edges.items():
-            source = nodes.get(source_id, {})
-            source_desc = self.generate_node_description(source)
+        for source_node_id, related_edges in grouped_edges.items():
+            source_node = nodes.get(source_node_id, {})
+            source_desc = self.generate_node_description(source_node)
 
             # Collect descriptions for all target nodes linked to this source node
             target_descriptions = []
             for edge in related_edges:
-                target_id = edge["target"].split(' ')[-1]
-                target = nodes.get(target_id, {})
-                target_desc = self.generate_node_description(target)
+                target_node_id = edge["target"].split(' ')[-1]
+                target_node = nodes.get(target_node_id, {})
+                target_desc = self.generate_node_description(target_node)
 
                 # Add the relationship and target node description
                 label = edge["label"]
                 target_descriptions.append(f"{label} -> Target Node ({edge['target']}): {target_desc}")
 
             # Combine the source node description with all target node descriptions
-            source_and_targets = (f"Source Node ({source_id}): {source_desc}\n" +
+            source_and_targets = (f"Source Node ({source_node_id}): {source_desc}\n" +
                                 "\n".join(target_descriptions))
             descriptions.append(source_and_targets)
 
@@ -100,9 +97,9 @@ class Graph_Summarizer:
 
     def nodes_description(self,nodes):
         nodes_descriptions = []
-        for source_id in nodes:
-            source = nodes.get(source_id, {})
-            source_desc = self.generate_node_description(source)
+        for source_node_id in nodes:
+            source_node = nodes.get(source_node_id, {})
+            source_desc = self.generate_node_description(source_node)
             nodes_descriptions.append(source_desc)
         return nodes_descriptions
     
@@ -136,36 +133,20 @@ class Graph_Summarizer:
                     'target': edge['data']['target'],
                     'label': edge['data']['label']} for edge in graph['edges']]
             self.description = self.generate_grouped_descriptions(edges, nodes, batch_size=10)
-            self.batched_descriptions = self.num_tokens_from_string("cl100k_base")
+            self.descriptions = self.num_tokens_from_string("cl100k_base")
         else:
-            self.description = self.nodes_description(nodes)
+            self.descriptions = self.nodes_description(nodes)
         
-        return self.description
+        return self.descriptions
 
 
     def get_graph_info(self):
-        # get the graph from the database
+        # get the graph from the annotation endpoint
         pass
 
     def summary(self,graph,user_query=None,graph_id=None,query_json_format = None):
         prev_summery=[]
         try:
-            self.graph_description(graph)
-            for i, batch in enumerate(self.batched_descriptions):     
-                if prev_summery:
-                    if user_query:
-                        prompt = SUMMARY_PROMPT_CHUNKING.format(description=batch,user_query=user_query,previous=prev_summery)
-                        print("prompt", prompt)
-                    else:
-                        prompt = SUMMARY_PROMPT_CHUNKING_USER_QUERY.format(description=batch,previous=prev_summery)
-                        print("prompt", prompt)
-                else:
-                    if user_query:
-                        prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(description=batch,user_query=user_query)
-                        print("prompt", prompt)
-                    else:
-                        prompt = SUMMARY_PROMPT.format(description=batch)
-                        print("prompt", prompt)
 
             if graph_id and user_query:
                 graph = self.get_graph_info()
@@ -174,17 +155,29 @@ class Graph_Summarizer:
                 return response
 
             if graph:
+                prev_summery=[]
                 self.graph_description(graph)
-                for i, batch in enumerate(self.batched_descriptions):                  
-                    if user_query:
-                        prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(description=batch,user_query=user_query)
+                for i, batch in enumerate(self.descriptions):  
+                    print('batch', batch)   
+                    if prev_summery:
+                        if user_query:
+                            prompt = SUMMARY_PROMPT_CHUNKING_USER_QUERY.format(description=batch,user_query=user_query,prev_summery=prev_summery)
+                        else:
+                            prompt = SUMMARY_PROMPT_CHUNKING.format(description=batch,prev_summery=prev_summery)
                     else:
-                        prompt = SUMMARY_PROMPT.format(description=batch)
+                        if user_query:
+                            prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(description=batch,user_query=user_query)
+                            print("prompt", prompt)
+                        else:
+                            prompt = SUMMARY_PROMPT.format(description=batch)
+                            print("prompt", prompt)
 
                     response = self.llm.generate(prompt)
-                    prev_summery.append(response)
+                    prev_summery = [response]  
                 # cleaned_desc = self.clean_and_format_response(response)
                 return response
         except:
             traceback.print_exc()
    
+
+              
