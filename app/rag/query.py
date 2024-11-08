@@ -1,7 +1,7 @@
 import numpy as np
-from .qdrant import Qdrant
+from .qdrant import OPEN_AI_VECTOR_SIZE, Qdrant
 from app.prompts.rag_prompts import SYSTEM_PROMPT, RETRIEVE_PROMPT
-from app.llm_handle.llm_models import LLMInterface, openai_embedding_model
+from app.llm_handle.llm_models import LLMInterface, embedding_model
 import traceback
 import logging
 import os
@@ -26,13 +26,13 @@ class RAG:
                 query_str = [query_str]
 
             query = {}
-            embeddings = openai_embedding_model(query_str)
+            embeddings = embedding_model(query_str)
             if not embeddings or len(embeddings) == 0:
                 logger.error("Failed to generate dense embeddings")
                 return None
             
             embed = np.array(embeddings)
-            query["dense"] = embed.reshape(-1, 1536).tolist()[0]
+            query["dense"] = embed.reshape(-1, OPEN_AI_VECTOR_SIZE).tolist()[0]
 
             query_result = self.client.retrieve_data(VECTOR_COLLECTION, query)
             user_query = self.client.retrieve_user_data(USER_COLLECTION, query,user_id)

@@ -8,8 +8,10 @@ from typing import List
 from qdrant_client.models import PointStruct, PointIdsList
 from dotenv import load_dotenv
 
+
 OPEN_AI_VECTOR_SIZE=1536
 COLBERT_VECTOR_SIZE=128
+GEMINI_VECTOR_SIZE=768
 
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,9 +19,7 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 class Qdrant:
-
     def __init__(self):
-
         try:
             self.client = QdrantClient(os.environ.get('QDRANT_CLIENT'))
             print(f"qdrant connected")

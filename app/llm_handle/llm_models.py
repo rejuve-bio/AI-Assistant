@@ -7,6 +7,7 @@ import logging
 import json
 from typing import Any, Dict
 import requests
+import google.generativeai as genai
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -14,17 +15,14 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-EMBEDDING_MODEL = "text-embedding-3-small"
+OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+GEMINI_EMBEDDING_MODEL = "models/text-embedding-004"
+
 api = os.getenv('OPENAI_API_KEY')
 
-    
-'''
-todo list: gemini chat completion and embbedding model
-'''
 
 
-# Function to generate OpenAI embeddings
-def openai_embedding_model(batch):
+def embedding_model(batch, llm):
     openai.api_key = api
     embeddings = []
     batch_size = 1000
@@ -36,13 +34,21 @@ def openai_embedding_model(batch):
         logger.info(f"Embedding batch {i // batch_size + 1} of {len(batch) // batch_size + 1}")
 
         try:
-            response = openai.embeddings.create(
-                model=EMBEDDING_MODEL,
-                input=batch_segment
-            )
-            batch_embeddings = [data.embedding for data in response.data]
+            if(llm.__class__.__name__== 'OpenAIModel'):
+                OPENAI_EMBEDDING_MODEL
+                batch_embeddings = [data.embedding for data in response.data]
+            elif (llm.__class__.__name__ == 'GeminiModel'):
+                genai.configure(api_key=api)
+                response = genai.embed_content(
+                    model=GEMINI_EMBEDDING_MODEL,
+                    content=batch_segment
+                )
+                batch_embeddings = response['embedding']      
+            else:
+                print("No Embedding Model Provided.")
+            print("batch_embeddings", batch_embeddings)
             embeddings.extend(batch_embeddings)
-
+            
         except Exception as e:
             logger.error(f"An unexpected error occurred: {e}")
             time.sleep(sleep_time)
