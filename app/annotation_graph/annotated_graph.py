@@ -1,7 +1,7 @@
 import copy
 import json
 import logging
-from flask import app, current_app
+from flask import current_app
 import requests
 import os
 from dotenv import load_dotenv
@@ -60,22 +60,50 @@ class Graph:
             return {"error": f"Failed to query knowledge graph: {str(e)}"}
 
     def generate_graph(self, query):
+        intermediate_steps = {
+            "relevant_information": "",
+            "initial_json": "",
+            "validation_report": "",
+            "validated_json": "",
+            "queried_graph": "",
+            "answer": "No result found"
+        }
         try:
             logger.info(f"Starting annotation query processing for question: '{query}'")
 
+            # Extract relevant information
             relevant_information = self._extract_relevant_information(query)
+            intermediate_steps["relevant_information"] = relevant_information
             
+            # Convert to initial JSON
             initial_json = self._convert_to_annotation_json(relevant_information, query)
+            intermediate_steps["initial_json"] = copy.deepcopy(initial_json)
             
-            validated_json = self._validate_and_update(initial_json)
+            # Validate and update
+            validation = self._validate_and_update(initial_json)
+            intermediate_steps["validation_report"] = validation['validation_report']
             
+            # If validation failed, return the intermediate steps
+            if validation["validation_report"]["validation_status"] == "failed":
+                logger.error("Validation failed for the constructed json query")
+                return intermediate_steps
+            # Use the updated JSON for subsequent steps
+            validated_json = validation["updated_json"]
+            intermediate_steps["validated_json"] = validated_json
+            
+            # Query knowledge graph with validated JSON
             graph = self.query_knowledge_graph(validated_json)
+            intermediate_steps["queried_graph"] = graph
+        
+            # Generate final answer using validated JSON
+            final_answer = self._provide_text_response(query, validated_json, graph)
+            intermediate_steps["answer"] = final_answer
             
             logger.info("Completed query processing.")
-            return graph
+            return intermediate_steps
         except Exception as e:
             logger.error(f"An error occurred during graph generation: {e}")
-            raise
+            return intermediate_steps
 
     def _extract_relevant_information(self, query):
         try:
