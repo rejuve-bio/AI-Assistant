@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 from flask import app, current_app
@@ -5,6 +6,7 @@ import requests
 import os
 from dotenv import load_dotenv
 from app.annotation_graph.neo4j_handler import Neo4jConnection
+from app.annotation_graph.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import LLMInterface
 from app.prompts.annotation_prompts import EXTRACT_RELEVANT_INFORMATION_PROMPT, JSON_CONVERSION_PROMPT, SELECT_PROPERTY_VALUE_PROMPT
 from .dfs_handler import *
@@ -16,9 +18,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class Graph:
-    def __init__(self, llm: LLMInterface, schema: str) -> None:
+    def __init__(self, llm: LLMInterface, schema_handler:SchemaHandler) -> None:
         self.llm = llm
-        self.schema = schema # Enhanced or preprocessed schema
+        self.schema_handler = schema_handler
+        self.enhanced_schema = schema_handler.enhanced_schema # Enhanced or preprocessed schema
         self.neo4j = Neo4jConnection(uri=os.getenv('NEO4J_URI'), 
                                             username=os.getenv('NEO4J_USERNAME'), 
                                             password=os.getenv('NEO4J_PASSWORD'))
@@ -77,7 +80,7 @@ class Graph:
     def _extract_relevant_information(self, query):
         try:
             logger.info("Extracting relevant information from the query.")
-            prompt = EXTRACT_RELEVANT_INFORMATION_PROMPT.format(schema=self.schema, query=query)
+            prompt = EXTRACT_RELEVANT_INFORMATION_PROMPT.format(schema=self.enhanced_schema, query=query)
             extracted_info =  self.llm.generate(prompt)
             logger.info(f"Extracted data: \n{extracted_info}")
             return extracted_info
@@ -88,7 +91,7 @@ class Graph:
     def _convert_to_annotation_json(self, relevant_information, query):
         try:
             logger.info("Converting relevant information to annotation JSON format.")
-            prompt = JSON_CONVERSION_PROMPT.format(query=query, extracted_information=relevant_information, schema=self.schema)
+            prompt = JSON_CONVERSION_PROMPT.format(query=query, extracted_information=relevant_information, schema=self.enhanced_schema)
             json_data = self.llm.generate(prompt)
             logger.info(f"Converted JSON:\n{json.dumps(json_data, indent=2)}")
             return json_data
@@ -99,37 +102,111 @@ class Graph:
     def _validate_and_update(self, initial_json):
         try:
             logger.info("Validating and updating the JSON structure.")
-
+            node_types = {}
+            validation_report = {
+                "property_changes": [],
+                "direction_changes": [],
+                "removed_properties": [],
+                "validation_status": "success"
+            }
+            
+            # Create a deep copy to track changes
+            updated_json = copy.deepcopy(initial_json)
+            
             # Validate node properties
-            if "nodes" not in initial_json:
+            if "nodes" not in updated_json:
                 raise ValueError("The input JSON must contain a 'nodes' key.")
-            for node in initial_json.get("nodes"):
+                
+            for node in updated_json.get("nodes"):
                 node_type = node.get('type')
                 properties = node.get('properties', {})
-
+                node_id = node.get('node_id')
+                node_types[node_id] = node_type
+                
+                # Track removed properties
                 for property_key in list(properties.keys()):
                     property_value = properties[property_key]
-
+                    
                     if not property_value and property_value != 0:
                         del properties[property_key]
+                        validation_report["removed_properties"].append({
+                            "node_type": node_type,
+                            "node_id": node_id,
+                            "property": property_key,
+                            "original_value": property_value
+                        })
                     elif isinstance(property_value, str):
-                        similar_values = self.neo4j.get_similar_property_values(node_type, property_key, property_value)
+                        similar_values = self.neo4j.get_similar_property_values(
+                            node_type, property_key, property_value
+                        )
+                        
                         if similar_values:
-                            selected_property_value = self._select_best_matching_property_value(property_value, similar_values)
-                            if selected_property_value.get("selected_value"):
-                                properties[property_key] = selected_property_value.get("selected_value")
+                            selected_property = self._select_best_matching_property_value(
+                                property_value, similar_values
+                            )
+                            
+                            if selected_property.get("selected_value"):
+                                new_value = selected_property.get("selected_value")
+                                if new_value != property_value:
+                                    validation_report["property_changes"].append({
+                                        "node_type": node_type,
+                                        "node_id": node_id,
+                                        "property": property_key,
+                                        "original_value": property_value,
+                                        "new_value": new_value,
+                                        "similar_values": similar_values
+                                    })
+                                properties[property_key] = new_value
                             else:
-                                logger.debug(f"No suitable property found for {node_type} with key {property_key} and value {property_value}.")
-                                raise ValueError(f"No suitable property found for {node_type} with key {property_key} and value {property_value}.") 
+                                raise ValueError(
+                                    f"No suitable property found for {node_type} with key {property_key} "
+                                    f"and value {property_value}."
+                                )
                         else:
-                            logger.debug(f"No suitable property found for {node_type} with key {property_key} and value {property_value}.")
-                            raise ValueError(f"No suitable property found for {node_type} with key {property_key} and value {property_value}.")
+                            raise ValueError(
+                                f"No suitable property found for {node_type} with key {property_key} "
+                                f"and value {property_value}."
+                            )
+            
+            # Validate edge direction
+            for edge in updated_json.get("predicates", []):
+                s = node_types.get(edge['source'])
+                t = node_types.get(edge['target'])
+                rel = edge['type']
+                conn = f'{s}-{rel}-{t}'
+                
+                if conn not in self.schema_handler.processed_schema:
+                    rev = f'{t}-{rel}-{s}'
+                    if rev not in self.schema_handler.processed_schema:
+                        raise ValueError(
+                            f"Invalid source {s} and target {t} for predicate {rel}"
+                        )
+                    # Track direction changes
+                    validation_report["direction_changes"].append({
+                        "relation_type": rel,
+                        "original": f"{s} → {t}",
+                        "corrected": f"{t} → {s}"
+                    })
+                    # Swap source and target
+                    temp_s = edge['source']
+                    edge['source'] = edge['target']
+                    edge['target'] = temp_s
 
-            logger.info(f"Validated and updated JSON: \n{json.dumps(initial_json, indent=2)}")
-            return initial_json
+            logger.info(f"Validated and updated JSON: \n{json.dumps(updated_json, indent=2)}")
+            
+            return {
+                "updated_json": updated_json,
+                "validation_report": validation_report
+            }
+            
         except Exception as e:
             logger.error(f"Validation and update of JSON failed: {e}")
-            raise
+            validation_report["validation_status"] = "failed"
+            validation_report["error_message"] = str(e)
+            return {
+                "updated_json": initial_json,
+                "validation_report": validation_report
+            }
 
     def _select_best_matching_property_value(self, user_input_value, possible_values):
         try:

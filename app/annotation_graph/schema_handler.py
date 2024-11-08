@@ -13,6 +13,7 @@ class SchemaHandler:
         self.adj_list = self.get_adjacency_list()
         self.schema_graph = self.build_graph(self.adj_list)
         self.graph_file = 'graph.pkl'
+        self.enhanced_schema = open('./config/enhanced_schema.txt', 'r').read()
 
     def process_schema(self, schema):
         process_schema = {}
