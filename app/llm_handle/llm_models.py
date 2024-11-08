@@ -37,7 +37,7 @@ def embedding_model(batch, llm):
             if(llm.__class__.__name__== 'OpenAIModel'):
                 OPENAI_EMBEDDING_MODEL
                 batch_embeddings = [data.embedding for data in response.data]
-            elif (llm.__class__.__name__ == 'GeminiMode'):
+            elif (llm.__class__.__name__ == 'GeminiModel'):
                 genai.configure(api_key=api)
                 response = genai.embed_content(
                     model=GEMINI_EMBEDDING_MODEL,
