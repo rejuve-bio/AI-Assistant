@@ -43,19 +43,22 @@ class AiAssistance:
         return summary,None
 
     def agent(self,message,user_id):
-
+        
         graph_agent = AssistantAgent(
             name="gragh_generate",
             llm_config=llm_config,
-            system_message="you are helpful assistant capable of calling graph generation function to assist users asking graph only use the functions you have been provided with. Reply TERMINATE "
-                   "when the task is done.",)
-        
+            system_message=(
+            "You are a helpful assistant responsible for answering annotation-related queries, "
+            "such as identifying genes, proteins, terms, SNPs, transcripts, or interactions. "
+            "You can only use the functions provided to you. Reply 'TERMINATE' when the task is done."),)
+
         rag_agent = AssistantAgent(
             name="rag_retrival",
             llm_config=llm_config,
-            system_message="you are helpful assistant on retriving similiar information from rag only use the functions you have been provided with. Reply TERMINATE "
-                   "when the task is done.",)
-
+            system_message=(
+                "You are a helpful assistant responsible for retrieving general information from the database. "
+                "You can only use the functions provided to you. Reply 'TERMINATE' when the task is done."
+               ),)
 
         user_agent = UserProxyAgent(
             name="user",
