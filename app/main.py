@@ -10,6 +10,7 @@ from .summarizer import GraphSummarizer
 from .llm_handle.llm_models import LLMInterface, get_llm_model
 
 
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ class AiAssistance:
 
         @user_agent.register_for_execution()
         @rag_agent.register_for_llm(description="answer for general questions")
-        def get_general_response(query:str, user_id: str) -> str:
+        def get_general_response(query:Annotated[str,"the question it self"], user_id: str) -> str:
             try:
                 response = self.rag.result(query, user_id)
                 return response + "TERMINATE"
@@ -81,7 +82,8 @@ class AiAssistance:
         
         @user_agent.register_for_execution()
         @graph_agent.register_for_llm(description="handling graph generation")
-        def generate_graph(query:str):
+
+        def generate_graph(query:Annotated[str,"the question it self"]):
             try:
                 response = self.annotation_graph.generate_graph(query)
                 return response + "TERMINATE"
@@ -96,11 +98,12 @@ class AiAssistance:
             llm_config=llm_config,
             human_input_mode="NEVER")
 
-        
         user_agent.initiate_chat(group_manager, message=message, clear_history=False)
 
         response = group_chat.messages[2]['content']
         return response
+
+    
 
     def assistant_response(self,query,graph,user_id,graph_id):
         
@@ -121,3 +124,5 @@ class AiAssistance:
 
         else:
             return "please provide appropriate question"
+
+
