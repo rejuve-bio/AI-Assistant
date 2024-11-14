@@ -1,25 +1,81 @@
+import logging
 from flask import Flask
 from dotenv import load_dotenv
+from app.annotation_graph.schema_handler import SchemaHandler
+from app.llm_handle.llm_models import get_llm_model
+from app.main import AiAssistance
 from .routes import main_bp
 import os
 import yaml
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def load_config():
-    load_dotenv()
-    
+    """Loads the application configuration from a YAML file."""
+    logger.info('Loading environment variables from .env file')
+    load_dotenv()  # Load environment variables from .env
+
     config_path = './config/config.yaml'
-    with open(config_path, 'r') as config_file:
-        return yaml.safe_load(config_file)
+    logger.info(f'Reading configuration from {config_path}')
     
+    try:
+        with open(config_path, 'r') as config_file:
+            config = yaml.safe_load(config_file)
+            logger.info('Configuration loaded successfully')
+            return config
+    except Exception as e:
+        logger.error(f'Error loading config file: {e}')
+        raise
+
 def create_app():
+    """Creates and configures the Flask application."""
+    logger.info('Creating Flask app')
     app = Flask(__name__)
     
     config = load_config()
     app.config.update(config)
-    app.config['ANNOTATION_AUTH_TOKEN'] = os.getenv('ANNOTATION_AUTH_TOKEN')
-    
+    logger.info('App config updated with loaded configuration')
+
+    # Initialize SchemaHandler
+    schema_handler = SchemaHandler(
+        schema_config_path='./config/schema_config.yaml', 
+        biocypher_config_path='./config/biocypher_config.yaml',
+        enhanced_schema_path='./config/enhanced_schema.txt'
+    )
+    logger.info('SchemaHandler initialized')
+
+    # Initialize Basic LLM model
+    basic_llm_provider = os.getenv('BASIC_LLM_PROVIDER')
+    basic_llm_version = os.getenv('BASIC_LLM_VERSION')
+    logger.info(f'Initializing BASIC LLM model with provider={basic_llm_provider} and version={basic_llm_version}')
+    basic_llm = get_llm_model(model_provider=basic_llm_provider, model_version=basic_llm_version)
+    logger.info('BASIC LLM model initialized successfully')
+
+    # Initialize Advanced LLM model
+    advanced_llm_provider = os.getenv('ADVANCED_LLM_PROVIDER')
+    advanced_llm_version = os.getenv('ADVANCED_LLM_VERSION')
+    logger.info(f'Initializing ADVANCED LLM model with provider={advanced_llm_provider} and version={advanced_llm_version}')
+    advanced_llm = get_llm_model(model_provider=advanced_llm_provider, model_version=advanced_llm_version)
+    logger.info('ADVANCED LLM model initialized successfully')
+
+    # Initialize AiAssistance
+    ai_assistant = AiAssistance(advanced_llm, basic_llm, schema_handler)
+    logger.info('AiAssistance initialized')
+
+    # Store objects in app config
+    app.config['basic_llm'] = basic_llm
+    app.config['advanced_llm'] = advanced_llm
+    app.config['schema_handler'] = schema_handler
+    app.config['ai_assistant'] = ai_assistant
+    logger.info('App config populated with models and assistants')
+
+    # Register routes
     app.register_blueprint(main_bp)
-    
+    logger.info('Blueprint "main_bp" registered')
+
+    logger.info('Flask app created successfully')
     return app
-    
+
+from app import routes
