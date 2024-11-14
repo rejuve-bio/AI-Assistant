@@ -40,7 +40,7 @@ class Graph:
         logger.info("Starting knowledge graph query...")
 
         payload = {"requests": json_query}
-        auth_token = current_app.config['ANNOTATION_AUTH_TOKEN']
+        auth_token = os.getenv('ANNOTATION_AUTH_TOKEN')
         
         try:
             logger.debug(f"Sending request to {self.kg_service_url} with payload: {payload}")
