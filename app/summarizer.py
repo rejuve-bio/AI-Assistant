@@ -5,12 +5,13 @@ import traceback
 import json
 import tiktoken
 from app.prompts.summarizer_prompts import SUMMARY_PROMPT, SUMMARY_PROMPT_BASED_ON_USER_QUERY
-class Graph_Summarizer: 
+
+
+class GraphSummarizer: 
     '''
     Handles graph-related operations like processing nodes, edges, generating responses ...
     '''
     def __init__(self,llm) -> None:
-        self.llm = llm
         self.llm = llm
         max_token=0
         self.max_token=max_token

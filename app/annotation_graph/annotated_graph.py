@@ -10,12 +10,12 @@ from app.annotation_graph.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import LLMInterface
 from app.prompts.annotation_prompts import EXTRACT_RELEVANT_INFORMATION_PROMPT, JSON_CONVERSION_PROMPT, SELECT_PROPERTY_VALUE_PROMPT
 from .dfs_handler import *
-from .llm_handler import *
 
-load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 class Graph:
     def __init__(self, llm: LLMInterface, schema_handler:SchemaHandler) -> None:
@@ -23,8 +23,9 @@ class Graph:
         self.schema_handler = schema_handler
         self.enhanced_schema = schema_handler.enhanced_schema # Enhanced or preprocessed schema
         self.neo4j = Neo4jConnection(uri=os.getenv('NEO4J_URI'), 
-                                            username=os.getenv('NEO4J_USERNAME'), 
-                                            password=os.getenv('NEO4J_PASSWORD'))
+                                    username=os.getenv('NEO4J_USERNAME'), 
+                                    password=os.getenv('NEO4J_PASSWORD'))
+        self.kg_service_url = os.getenv('ANNOTATION_SERVICE_URL')
 
     def query_knowledge_graph(self, json_query):
         """
@@ -39,13 +40,12 @@ class Graph:
         logger.info("Starting knowledge graph query...")
 
         payload = {"requests": json_query}
-        kg_service_url = current_app.config['ANNOTATION_SERVICE_URL']
         auth_token = current_app.config['ANNOTATION_AUTH_TOKEN']
         
         try:
-            logger.debug(f"Sending request to {kg_service_url} with payload: {payload}")
+            logger.debug(f"Sending request to {self.kg_service_url} with payload: {payload}")
             response = requests.post(
-                kg_service_url,
+                self.kg_service_url,
                 json=payload,
                 headers={"Authorization": f"Bearer {auth_token}"}
             )
@@ -60,50 +60,37 @@ class Graph:
             return {"error": f"Failed to query knowledge graph: {str(e)}"}
 
     def generate_graph(self, query):
-        intermediate_steps = {
-            "relevant_information": "",
-            "initial_json": "",
-            "validation_report": "",
-            "validated_json": "",
-            "queried_graph": "",
-            "answer": "No result found"
-        }
         try:
             logger.info(f"Starting annotation query processing for question: '{query}'")
 
             # Extract relevant information
             relevant_information = self._extract_relevant_information(query)
-            intermediate_steps["relevant_information"] = relevant_information
             
             # Convert to initial JSON
             initial_json = self._convert_to_annotation_json(relevant_information, query)
-            intermediate_steps["initial_json"] = copy.deepcopy(initial_json)
             
             # Validate and update
             validation = self._validate_and_update(initial_json)
-            intermediate_steps["validation_report"] = validation['validation_report']
             
             # If validation failed, return the intermediate steps
             if validation["validation_report"]["validation_status"] == "failed":
                 logger.error("Validation failed for the constructed json query")
-                return intermediate_steps
+                return {"error": f"Unable to generate graph from the query: {query}"}
+            
             # Use the updated JSON for subsequent steps
             validated_json = validation["updated_json"]
-            intermediate_steps["validated_json"] = validated_json
             
             # Query knowledge graph with validated JSON
             graph = self.query_knowledge_graph(validated_json)
-            intermediate_steps["queried_graph"] = graph
         
             # Generate final answer using validated JSON
-            final_answer = self._provide_text_response(query, validated_json, graph)
-            intermediate_steps["answer"] = final_answer
-            
+            # final_answer = self._provide_text_response(query, validated_json, graph)
             logger.info("Completed query processing.")
-            return intermediate_steps
+            return graph
+            
         except Exception as e:
             logger.error(f"An error occurred during graph generation: {e}")
-            return intermediate_steps
+            return {"error": f"Unable to generate graph from the query: {query}"}
 
     def _extract_relevant_information(self, query):
         try:

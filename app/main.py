@@ -1,14 +1,14 @@
 import os
+import logging
+from flask import current_app
+from app.annotation_graph.schema_handler import SchemaHandler
 from app.rag.query import RAG
 from dotenv import load_dotenv
-from .annotation_graph.annotated_graph import Graph
-from .cache import ConversationCache
-from .summarizer import Graph_Summarizer
-from .llm_handle.llm_models import LLMInterface,OpenAIModel
-import traceback
-import logging
 from autogen import AssistantAgent, UserProxyAgent, GroupChat, GroupChatManager
-from typing import Annotated
+from .annotation_graph.annotated_graph import Graph
+from .summarizer import GraphSummarizer
+from .llm_handle.llm_models import LLMInterface, get_llm_model
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -25,11 +25,12 @@ llm_config = {
 
 class AiAssistance:
 
-    def __init__(self,llm:LLMInterface,schema) -> None:
-        self.llm = llm
-        self.schema = schema
-        self.annotation_graph = Graph(llm,schema)
-        self.rag = RAG(self.llm)
+    def __init__(self, advanced_llm:LLMInterface, basic_llm:LLMInterface, schema_handler:SchemaHandler) -> None:
+        self.advanced_llm = advanced_llm
+        self.basic_llm = basic_llm
+        self.annotation_graph = Graph(advanced_llm, schema_handler)
+        self.graph_summarizer = GraphSummarizer(basic_llm)
+        self.rag = RAG(advanced_llm)
 
         self.message_history = {
             "rag_agent": [],
@@ -38,7 +39,7 @@ class AiAssistance:
             }
      
     def summarize_graph(self,graph,query):
-        summary = Graph_Summarizer(self.llm).summary(graph,query)
+        summary = self.graph_summarizer.summary(graph,query)
         return summary,None
 
     def agent(self,message,user_id):
