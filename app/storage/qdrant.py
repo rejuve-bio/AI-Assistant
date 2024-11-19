@@ -127,7 +127,6 @@ class Qdrant:
         return None
 
     def _retrieve_memory(self,user_id,embedding=None):
-        print("user_id", user_id)
         if embedding:
             result = self.client.search(
                     collection_name=USER_COLLECTION,

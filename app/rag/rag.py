@@ -11,8 +11,8 @@ from ..storage.qdrant import Qdrant
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION")
-USER_COLLECTION = os.getenv("USER_COLLECTION")
+VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION","site_info")
+USER_COLLECTION = os.getenv("USER_COLLECTION","users_memory")
 
 class RAG:
 
