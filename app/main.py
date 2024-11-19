@@ -2,7 +2,7 @@ import os
 import logging
 from flask import current_app
 from app.annotation_graph.schema_handler import SchemaHandler
-from app.rag.query import RAG
+from app.rag.rag import RAG
 from dotenv import load_dotenv
 from autogen import AssistantAgent, UserProxyAgent, GroupChat, GroupChatManager
 from .annotation_graph.annotated_graph import Graph
