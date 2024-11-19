@@ -10,6 +10,12 @@ from .summarizer import GraphSummarizer
 from .llm_handle.llm_models import LLMInterface, get_llm_model
 
 
+from typing import Annotated
+from app.storage.qdrant import Qdrant
+from app.prompts.conversation_handler import conversation_prompt
+from app.llm_handle.llm_models import openai_embedding_model
+from app.memory_layer import MemoryManager
+import asyncio
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -49,15 +55,17 @@ class AiAssistance:
             name="gragh_generate",
             llm_config=llm_config,
             system_message=(
-            "You are a helpful assistant responsible for answering annotation-related queries, "
-            "such as identifying genes, proteins, terms, SNPs, transcripts, or interactions. "
-            "You can only use the functions provided to you. Reply 'TERMINATE' when the task is done."),)
+           "You are a knowledgeable assistant specializing in answering questions related to biological annotations. This includes identifying genes, proteins, terms, SNPs, transcripts, and interactions."
+           "You have access to a bio knowledge graph to retrieve relevant data."
+           "Please note that you can only use the functions provided to you. When your task is complete, respond with 'TERMINATE' to indicate that no further action is required."
+            )
+        )
 
         rag_agent = AssistantAgent(
             name="rag_retrival",
             llm_config=llm_config,
             system_message=(
-                "You are a helpful assistant responsible for retrieving general information from the database. "
+                "You are a helpful assistant responsible for retrieving general informations"
                 "You can only use the functions provided to you. Reply 'TERMINATE' when the task is done."
                ),)
 
@@ -70,8 +78,8 @@ class AiAssistance:
 
 
         @user_agent.register_for_execution()
-        @rag_agent.register_for_llm(description="answer for general questions")
-        def get_general_response(query:Annotated[str,"the question it self"], user_id: str) -> str:
+        @rag_agent.register_for_llm(description="Retrieve information for general knowledge queries.")
+        def get_general_response(query:Annotated[str,"always pass the question it self"], user_id: str) -> str:
             try:
                 response = self.rag.result(query, user_id)
                 return response + "TERMINATE"
@@ -81,9 +89,8 @@ class AiAssistance:
 
         
         @user_agent.register_for_execution()
-        @graph_agent.register_for_llm(description="handling graph generation")
-
-        def generate_graph(query:Annotated[str,"the question it self"]):
+        @graph_agent.register_for_llm(description="Generate and handle bio-knowledge graphs for annotation-related queries.")
+        def generate_graph(query:Annotated[str,f"always pass the question it self"]):
             try:
                 response = self.annotation_graph.generate_graph(query)
                 return response + "TERMINATE"
@@ -103,7 +110,27 @@ class AiAssistance:
         response = group_chat.messages[2]['content']
         return response
 
-    
+    async def save_memory(self,query,user_id):
+        # saving the new query of the user to a memorymanager
+        memory_manager = MemoryManager(self.llm, embedding_model=openai_embedding_model)
+        memory_manager.add_memory(query, user_id)
+
+    async def assistant(self,query,user_id):
+        # retrieving saved memories
+        context = self.client._retrieve_memory(user_id=user_id)
+        prompt = conversation_prompt.format(context=context,query=query)
+        response = self.llm.generate(prompt)
+
+        if response:
+            if "response:" in response:
+                result = response.split("response:")[1].strip()
+                return result
+            elif "question:" in response:
+                refactored_question = response.split("question:")[1].strip()
+
+        await self.save_memory(query,user_id)
+        response = self.agent(refactored_question, user_id)
+        return response
 
     def assistant_response(self,query,graph,user_id,graph_id):
         
@@ -119,7 +146,7 @@ class AiAssistance:
 
         if query:
             logger.info("agent calling")
-            response = self.agent(query, user_id)
+            response = asyncio.run(self.assistant(query, user_id))
             return response
 
         else:

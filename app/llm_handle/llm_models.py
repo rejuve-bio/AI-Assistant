@@ -111,10 +111,10 @@ class OpenAIModel(LLMInterface):
         self.model_name = model_name
         openai.api_key = self.api_key
     
-    def generate(self, prompt: str) -> Dict[str, Any]:
+    def generate(self,prompt: str,system_prompt="you are a helpful assistant") -> Dict[str, Any]:
         response = openai.chat.completions.create(
             model=self.model_name,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "system", "content": system_prompt},{"role": "user", "content": prompt}],
             temperature=0,
             max_tokens=1000
         )
