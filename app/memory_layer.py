@@ -64,8 +64,9 @@ class MemoryManager:
             new_message_embeddings[fact] = embedded_message
             existing_memory = self.qdrant_client_retrieved_user_similar_preferences(user_id, embedded_message[0])
 
-            for mem in existing_memory:
-                retrieved_old_memory.append({"id": mem["id"], "text": mem["content"]})
+            if existing_memory:
+                for mem in existing_memory:
+                    retrieved_old_memory.append({"id": mem["id"], "text": mem["content"]})
 
         temp_uuid_mapping = {str(idx): item["id"] for idx, item in enumerate(retrieved_old_memory)}
         for idx, item in enumerate(retrieved_old_memory):
