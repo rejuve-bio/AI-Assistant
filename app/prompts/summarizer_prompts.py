@@ -18,10 +18,8 @@ SUMMARY_PROMPT_CHUNKING = """
                 Instructions:\n
                   - Count and list important metrics, such as the number of nodes and edges.    
                   - Identify any central nodes and explain their role in the network.     
-                  - Highlight any interesting patterns, such as gene-transcript relationships, and relationships between proteins and genes.    
                   - Mention any notable structures in the graph, such as chains, hubs, or clusters.      
                   - Discuss any specific characteristics of the data, such as alternative splicing or regulatory mechanisms that may be involved.     
-                  - Explain any notable gene-transcript relationships, including any genes that have a higher number of associated transcripts or complex transcriptional     
                   - Format the response clearly and concisely.\n\n
                 Count and list important metrics
                 Identify any central nodes or relationships and highlight any important patterns.
@@ -55,9 +53,8 @@ Each paragraph should address one of the following points:
 - Identify key trends and relationships in the graph data.
 - Count and list important metrics, such as the number of nodes and edges.
 - Identify any central nodes and explain their role in the network.
-- Highlight any interesting patterns, such as gene-transcript relationships, and relationships between proteins and genes.
 - Mention any notable structures in the graph, such as chains, hubs, or clusters.
 - Discuss any specific characteristics of the data, such as alternative splicing or regulatory mechanisms that may be involved.
-- Explain any notable gene-transcript relationships, including any genes that have a higher number of associated transcripts or complex transcriptional processes.
+- Explain any notable relationships, including nodes that have a higher number of associated related nodes or complex processes.
 Addressed points in a separate paragraph, with clear and concise descriptions. Make sure not to use bullet points or numbered lists, but instead focus on delivering the content in paragraph form.
 """
