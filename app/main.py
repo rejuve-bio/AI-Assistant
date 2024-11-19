@@ -1,5 +1,5 @@
 import os
-from app.rag.query import RAG
+from app.rag.rag import RAG
 from dotenv import load_dotenv
 from .annotation_graph.annotated_graph import Graph
 from .cache import ConversationCache
