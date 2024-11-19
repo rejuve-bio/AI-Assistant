@@ -151,7 +151,6 @@ class Qdrant:
                         }
 
                 return [response[0]]
-            return response
         else:
             data = self.client.scroll(
                 collection_name=USER_COLLECTION,

@@ -2,7 +2,6 @@ import os
 from app.rag.rag import RAG
 from dotenv import load_dotenv
 from .annotation_graph.annotated_graph import Graph
-from .cache import ConversationCache
 from .summarizer import Graph_Summarizer
 from .llm_handle.llm_models import LLMInterface,OpenAIModel
 import traceback
