@@ -26,7 +26,7 @@ class RAG:
                 query_str = [query_str]
 
             query = {}
-            embeddings = embedding_model(query_str)
+            embeddings = embedding_model(query_str, self.llm)
             if not embeddings or len(embeddings) == 0:
                 logger.error("Failed to generate dense embeddings")
                 return None
