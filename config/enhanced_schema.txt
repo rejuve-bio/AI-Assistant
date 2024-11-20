@@ -1,4 +1,4 @@
-## Schema:
+### Schema:
 
 #### Node Properties:
 - **gene**
@@ -117,7 +117,9 @@
   - `variant_type`: STRING Example: "duplication"
   - `chr`: STRING Example: "chr1"
 
-Note transcription factor have label `gene`
+Note 
+- transcription factor have label `gene`
+- tfbs means transcription factor binding site
 
 #### Relationships:
 (:gene)-[:expressed_in]->(:uberon)
@@ -127,7 +129,7 @@ Note transcription factor have label `gene`
 (:gene)-[:transcribed_to]->(:transcript)
 (:gene)-[:genes_pathways]->(:pathway)
 (:gene)-[:in_tad_region]->(:tad)
-(:gene)-[:regulates]->(:gene)
+(:gene)-[:regulates]->(:gene) // This is transcription factor to gene association
 (:gene)-[:tfbs_snp]->(:snp)
 (:gene)-[:binds_to]->(:tfbs)
 (:transcript)-[:includes]->(:exon)
@@ -149,6 +151,7 @@ Note transcription factor have label `gene`
 (:protein)-[:interacts_with]->(:protein)
 (:protein)-[:translation_of]->(:transcript)
 (:snp)-[:closest_gene]->(:gene)
+(:snp)-[:located_in]->(:gene)
 (:snp)-[:eqtl_association]->(:gene)
 (:snp)-[:activity_by_contact]->(:gene)
 (:snp)-[:chromatin_state]->(:uberon)

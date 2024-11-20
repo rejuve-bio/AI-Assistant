@@ -22,7 +22,9 @@ non_coding_rna {start: STRING, end: STRING, rna_type: STRING, id: STRING, chr: S
 tad {end: STRING, id: STRING, chr: STRING, genes: STRING, start: STRING}
 structural_variant {start: STRING, end: STRING, id: STRING, evidence: STRING, variant_accession: STRING, variant_type: STRING, chr: STRING}
 
-Note transcription factor have label `gene`
+Note 
+- transcription factor have label `gene`
+- tfbs means transcription factor binding site
 
 #### Relationships:
 (:gene)-[:expressed_in]->(:uberon)
@@ -32,7 +34,7 @@ Note transcription factor have label `gene`
 (:gene)-[:transcribed_to]->(:transcript)
 (:gene)-[:genes_pathways]->(:pathway)
 (:gene)-[:in_tad_region]->(:tad)
-(:gene)-[:regulates]->(:gene)
+(:gene)-[:regulates]->(:gene) // This is transcription factor to gene association
 (:gene)-[:tfbs_snp]->(:snp)
 (:gene)-[:binds_to]->(:tfbs)
 (:transcript)-[:includes]->(:exon)
@@ -53,6 +55,7 @@ Note transcription factor have label `gene`
 (:promoter)-[:associated_with]->(:gene)
 (:protein)-[:interacts_with]->(:protein)
 (:protein)-[:translation_of]->(:transcript)
+(:snp)-[:located_in]->(:gene)
 (:snp)-[:closest_gene]->(:gene)
 (:snp)-[:eqtl_association]->(:gene)
 (:snp)-[:activity_by_contact]->(:gene)

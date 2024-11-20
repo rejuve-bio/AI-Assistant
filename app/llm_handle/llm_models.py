@@ -49,33 +49,46 @@ def openai_embedding_model(batch):
     
     return embeddings
 
+def get_llm_model(model_provider, model_version=None):
+    # model_type = config['LLM_MODEL']
+
+    if model_provider == 'openai':
+        openai_api_key = os.getenv('OPENAI_API_KEY')
+        if not openai_api_key:
+            raise ValueError("OpenAI API key not found")
+        
+        return OpenAIModel(openai_api_key, model_version or "gpt-3.5-turbo")
+    elif model_provider == 'gemini':
+        gemini_api_key = os.getenv('GEMINI_API_KEY')
+        if not gemini_api_key:
+            raise ValueError("Gemini API key not found")
+        return GeminiModel(gemini_api_key, model_version or "gemini-pro")
+    else:
+        raise ValueError("Invalid model type in configuration")
+
+
 class LLMInterface:
-    def generate(self, prompt: str) -> Dict[str, Any]:
+    def generate(self, prompt: str, **kwargs) -> Dict[str, Any]:
         raise NotImplementedError("Subclasses must implement the generate method")
 
 
-class GeminiModel(LLMInterface):
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
-    
-    def generate(self, prompt: str) -> Dict[str, Any]:
-        headers = {
-            "Content-Type": "application/json"
-        }
-        data = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0,
-                "topK": 1,
-                "topP": 1
-            }
-        }
-        response = requests.post(f"{self.api_url}?key={self.api_key}", headers=headers, json=data)
-        response.raise_for_status()
+import google.generativeai as genai
 
-        content = response.json()['candidates'][0]['content']['parts'][0]['text']
-    
+class GeminiModel(LLMInterface):
+    def __init__(self, api_key: str, model_name="gemini-pro"): 
+        genai.configure(api_key=api_key)
+        self.model = genai.GenerativeModel(model_name or "gemini-pro")
+
+    def generate(self, prompt: str, temperature=0.0, top_k=1) -> Dict[str, Any]: 
+        response = self.model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0,
+                top_k=top_k
+            )
+        )
+        content = response.text
+
         json_content = self._extract_json_from_codeblock(content)
         try:
             return json.loads(json_content)

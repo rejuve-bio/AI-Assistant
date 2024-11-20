@@ -1,18 +1,26 @@
 from collections import defaultdict
 import json
+import logging
 from biocypher import BioCypher
-from flask import jsonify
+from flask import current_app, jsonify
 import yaml
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 class SchemaHandler:
-    def __init__(self, schema_config_path, biocypher_config_path):
-        self.bcy = BioCypher(schema_config_path=schema_config_path, biocypher_config_path=biocypher_config_path)
-        self.schema = self.bcy._get_ontology_mapping()._extend_schema()
-        self.processed_schema = self.process_schema(self.schema) 
-        self.parent_nodes = self.get_parent_nodes()
-        self.adj_list = self.get_adjacency_list()
-        self.schema_graph = self.build_graph(self.adj_list)
-        self.graph_file = 'graph.pkl'
+    def __init__(self, schema_config_path, biocypher_config_path, enhanced_schema_path):
+        try:
+            self.bcy = BioCypher(schema_config_path=schema_config_path, biocypher_config_path=biocypher_config_path)
+            self.graph_file = 'graph.pkl'
+            self.enhanced_schema = open(enhanced_schema_path, 'r').read()
+            self.schema = self.bcy._get_ontology_mapping()._extend_schema()
+            self.processed_schema = self.process_schema(self.schema) 
+            self.parent_nodes = self.get_parent_nodes()
+            self.adj_list = self.get_adjacency_list()
+            self.schema_graph = self.build_graph(self.adj_list)
+        except Exception as e:
+            logger.error(f"Unable to initialize Schema Handler: {e}")
 
     def process_schema(self, schema):
         process_schema = {}
