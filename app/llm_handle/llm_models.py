@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 EMBEDDING_MODEL = "text-embedding-3-small"
+GEMINI_EMBEDDING_MODEL="models/text-embedding-004"
 api = os.getenv('OPENAI_API_KEY')
 
     
@@ -48,6 +49,34 @@ def openai_embedding_model(batch):
             time.sleep(sleep_time)
     
     return embeddings
+
+# Function to generate gemini embeddings
+def gemini_embedding_model(batch):
+    embeddings = []
+    batch_size = 1000
+    sleep_time = 10
+
+    for i in range(0, len(batch), batch_size):
+        batch_segment = batch[i:i + batch_size]
+        print(batch_segment)
+        logger.info(f"Embedding batch {i // batch_size + 1} of {len(batch) // batch_size + 1}")
+
+    
+        genai.configure(api_key=api)
+        try:
+                response = genai.embed_content(
+                    model=GEMINI_EMBEDDING_MODEL,
+                    content=batch_segment
+                )
+                batch_embeddings = response['embedding']
+                embeddings.extend(batch_embeddings)
+
+        except Exception as e:
+            logger.error(f"An unexpected error occurred: {e}")
+            time.sleep(sleep_time)
+    
+    return embeddings
+
 
 def get_llm_model(model_provider, model_version=None):
     # model_type = config['LLM_MODEL']
