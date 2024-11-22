@@ -79,14 +79,15 @@ class GeminiModel(LLMInterface):
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel(model_name or "gemini-pro")
 
-    def generate(self, prompt: str, temperature=0.0, top_k=1) -> Dict[str, Any]: 
+    def generate(self, prompt: str,system_prompt=None, temperature=0.0, top_k=1) -> Dict[str, Any]:
         response = self.model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                temperature=0,
-                top_k=top_k
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0,
+                    top_k=top_k
+                )
             )
-        )
+            
         content = response.text
 
         json_content = self._extract_json_from_codeblock(content)
@@ -111,13 +112,21 @@ class OpenAIModel(LLMInterface):
         self.model_name = model_name
         openai.api_key = self.api_key
     
-    def generate(self, prompt: str) -> Dict[str, Any]:
-        response = openai.chat.completions.create(
+    def generate(self, prompt: str, system_prompt=None) -> Dict[str, Any]:
+        if system_prompt:
+            response = openai.chat.completions.create(
             model=self.model_name,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
             temperature=0,
             max_tokens=1000
         )
+        else:
+            response = openai.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=1000
+            )
         content = response.choices[0].message.content
         
         json_content = self._extract_json_from_codeblock(content)

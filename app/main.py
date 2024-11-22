@@ -5,13 +5,11 @@ from app.annotation_graph.schema_handler import SchemaHandler
 from app.rag.rag import RAG
 from dotenv import load_dotenv
 from .annotation_graph.annotated_graph import Graph
-from .summarizer import Graph_Summarizer
 from .llm_handle.llm_models import LLMInterface,OpenAIModel
 import traceback
 import logging
 from autogen import AssistantAgent, UserProxyAgent, GroupChat, GroupChatManager
 from .annotation_graph.annotated_graph import Graph
-from .summarizer import GraphSummarizer
 from .llm_handle.llm_models import LLMInterface, get_llm_model
 
 
@@ -20,6 +18,7 @@ from app.storage.qdrant import Qdrant
 from app.prompts.conversation_handler import conversation_prompt
 from app.llm_handle.llm_models import openai_embedding_model
 from app.memory_layer import MemoryManager
+from app.summarizer import Graph_Summarizer
 import asyncio
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -41,8 +40,9 @@ class AiAssistance:
         self.advanced_llm = advanced_llm
         self.basic_llm = basic_llm
         self.annotation_graph = Graph(advanced_llm, schema_handler)
-        self.graph_summarizer = GraphSummarizer(basic_llm)
+        self.graph_summarizer = Graph_Summarizer(basic_llm)
         self.rag = RAG(advanced_llm)
+        self.client = Qdrant()
 
         self.message_history = {
             "rag_agent": [],
@@ -62,7 +62,7 @@ class AiAssistance:
             system_message=(
            "You are a knowledgeable assistant specializing in answering questions related to biological annotations. This includes identifying genes, proteins, terms, SNPs, transcripts, and interactions."
            "You have access to a bio knowledge graph to retrieve relevant data."
-           "Please note that you can only use the functions provided to you. When your task is complete, respond with 'TERMINATE' to indicate that no further action is required."
+           "Please note that you can only use the functions provided to you. When your task is complete, Reply 'TERMINATE' when the task is done."
             )
         )
 
@@ -87,10 +87,10 @@ class AiAssistance:
         def get_general_response(query:Annotated[str,"always pass the question it self"], user_id: str) -> str:
             try:
                 response = self.rag.result(query, user_id)
-                return response + "TERMINATE"
+                return response
             except Exception as e:
                 logger.error("Error in retrieving response", exc_info=True)
-                return "Error in retrieving response." + "TERMINATE"
+                return "Error in retrieving response."
 
         
         @user_agent.register_for_execution()
@@ -98,13 +98,13 @@ class AiAssistance:
         def generate_graph(query:Annotated[str,f"always pass the question it self"]):
             try:
                 response = self.annotation_graph.generate_graph(query)
-                return response + "TERMINATE"
+                return response
             except Exception as e:
                 logger.error("Error in generating graph", exc_info=True)
-                return "Error in generating graph." +"TERMINATE"
+                return f"I couldn't generate a graph for the given question {query} please try again."
 
 
-        group_chat = GroupChat(agents=[user_agent, rag_agent, graph_agent], messages=[],max_round=120)
+        group_chat = GroupChat(agents=[user_agent, rag_agent, graph_agent], messages=[],max_round=3)
         group_manager = GroupChatManager(
             groupchat=group_chat,
             llm_config=llm_config,
@@ -117,14 +117,14 @@ class AiAssistance:
 
     async def save_memory(self,query,user_id):
         # saving the new query of the user to a memorymanager
-        memory_manager = MemoryManager(self.llm, embedding_model=openai_embedding_model)
+        memory_manager = MemoryManager(self.advanced_llm, embedding_model=openai_embedding_model)
         memory_manager.add_memory(query, user_id)
 
     async def assistant(self,query,user_id):
         # retrieving saved memories
         context = self.client._retrieve_memory(user_id=user_id)
         prompt = conversation_prompt.format(context=context,query=query)
-        response = self.llm.generate(prompt)
+        response = self.advanced_llm.generate(prompt)
 
         if response:
             if "response:" in response:

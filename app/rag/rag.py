@@ -100,11 +100,8 @@ class RAG:
             query["dense"] = embed.reshape(-1, 1536).tolist()[0]
 
             result = self.client.retrieve_data(VECTOR_COLLECTION, query)
-            if result:
-                logger.info("Query retrieved successfully.")
-            else:
-                logger.warning("No results found for the query.")
-            return result    
+            logger.warning("results found for the query.")
+            return result
         except Exception as e:
             logger.error(f"An error occurred during query processing: {e}")
             traceback.print_exc()

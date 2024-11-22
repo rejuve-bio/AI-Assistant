@@ -1,30 +1,9 @@
-import json
-from flask import Blueprint, request, jsonify, current_app,Response
+from flask import Blueprint, request, current_app
 from dotenv import load_dotenv
-from .llm_handle.llm_models import GeminiModel, OpenAIModel
-
-import requests
-import os
-from .main import AiAssistance
 import traceback
 
-main_bp = Blueprint('main', __name__) 
-def get_llm_model(config):
-    model_type = config['LLM_MODEL']
-
-    if model_type == 'openai':
-        openai_api_key = os.getenv('OPENAI_API_KEY')
-        if not openai_api_key:
-            raise ValueError("OpenAI API key not found")
-        return OpenAIModel(openai_api_key, 'gpt-4o')
-    elif model_type == 'gemini':
-        gemini_api_key = os.getenv('GEMINI_API_KEY')
-        if not gemini_api_key:
-            raise ValueError("Gemini API key not found")
-        return GeminiModel(gemini_api_key)
-    else:
-        raise ValueError("Invalid model type in configuration")
-
+load_dotenv()
+main_bp = Blueprint('main', __name__)
 
 @main_bp.route('/query', methods=['POST'])
 def process_query():
@@ -40,10 +19,8 @@ def process_query():
         user = data.get('user', None)
         graph_id = data.get('graph_id',None)
 
-        config = current_app.config
-        schema_text = open(config['SCHEMA_PATH'], 'r').read()
-        llm = get_llm_model(config)   
-        response = AiAssistance(llm,schema_text).assistant_response(query,graph,user,graph_id)
+        ai_assistant = current_app.config['ai_assistant']
+        response = ai_assistant.assistant_response(query, graph, user, graph_id)
         return response
     except:
         traceback.print_exc()
