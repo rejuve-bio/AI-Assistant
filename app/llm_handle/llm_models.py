@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 EMBEDDING_MODEL = "text-embedding-3-small"
+GEMINI_EMBEDDING_MODEL="models/text-embedding-004"
 api = os.getenv('OPENAI_API_KEY')
 
     
@@ -49,6 +50,34 @@ def openai_embedding_model(batch):
     
     return embeddings
 
+# Function to generate gemini embeddings
+def gemini_embedding_model(batch):
+    embeddings = []
+    batch_size = 1000
+    sleep_time = 10
+
+    for i in range(0, len(batch), batch_size):
+        batch_segment = batch[i:i + batch_size]
+        print(batch_segment)
+        logger.info(f"Embedding batch {i // batch_size + 1} of {len(batch) // batch_size + 1}")
+
+    
+        genai.configure(api_key=api)
+        try:
+                response = genai.embed_content(
+                    model=GEMINI_EMBEDDING_MODEL,
+                    content=batch_segment
+                )
+                batch_embeddings = response['embedding']
+                embeddings.extend(batch_embeddings)
+
+        except Exception as e:
+            logger.error(f"An unexpected error occurred: {e}")
+            time.sleep(sleep_time)
+    
+    return embeddings
+
+
 def get_llm_model(model_provider, model_version=None):
     # model_type = config['LLM_MODEL']
 
@@ -79,14 +108,15 @@ class GeminiModel(LLMInterface):
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel(model_name or "gemini-pro")
 
-    def generate(self, prompt: str, temperature=0.0, top_k=1) -> Dict[str, Any]: 
+    def generate(self, prompt: str,system_prompt=None, temperature=0.0, top_k=1) -> Dict[str, Any]:
         response = self.model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                temperature=0,
-                top_k=top_k
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0,
+                    top_k=top_k
+                )
             )
-        )
+            
         content = response.text
 
         json_content = self._extract_json_from_codeblock(content)
@@ -111,13 +141,21 @@ class OpenAIModel(LLMInterface):
         self.model_name = model_name
         openai.api_key = self.api_key
     
-    def generate(self, prompt: str) -> Dict[str, Any]:
-        response = openai.chat.completions.create(
+    def generate(self, prompt: str, system_prompt=None) -> Dict[str, Any]:
+        if system_prompt:
+            response = openai.chat.completions.create(
             model=self.model_name,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
             temperature=0,
             max_tokens=1000
         )
+        else:
+            response = openai.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=1000
+            )
         content = response.choices[0].message.content
         
         json_content = self._extract_json_from_codeblock(content)
