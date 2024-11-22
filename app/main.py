@@ -1,22 +1,14 @@
-import os
+
 import logging
-from flask import current_app
+from dotenv import load_dotenv
 from app.annotation_graph.schema_handler import SchemaHandler
 from app.rag.rag import RAG
-from dotenv import load_dotenv
 from .annotation_graph.annotated_graph import Graph
-from .llm_handle.llm_models import LLMInterface,OpenAIModel
-import traceback
-import logging
+from .llm_handle.llm_models import LLMInterface,OpenAIModel,get_llm_model,openai_embedding_model
 from autogen import AssistantAgent, UserProxyAgent, GroupChat, GroupChatManager
-from .annotation_graph.annotated_graph import Graph
-from .llm_handle.llm_models import LLMInterface, get_llm_model
-
-
 from typing import Annotated
 from app.storage.qdrant import Qdrant
 from app.prompts.conversation_handler import conversation_prompt
-from app.llm_handle.llm_models import openai_embedding_model
 from app.memory_layer import MemoryManager
 from app.summarizer import Graph_Summarizer
 import asyncio
@@ -26,39 +18,31 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-llm_config = {
-    "model": "gpt-4",
-    "api_key": OPENAI_API_KEY,
-    "cache_seed": None
-}
-
-
 class AiAssistance:
 
     def __init__(self, advanced_llm:LLMInterface, basic_llm:LLMInterface, schema_handler:SchemaHandler) -> None:
-        self.advanced_llm = advanced_llm
+        self.advanced_llm = advanced_llm     
         self.basic_llm = basic_llm
         self.annotation_graph = Graph(advanced_llm, schema_handler)
         self.graph_summarizer = Graph_Summarizer(basic_llm)
-        self.rag = RAG(advanced_llm)
         self.client = Qdrant()
+        self.rag = RAG(client=self.client,llm=advanced_llm)
 
-        self.message_history = {
-            "rag_agent": [],
-            "graph_agent": [],
-            "user_agent": []
-            }
+        # this llm config is set only for openai
+        self.llm_config = {
+                        "model": self.advanced_llm.model_name,
+                        "api_key": self.advanced_llm.api_key,
+                        "cache_seed": None}
      
     def summarize_graph(self,graph,query):
         summary = self.graph_summarizer.summary(graph,query)
-        return summary,None
+        return summary
 
     def agent(self,message,user_id):
         
         graph_agent = AssistantAgent(
             name="gragh_generate",
-            llm_config=llm_config,
+            llm_config=self.llm_config,
             system_message=(
            "You are a knowledgeable assistant specializing in answering questions related to biological annotations. This includes identifying genes, proteins, terms, SNPs, transcripts, and interactions."
            "You have access to a bio knowledge graph to retrieve relevant data."
@@ -68,7 +52,7 @@ class AiAssistance:
 
         rag_agent = AssistantAgent(
             name="rag_retrival",
-            llm_config=llm_config,
+            llm_config=self.llm_config,
             system_message=(
                 "You are a helpful assistant responsible for retrieving general informations"
                 "You can only use the functions provided to you. Reply 'TERMINATE' when the task is done."
@@ -107,7 +91,7 @@ class AiAssistance:
         group_chat = GroupChat(agents=[user_agent, rag_agent, graph_agent], messages=[],max_round=3)
         group_manager = GroupChatManager(
             groupchat=group_chat,
-            llm_config=llm_config,
+            llm_config=self.llm_config,
             human_input_mode="NEVER")
 
         user_agent.initiate_chat(group_manager, message=message, clear_history=False)
@@ -117,7 +101,7 @@ class AiAssistance:
 
     async def save_memory(self,query,user_id):
         # saving the new query of the user to a memorymanager
-        memory_manager = MemoryManager(self.advanced_llm, embedding_model=openai_embedding_model)
+        memory_manager = MemoryManager(self.advanced_llm,client=self.client,embedding_model=openai_embedding_model)
         memory_manager.add_memory(query, user_id)
 
     async def assistant(self,query,user_id):
