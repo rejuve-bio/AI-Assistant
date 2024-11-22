@@ -1,4 +1,5 @@
 
+from datetime import datetime
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 import os
@@ -12,6 +13,7 @@ import uuid
 OPEN_AI_VECTOR_SIZE=1536
 COLBERT_VECTOR_SIZE=128
 USER_COLLECTION = "user_memory_store"
+MAX_MEMORY_LIMIT=10
 
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -23,7 +25,7 @@ class Qdrant:
     def __init__(self):
 
         try:
-            self.client = QdrantClient(os.environ.get('QDRANT_CLIENT'))
+            self.client = QdrantClient(os.environ.get('QDRANT_CLIENT','http://qdrant:6333'))
             print(f"qdrant connected")
         except:
             print('qdrant connection is failed')
@@ -94,10 +96,11 @@ class Qdrant:
 
     def _create_memory_update_memory(self,user_id,data, embedding, metadata,memory_id=None):
 
-        self.get_create_collection(USER_COLLECTION)
+        collection = self.get_create_collection(USER_COLLECTION)
 
+        current_time = datetime.utcnow().isoformat()
+        data = [{"content": data, "user_id": 1, "created_at_updated_at": current_time}]
         if memory_id:
-                data = [{"content":data,"user_id":user_id}]
                 self.client.upsert(
                     collection_name=USER_COLLECTION,
                     points=models.Batch(
@@ -106,7 +109,15 @@ class Qdrant:
                     payloads=data,),)
                 return memory_id
 
-        data = [{"content":data,"user_id":user_id}]
+        # check if a collection have top 10 collections
+        try:
+            memories = self.client.scroll(USER_COLLECTION)
+            if len(memories[0]) > MAX_MEMORY_LIMIT:
+                self._delete_memory(memories[0])
+                logger.info("older memory is being deleted since you have reached the limit")
+        except:
+            traceback.print_exc()
+
         memory_id = [str(uuid.uuid4())]
         self.client.upsert(
                 collection_name=USER_COLLECTION,
@@ -114,6 +125,7 @@ class Qdrant:
                     ids=memory_id,
                     vectors=embedding,
                     payloads=data,),)
+        logger.info("collection updated")
         return memory_id
 
     def _delete_memory(self, memory_id):
@@ -149,6 +161,7 @@ class Qdrant:
                         response[i] = {
                             "id": point.id,
                             "content": point.payload.get('content'),
+                            "date": point.payload.get('created_at_updated_at')
                             }
 
                     return [response[0]]
