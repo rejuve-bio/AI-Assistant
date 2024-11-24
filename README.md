@@ -60,11 +60,19 @@ Ensure that the environment variables are set correctly in `.env` before running
   * `ANNOTATION_SERVICE_URL`: The URL for the annotation service, which processes queries.
 * **Flask Configuration:**
   * `FLASK_PORT`: Port for the Flask server (default: 5001).
+* **Qdrant configuration:**
+  * `QDRANT_CLIENT`: Port for qdrant client(http://localhost:6333)
 
 ## Usage
 
 Once your environment is configured, you can run the Flask server and use the AI Assistant API.
 
+make sure you set up qdrant local client :
+```bash
+docker run -d \
+    -p 6333:6333 \
+    -v qdrant_data:/qdrant/storage qdrant/qdrant
+```
 ### 1. Start the Flask Server
 Run the Flask server with the following command:
 
