@@ -1,5 +1,7 @@
 import logging
 from flask import Flask
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 from app.annotation_graph.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import get_llm_model
@@ -37,6 +39,13 @@ def create_app():
     config = load_config()
     app.config.update(config)
     logger.info('App config updated with loaded configuration')
+
+    # Apply rate limiting to the entire app (200 requests per minute)
+    limiter = Limiter(get_remote_address, 
+                      app=app,
+                      default_limits=["200 per minute"],
+                      )
+    logger.info('FlaskLimiter initialized')
 
     # Initialize SchemaHandler
     schema_handler = SchemaHandler(
