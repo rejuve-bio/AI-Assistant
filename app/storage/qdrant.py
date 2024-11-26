@@ -11,9 +11,9 @@ from dotenv import load_dotenv
 import uuid
 
 OPEN_AI_VECTOR_SIZE=1536
-COLBERT_VECTOR_SIZE=128
-USER_COLLECTION = "user_memory_store"
-MAX_MEMORY_LIMIT=10
+MAX_MEMORY_LIMIT = 10
+USER_COLLECTION = os.getenv("USER_COLLECTION","user_memory_store")
+USER_MEMORY_NAME = "user memories"
 
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -48,14 +48,14 @@ class Qdrant:
                 logger.info("error creating a collection")
 
 
-    def upsert_data(self,collection_name,df):
+    def upsert_data(self,collection_name,df,user_id):
         try:
             excluded_columns = {"dense"}
             payload_columns = [col for col in df.columns if col not in excluded_columns]
             payloads_list = [
                         {col: getattr(item, col) for col in payload_columns}
                         for item in df.itertuples(index=False)]
-
+                        
             import random
             if 'id' not in df.columns:
                 df['id'] = [random.randint(100000, 999999) for _ in range(len(df))]
@@ -96,10 +96,10 @@ class Qdrant:
 
     def _create_memory_update_memory(self,user_id,data, embedding, metadata,memory_id=None):
 
-        collection = self.get_create_collection(USER_COLLECTION)
+        self.get_create_collection(USER_COLLECTION)
 
         current_time = datetime.utcnow().isoformat()
-        data = [{"content": data, "user_id": 1, "created_at_updated_at": current_time}]
+        data = [{"content": data, "user_id": user_id, "created_at_updated_at": current_time, "status":USER_MEMORY_NAME}]
         if memory_id:
                 self.client.upsert(
                     collection_name=USER_COLLECTION,
@@ -108,25 +108,34 @@ class Qdrant:
                     vectors=embedding,
                     payloads=data,),)
                 return memory_id
-
         # check if a collection have top 10 collections
         try:
-            memories = self.client.scroll(USER_COLLECTION)
-            if len(memories[0]) > MAX_MEMORY_LIMIT:
-                self._delete_memory(memories[0])
-                logger.info("older memory is being deleted since you have reached the limit")
+            memories = self.client.scroll(USER_COLLECTION, with_payload=True)
+            if len(memories[0]) >= MAX_MEMORY_LIMIT:
+                sorted_memories = sorted(
+                    memories[0],
+                    key=lambda memory: memory.payload["created_at_updated_at"]
+                )
+                print("this is the sorted one", sorted_memories)
+                # Delete the oldest memory
+                oldest_memory_id = sorted_memories[0].id
+                self._delete_memory(oldest_memory_id)
+
+                logger.info(f"older memory is being deleted since you have reached the limit {MAX_MEMORY_LIMIT}")
+
+            logger.info("uploading new memory")
+            memory_id = [str(uuid.uuid4())]
+            self.client.upsert(
+                    collection_name=USER_COLLECTION,
+                    points=models.Batch(
+                        ids=memory_id,
+                        vectors=embedding,
+                        payloads=data,),)
+            logger.info("collection updated")
+            return memory_id
         except:
             traceback.print_exc()
 
-        memory_id = [str(uuid.uuid4())]
-        self.client.upsert(
-                collection_name=USER_COLLECTION,
-                points=models.Batch(
-                    ids=memory_id,
-                    vectors=embedding,
-                    payloads=data,),)
-        logger.info("collection updated")
-        return memory_id
 
     def _delete_memory(self, memory_id):
 
@@ -150,8 +159,10 @@ class Qdrant:
                         query_filter= models.Filter(
                                                 must=[
                                                     models.FieldCondition(
-                                                    key="user_id", match=models.MatchValue(value=user_id),)
-                                                    ]
+                                                    key="user_id", match=models.MatchValue(value=user_id),),
+                                                    models.FieldCondition(
+                                                    key="status", match=models.MatchValue(value=USER_MEMORY_NAME),)
+                                                    ],
                                                 ),
                         limit=1000)
 
