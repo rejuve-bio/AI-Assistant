@@ -86,7 +86,7 @@ def create_app():
         with open('sample_data.json') as data:
             data = json.load(data)
         rag = RAG(client,advanced_llm)
-        rag.save_to_collection(data=data)
+        rag.save_doc_to_rag(data=data)
 
     # Register routes
     app.register_blueprint(main_bp)

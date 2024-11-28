@@ -12,8 +12,9 @@ import uuid
 
 OPEN_AI_VECTOR_SIZE=1536
 MAX_MEMORY_LIMIT = 10
-USER_COLLECTION = os.getenv("USER_COLLECTION","user_memory_store")
+USER_COLLECTION = os.getenv("USER_COLLECTION","USER_COLLECTIONS")
 USER_MEMORY_NAME = "user memories"
+USER_PDF = "pdf"#make this pdf name
 
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -48,40 +49,89 @@ class Qdrant:
                 logger.info("error creating a collection")
 
 
-    def upsert_data(self,collection_name,df,user_id):
-        try:
+    def upsert_data(self,collection_name,df,user_id=None):
+        if user_id:
             excluded_columns = {"dense"}
             payload_columns = [col for col in df.columns if col not in excluded_columns]
             payloads_list = [
                         {col: getattr(item, col) for col in payload_columns}
                         for item in df.itertuples(index=False)]
-                        
+            
+            for payload in payloads_list:
+                payload["user_id"] = user_id
+                payload["status"] = USER_PDF
+            
             import random
             if 'id' not in df.columns:
-                df['id'] = [random.randint(100000, 999999) for _ in range(len(df))]
+                df['id'] = [random.randint(1, 3) for _ in range(len(df))]
 
             self.get_create_collection(collection_name)
-            self.client.upsert(
-                collection_name=collection_name,
-                points=models.Batch(
-                    ids=df["id"].tolist(),
-                    vectors=df["dense"].tolist(),
-                    payloads=payloads_list,
-                ),)
-            print("embedding saved")
-        except:
+            try:
+                self.client.upsert(
+                    collection_name=collection_name,
+                    points=models.Batch(
+                        ids=df["id"].tolist(),
+                        vectors=df["dense"].tolist(),
+                        payloads=payloads_list,
+                    ),)
+                print("embedding saved")
+                return f"PDF Data Successfully Uploaded for user {user_id} on collection {collection_name}"
+            except:
                 traceback.print_exc()
                 print("error saving")
 
+        else:
+            try:
+                excluded_columns = {"dense"}
+                payload_columns = [col for col in df.columns if col not in excluded_columns]
+                payloads_list = [
+                            {col: getattr(item, col) for col in payload_columns}
+                            for item in df.itertuples(index=False)]
+                            
+                import random
+                if 'id' not in df.columns:
+                    df['id'] = [random.randint(100000, 999999) for _ in range(len(df))]
 
-    def retrieve_data(self,collection,query):
-
+                self.get_create_collection(collection_name)
+                self.client.upsert(
+                    collection_name=collection_name,
+                    points=models.Batch(
+                        ids=df["id"].tolist(),
+                        vectors=df["dense"].tolist(),
+                        payloads=payloads_list,
+                    ),)
+                print("embedding saved")
+                return "Data Successfully Uploaded"
+            except:
+                traceback.print_exc()
+                print("error saving")
+  
+    def retrieve_data(self,collection, query,user_id,filter):
+        if filter:
+            result = self.client.search(
+                    collection_name=collection,
+                    query_vector=query,
+                    with_payload=True,
+                    # query_filter= models.Filter(
+                    #             must=[models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id),),
+                                    #   models.FieldCondition(key="status", match=models.MatchValue(value=USER_PDF),)],),
+                    limit=10)
+            print("result",result)
+            response = {}
+            # Extracting and formatting the relevant points
+            for i, point in enumerate(result):
+                response[i] = {
+                    "score": point.score,
+                    "content": point.payload.get('content', 'No content available')
+                }
+            return response
+    
         result = self.client.search(
                 collection_name=collection,
-                query_vector=query["dense"],
+                query_vector=query,
                 with_payload=True,
                 score_threshold=0.5,
-                limit=1000)
+                limit=10)
         response = {}
 
         # Extracting and formatting the relevant points
