@@ -42,6 +42,8 @@ class MemoryManager:
             :param user_id: The user ID.
             :return: A list of returned memories with their details.
             """
+            if not user_id:
+                return "userid is an obligatory to save memory"
             if isinstance(messages, str):
                 messages = [{"role": "user", "content": messages}]
             else:

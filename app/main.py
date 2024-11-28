@@ -12,6 +12,7 @@ from app.prompts.conversation_handler import conversation_prompt
 from app.memory_layer import MemoryManager
 from app.summarizer import Graph_Summarizer
 import asyncio
+import traceback
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ class AiAssistance:
         self.advanced_llm = advanced_llm     
         self.basic_llm = basic_llm
         self.annotation_graph = Graph(advanced_llm, schema_handler)
-        self.graph_summarizer = Graph_Summarizer(basic_llm)
+        self.graph_summarizer = Graph_Summarizer(self.advanced_llm)
         self.client = Qdrant()
         self.rag = RAG(client=self.client,llm=advanced_llm)
 
@@ -68,9 +69,9 @@ class AiAssistance:
 
         @user_agent.register_for_execution()
         @rag_agent.register_for_llm(description="Retrieve information for general knowledge queries.")
-        def get_general_response(query:Annotated[str,"always pass the question it self"], user_id: str) -> str:
+        def get_general_response(query:Annotated[str,"always pass the question it self"],user_id=user_id) -> str:
             try:
-                response = self.rag.result(query, user_id)
+                response = self.rag.get_result_from_rag(query, user_id)
                 return response
             except Exception as e:
                 logger.error("Error in retrieving response", exc_info=True)
@@ -121,24 +122,28 @@ class AiAssistance:
         response = self.agent(refactored_question, user_id)
         return response
 
-    def assistant_response(self,query,graph,user_id,graph_id):
-        
-        if graph:
-            logger.info("summarizing graph")
-            summary = self.summarize_graph(graph=graph,query=query)
-            return summary
-            
-        if graph_id and query:
-            logger.info("summarizing graph")
-            summary = self.summarize_graph(graph_id=graph_id,query=query)
-            return summary
+    def assistant_response(self,query,user_id,graph,graph_id,file=None):
+        try:
+            if file:
+                response = self.rag.save_retrievable_docs(file,user_id,filter=True)
+                return response            
+                    
+            if graph:
+                logger.info("summarizing graph")
+                summary = self.summarize_graph(graph=graph,query=query)
+                return summary
+                
+            if graph_id:
+                logger.info("summarizing graph")
+                summary = self.summarize_graph(graph_id=graph_id,query=query)
+                return summary
 
-        if query:
-            logger.info("agent calling")
-            response = asyncio.run(self.assistant(query, user_id))
-            return response
+            if query:
+                logger.info("agent calling")
+                response = asyncio.run(self.assistant(query, user_id))
+                return response
 
-        else:
-            return "please provide appropriate question"
+        except:
+            traceback.print_exc()
 
 
