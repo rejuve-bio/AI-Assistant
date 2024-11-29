@@ -16,6 +16,7 @@ def process_query(current_user_id):
     without any graph-related information. It also supports Uploading files (e.g., PDF).
     """
     try:
+
         ai_assistant = current_app.config['ai_assistant']
         if request.is_json:
             data = request.get_json() 
