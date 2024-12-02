@@ -126,6 +126,10 @@ class AiAssistance:
         try:
             if file:
                 response = self.rag.save_retrievable_docs(file,user_id,filter=True)
+                try:
+                    self.save_memory(f"user uploaded {file.filename}",user_id)
+                except:
+                    traceback.print_exc()
                 return response            
                     
             if graph:

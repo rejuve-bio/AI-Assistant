@@ -28,8 +28,7 @@ def process_query(current_user_id):
             return response
 
         elif request.form:
-            data = request.form.to_dict()
-            file = request.files['file']
+            file = request.files.get('file')  
         
             # Ensure it's a valid PDF file
             if file and file.filename.lower().endswith('.pdf'):

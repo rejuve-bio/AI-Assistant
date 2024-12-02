@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import logging
 import re
+import json
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -15,7 +16,9 @@ logger = logging.getLogger(__name__)
 
 
 VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION","SITE_INFORMATION")
-USER_COLLECTION = os.getenv("USER_COLLECTION","USER_COLLECTIONS")
+USER_COLLECTION = os.getenv("USER_COLLECTION","CHAT_MEMORY")
+USERS_PDF_COLLECTION = os.getenv("PDF_COLLECTION","PDF_COLLECTION")
+PDF_LIMIT=2
 class RAG:
 
     def __init__(self, client, llm: LLMInterface) -> None:
@@ -32,6 +35,14 @@ class RAG:
         elif self.llm.__class__.__name__ == 'OpenAIModel':
             self.max_token=8000
         logger.info("RAG initialized with LLM model and Qdrant client.")
+
+        self.user_pdf_file = "user_pdf.json"
+        if os.path.exists(self.user_pdf_file):
+            with open(self.user_pdf_file, "r") as f:
+                self.user_pdf = json.load(f)
+        else:
+            self.user_pdf = {}
+
 
     def extract_preprocess_pdf(self,pdf):
         logger.info("Extracting text using PyPDF2...")
@@ -55,12 +66,13 @@ class RAG:
         """
         """Process documents to ensure each chunk has at most self.max_token."""
         
-        '''
-        add a token length counter for the models
-        '''
         if isinstance(datas, list) and all(isinstance(d, dict) for d in datas):
             return pd.DataFrame(datas)
-
+        '''
+        todo:
+        add a token length counter for the models
+        add a chunking mechanism for the dict files 
+        '''
         result = []
         for doc in datas:
             tokens = doc.split()
@@ -93,7 +105,7 @@ class RAG:
             logger.error(f"Error generating dense embeddings: {e}")
             traceback.print_exc()
 
-    def save_doc_to_rag(self, data,user_id=None,filter=None,collection_name=VECTOR_COLLECTION):
+    def save_doc_to_rag(self, file_name,data,user_id=None,collection_name=VECTOR_COLLECTION):
         """
         Saves the DataFrame with embeddings to the specified Qdrant collection.
 
@@ -101,11 +113,9 @@ class RAG:
         :param data: data to be saved.
         :param userid: user ids to be saved when this is passed datas passed will be save in the users collection
         """
-        if filter:
-            collection_name=USER_COLLECTION
-        
-        df = self.chunking_data(data)
         try:
+            df = self.chunking_data(data)
+            df["filename"] = file_name
             logger.info(f"Embedding contents")
             df = self.get_contents_embed(df)
             if df is not None:
@@ -117,15 +127,31 @@ class RAG:
             logger.error(f"Error saving to collection {collection_name}: {e}")
             traceback.print_exc()
 
-    def save_retrievable_docs(self,file,user_id):
+    def save_retrievable_docs(self,file,user_id,filter=True):
         try:
+            # Initialize user data if not already present
+            if user_id not in self.user_pdf:
+                self.user_pdf[user_id] = {"count": 0, "names": []}
+            
+            file_name = file.filename
+            if file_name in self.user_pdf[user_id]["names"]:
+                return {"error": "PDF already exists."}
+            if self.user_pdf[user_id]["count"] >= PDF_LIMIT:
+                return {"error": "Your quota is full."}
+
             data = self.extract_preprocess_pdf(file)
-            saved_data = self.save_doc_to_rag(data=data,user_id=user_id)
+            saved_data = self.save_doc_to_rag(file_name,data=data,user_id=user_id,collection_name=USERS_PDF_COLLECTION)
+            
+            self.user_pdf[user_id]["count"]+=1
+            self.user_pdf[user_id]["names"].append(file_name)
+            
+            with open(self.user_pdf_file, 'w') as f:
+                json.dump(self.user_pdf,f)
             return saved_data
         except:
             traceback.print_exc()
 
-    def query(self, query_str: str, user_id=None,filter=None,collection=VECTOR_COLLECTION):
+    def query(self, query_str: str, user_id=None,collection=VECTOR_COLLECTION, filter=None):
         """
         Processes a query string by generating its embeddings and retrieving related content 
         from the Qdrant vector collection.
@@ -136,11 +162,11 @@ class RAG:
         """
         try:
             if filter:
-                collection = USER_COLLECTION
+                collection=USERS_PDF_COLLECTION
 
             logger.info("Query embedding started.")
             if isinstance(query_str, str):
-                query_str = [query_str]  # Ensure it's a list if a single string is provided
+                query_str = [query_str]  
 
             query = {}
             embeddings = openai_embedding_model(query_str)
@@ -170,8 +196,8 @@ class RAG:
         """
         try:
             logger.info("Generating result for the query.")
-            result1 = self.query(query_str=query_str, user_id=user_id,filter=True)
-            result2 = self.query(query_str=query_str, user_id=user_id,filter=None)
+            result1 = self.query(query_str=query_str, user_id=user_id)
+            result2 = self.query(query_str=query_str, user_id=user_id,filter=True)
             query_result = {**result1, **result2}
             if query_result is None:
                 logger.error("No query result to process.")
