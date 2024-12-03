@@ -60,11 +60,19 @@ Ensure that the environment variables are set correctly in `.env` before running
   * `ANNOTATION_SERVICE_URL`: The URL for the annotation service, which processes queries.
 * **Flask Configuration:**
   * `FLASK_PORT`: Port for the Flask server (default: 5001).
+* **Qdrant configuration:**
+  * `QDRANT_CLIENT`: Port for qdrant client(http://localhost:6333)
 
 ## Usage
 
 Once your environment is configured, you can run the Flask server and use the AI Assistant API.
 
+make sure you set up qdrant local client :
+```bash
+docker run -d \
+    -p 6333:6333 \
+    -v qdrant_data:/qdrant/storage qdrant/qdrant
+```
 ### 1. Start the Flask Server
 Run the Flask server with the following command:
 
@@ -102,3 +110,56 @@ A JSON object containing the processed results from the AI assistant, based on t
 * Google for the Gemini models.
 * Neo4j for the graph database technology.
 * Flask for the lightweight web framework.
+
+
+## Using Docker to run the application
+
+## Installation
+
+### 1. Clone the repository
+First, clone the repository and navigate to the project folder:
+
+```bash
+git clone [https://github.com/rejuve-bio/AI-Assistant.git](https://github.com/rejuve-bio/AI-Assistant.git)
+cd ai-assistant
+```
+
+### 2. Setting up .env files
+
+Ensure that the environment variables are set correctly in `.env` before running the application:
+
+* **LLM Model Configuration:**
+  * `BASIC_LLM_PROVIDER`: Choose the provider for lighter tasks (openai or gemini).
+  * `BASIC_LLM_VERSION`: Version for the basic model (gpt-3.5-turbo, gemini-lite, etc.).
+  * `ADVANCED_LLM_PROVIDER`: Choose the provider for advanced tasks (openai or gemini).
+  * `ADVANCED_LLM_VERSION`: Version for the advanced model (gpt-4o, gemini-pro, etc.).
+* **API Keys:**
+  * `OPENAI_API_KEY`: Your OpenAI API key.
+  * `GEMINI_API_KEY`: Your Gemini API key.
+* **Neo4j Configuration:**
+  * `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`: Connection details for the Neo4j database.
+* **Annotation Service Configuration:**
+  * `ANNOTATION_AUTH_TOKEN`: Authentication token for the annotation service.
+  * `ANNOTATION_SERVICE_URL`: The URL for the annotation service, which processes queries.
+
+## Usage
+
+Once your environment is configured, you can run the app and use the AI Assistant API.
+
+### 1. Start the application:
+
+```bash
+docker-compose up --build
+```
+
+**Example using curl:**
+```bash
+curl -X POST http://localhost:5001/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "your query here"}'
+```
+
+### 2. To stop the services, use:
+  ```bash
+  docker-compose down
+  ```

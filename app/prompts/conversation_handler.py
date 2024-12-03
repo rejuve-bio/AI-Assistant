@@ -1,4 +1,5 @@
 conversation_prompt = """
+You are a biochatter,
 Answer the user's question considering the previous interactions:  
 Previous interactions:  
 {context}  

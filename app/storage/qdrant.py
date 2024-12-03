@@ -1,4 +1,5 @@
 
+from datetime import datetime
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 import os
@@ -10,8 +11,10 @@ from dotenv import load_dotenv
 import uuid
 
 OPEN_AI_VECTOR_SIZE=1536
-COLBERT_VECTOR_SIZE=128
-USER_COLLECTION = "user_memory_store"
+MAX_MEMORY_LIMIT = 10
+MAX_PDF_LIMIT = 2
+USER_COLLECTION = os.getenv("USER_COLLECTION","USER_COLLECTIONS")
+USER_MEMORY_NAME = "user memories"
 
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -23,7 +26,7 @@ class Qdrant:
     def __init__(self):
 
         try:
-            self.client = QdrantClient(os.environ.get('QDRANT_CLIENT'))
+            self.client = QdrantClient(os.environ.get('QDRANT_CLIENT','http://qdrant:6333'))
             print(f"qdrant connected")
         except:
             print('qdrant connection is failed')
@@ -46,43 +49,64 @@ class Qdrant:
                 logger.info("error creating a collection")
 
 
-    def upsert_data(self,collection_name,df):
-        try:
-            excluded_columns = {"dense"}
-            payload_columns = [col for col in df.columns if col not in excluded_columns]
-            payloads_list = [
+    def upsert_data(self,collection_name,df,user_id=None):
+                try:
+                    excluded_columns = {"dense"}
+                    payload_columns = [col for col in df.columns if col not in excluded_columns]
+                    payloads_list = [
                         {col: getattr(item, col) for col in payload_columns}
-                        for item in df.itertuples(index=False)]
+                        for item in df.itertuples(index=False)
+                    ]
 
-            import random
-            if 'id' not in df.columns:
-                df['id'] = [random.randint(100000, 999999) for _ in range(len(df))]
-
-            self.get_create_collection(collection_name)
-            self.client.upsert(
-                collection_name=collection_name,
-                points=models.Batch(
-                    ids=df["id"].tolist(),
-                    vectors=df["dense"].tolist(),
-                    payloads=payloads_list,
-                ),)
-            print("embedding saved")
-        except:
-                traceback.print_exc()
-                print("error saving")
-
-
-    def retrieve_data(self,collection,query):
-
+                    if user_id:
+                        for payload in payloads_list:
+                            payload["user_id"] = user_id
+                        
+                    import random
+                    if 'id' not in df.columns:
+                        df['id'] = [random.randint(100000, 999999) for _ in range(len(df))]
+                    
+                    self.get_create_collection(collection_name)
+                    self.client.upsert(
+                        collection_name=collection_name,
+                        points=models.Batch(
+                            ids=df["id"].tolist(),
+                            vectors=df["dense"].tolist(),
+                            payloads=payloads_list,
+                        ),
+                    )
+                    print("Embedding saved")
+                    return "Data Successfully Uploaded"
+                
+                except Exception as e:
+                    traceback.print_exc()
+                    print("Error saving:", e)
+            
+    def retrieve_data(self,collection, query,user_id,filter=None):
+        if filter:
+            result = self.client.search(
+                    collection_name=collection,
+                    query_vector=query,
+                    with_payload=True,
+                    score_threshold=0.3,
+                    query_filter= models.Filter(
+                                must=[models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id),),]),
+                    limit=10)
+            response = {}
+            for i, point in enumerate(result):
+                response[i] = {
+                    "score": point.score,
+                    "content": point.payload.get('content', 'No content available')
+                }
+            return response
+    
         result = self.client.search(
                 collection_name=collection,
-                query_vector=query["dense"],
+                query_vector=query,
                 with_payload=True,
-                score_threshold=0.5,
-                limit=1000)
+                score_threshold=0.3,
+                limit=10)
         response = {}
-
-        # Extracting and formatting the relevant points
         for i, point in enumerate(result):
             response[i] = {
                 "id": point.id,
@@ -96,8 +120,9 @@ class Qdrant:
 
         self.get_create_collection(USER_COLLECTION)
 
+        current_time = datetime.utcnow().isoformat()
+        data = [{"content": data, "user_id": user_id, "created_at_updated_at": current_time, "status":USER_MEMORY_NAME}]
         if memory_id:
-                data = [{"content":data,"user_id":user_id}]
                 self.client.upsert(
                     collection_name=USER_COLLECTION,
                     points=models.Batch(
@@ -105,16 +130,33 @@ class Qdrant:
                     vectors=embedding,
                     payloads=data,),)
                 return memory_id
+        # check if a collection have top 10 collections
+        try:
+            memories = self.client.scroll(USER_COLLECTION, with_payload=True)
+            if len(memories[0]) >= MAX_MEMORY_LIMIT:
+                sorted_memories = sorted(
+                    memories[0],
+                    key=lambda memory: memory.payload["created_at_updated_at"]
+                )
+                # Delete the oldest memory
+                oldest_memory_id = sorted_memories[0].id
+                self._delete_memory(oldest_memory_id)
 
-        data = [{"content":data,"user_id":user_id}]
-        memory_id = [str(uuid.uuid4())]
-        self.client.upsert(
-                collection_name=USER_COLLECTION,
-                points=models.Batch(
-                    ids=memory_id,
-                    vectors=embedding,
-                    payloads=data,),)
-        return memory_id
+                logger.info(f"older memory is being deleted since you have reached the limit {MAX_MEMORY_LIMIT}")
+
+            logger.info("uploading new memory")
+            memory_id = [str(uuid.uuid4())]
+            self.client.upsert(
+                    collection_name=USER_COLLECTION,
+                    points=models.Batch(
+                        ids=memory_id,
+                        vectors=embedding,
+                        payloads=data,),)
+            logger.info("collection updated")
+            return memory_id
+        except:
+            traceback.print_exc()
+
 
     def _delete_memory(self, memory_id):
 
@@ -138,8 +180,10 @@ class Qdrant:
                         query_filter= models.Filter(
                                                 must=[
                                                     models.FieldCondition(
-                                                    key="user_id", match=models.MatchValue(value=user_id),)
-                                                    ]
+                                                    key="user_id", match=models.MatchValue(value=user_id),),
+                                                    models.FieldCondition(
+                                                    key="status", match=models.MatchValue(value=USER_MEMORY_NAME),)
+                                                    ],
                                                 ),
                         limit=1000)
 
@@ -149,6 +193,7 @@ class Qdrant:
                         response[i] = {
                             "id": point.id,
                             "content": point.payload.get('content'),
+                            "date": point.payload.get('created_at_updated_at')
                             }
 
                     return [response[0]]

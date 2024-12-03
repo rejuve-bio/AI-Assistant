@@ -5,10 +5,13 @@ from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 from app.annotation_graph.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import get_llm_model
+from app.storage.qdrant import Qdrant
 from app.main import AiAssistance
+from app.rag.rag import RAG
 from .routes import main_bp
 import os
 import yaml
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -79,6 +82,20 @@ def create_app():
     app.config['schema_handler'] = schema_handler
     app.config['ai_assistant'] = ai_assistant
     logger.info('App config populated with models and assistants')
+
+    # intialize qdrant connection
+    # uploading data first time
+    client = Qdrant()
+
+    collections = client.client.get_collections()
+    if collections and collections.collections:
+        logger.info("collections on the qdrant database already exist skipping population data")
+    else:
+        logger.info('uploading sample web data to qdrant db')
+        with open('sample_data.json') as data:
+            data = json.load(data)
+        rag = RAG(client,advanced_llm)
+        rag.save_doc_to_rag(data=data)
 
     # Register routes
     app.register_blueprint(main_bp)

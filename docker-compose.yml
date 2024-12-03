@@ -1,0 +1,22 @@
+services:
+  assistant:
+    build: .
+    ports:
+      - "5001:5001"
+    command: gunicorn -w 4 --bind 0.0.0.0:5001 run:app
+    restart: always
+    depends_on:
+      - qdrant
+    environment:
+      - .env
+
+  qdrant:
+    image: qdrant/qdrant
+    ports: 
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - vectordata:/qdrant/storage
+
+volumes:
+  vectordata:
