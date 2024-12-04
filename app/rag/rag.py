@@ -1,6 +1,8 @@
 from app.prompts.rag_prompts import SYSTEM_PROMPT, RETRIEVE_PROMPT
+from app.prompts.pdf_prompt import PDF_SUMMARY_PROMPT
 from app.llm_handle.llm_models import LLMInterface, openai_embedding_model
 from app.llm_handle.llm_models import openai_embedding_model
+from app.memory_layer import MemoryManager
 from PyPDF2 import PdfReader
 import traceback
 import os
@@ -43,8 +45,7 @@ class RAG:
         else:
             self.user_pdf = {}
 
-
-    def extract_preprocess_pdf(self,pdf):
+    def extract_preprocess_pdf(self,pdf, file_name):
         logger.info("Extracting text using PyPDF2...")
         try:
             reader = PdfReader(pdf)
@@ -52,6 +53,11 @@ class RAG:
             for page in reader.pages:
                 docs.append(page.extract_text())
             logger.info("extracting pdf is done")
+
+            #create a topic and summary of the pdf
+            PROMPT = PDF_SUMMARY_PROMPT.format(pdf=docs)
+            summary = self.llm.generate(PROMPT)
+            docs.append(f"{file_name} summary: {summary}")
             return docs
         except Exception as e:
             traceback.print_exc()
@@ -129,7 +135,6 @@ class RAG:
 
     def save_retrievable_docs(self,file,user_id,filter=True):
         try:
-            # Initialize user data if not already present
             if user_id not in self.user_pdf:
                 self.user_pdf[user_id] = {"count": 0, "names": []}
             
@@ -139,7 +144,7 @@ class RAG:
             if self.user_pdf[user_id]["count"] >= PDF_LIMIT:
                 return {"error": "Your quota is full."}
 
-            data = self.extract_preprocess_pdf(file)
+            data = self.extract_preprocess_pdf(file, file_name)
             saved_data = self.save_doc_to_rag(file_name,data=data,user_id=user_id,collection_name=USERS_PDF_COLLECTION)
             
             self.user_pdf[user_id]["count"]+=1
@@ -147,6 +152,8 @@ class RAG:
             
             with open(self.user_pdf_file, 'w') as f:
                 json.dump(self.user_pdf,f)
+
+            memory = MemoryManager(self.llm,self.client).add_memory(f"pdf file : {file_name}", user_id)
             return saved_data
         except:
             traceback.print_exc()
@@ -183,7 +190,7 @@ class RAG:
         except Exception as e:
             logger.error(f"An error occurred during query processing: {e}")
             traceback.print_exc()
-            return None
+            return {}
 
     def get_result_from_rag(self, query_str: str, user_id: str):
         """

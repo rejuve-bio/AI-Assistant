@@ -1,12 +1,17 @@
 RETRIEVE_PROMPT = """
-User asked:
-{query}.
-The following are the retrieved results from a similarity search: {retrieved_content}.
+You are tasked with answering the user's query based solely on the provided information. 
 
-Your task is to evaluate and rank the information based on its relevance, accuracy, and usefulness to the user's query.
-- If the retrieved results are valid, provide a clear, concise answer using only that information.
-- If no relevant results are available (i.e., {retrieved_content} is empty or unhelpful), do not provide an answer. Avoid generating information independently or speculating. And just answer i cant help with your question"
+Query: {query}.
 
+Information: {retrieved_content}.
+
+Instructions:
+1. Evaluate the provided information for relevance, accuracy, and usefulness to the query.
+2. If the information is sufficient, provide a clear and concise answer directly addressing the query.
+3. Do not mention or refer to "retrieved results" or the source of the information in your response.
+4. If the information is empty, irrelevant, or unhelpful, respond with: "I can't help with your question."
+
+Provide only the answer, and avoid any unnecessary references or disclaimers.
 """
 
 SYSTEM_PROMPT = """

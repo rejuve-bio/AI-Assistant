@@ -71,7 +71,7 @@ class AiAssistance:
         @rag_agent.register_for_llm(description="Retrieve information for general knowledge queries.")
         def get_general_response(query:Annotated[str,"always pass the question it self"],user_id=user_id) -> str:
             try:
-                response = self.rag.get_result_from_rag(query, user_id)
+                response = self.rag.get_result_from_rag(message, user_id)
                 return response
             except Exception as e:
                 logger.error("Error in retrieving response", exc_info=True)
@@ -82,7 +82,7 @@ class AiAssistance:
         @graph_agent.register_for_llm(description="Generate and handle bio-knowledge graphs for annotation-related queries.")
         def generate_graph(query:Annotated[str,f"always pass the question it self"]):
             try:
-                response = self.annotation_graph.generate_graph(query)
+                response = self.annotation_graph.generate_graph(message)
                 return response
             except Exception as e:
                 logger.error("Error in generating graph", exc_info=True)
@@ -102,7 +102,7 @@ class AiAssistance:
 
     async def save_memory(self,query,user_id):
         # saving the new query of the user to a memorymanager
-        memory_manager = MemoryManager(self.advanced_llm,client=self.client,embedding_model=openai_embedding_model)
+        memory_manager = MemoryManager(self.advanced_llm,client=self.client)
         memory_manager.add_memory(query, user_id)
 
     async def assistant(self,query,user_id):
@@ -117,7 +117,6 @@ class AiAssistance:
                 return result
             elif "question:" in response:
                 refactored_question = response.split("question:")[1].strip()
-
         await self.save_memory(query,user_id)
         response = self.agent(refactored_question, user_id)
         return response
@@ -125,12 +124,7 @@ class AiAssistance:
     def assistant_response(self,query,user_id,graph,graph_id,file=None):
         try:
             if file:
-                response = self.rag.save_retrievable_docs(file,user_id,filter=True)
-                try:
-                    self.save_memory(f"user uploaded {file.filename}",user_id)
-                except:
-                    traceback.print_exc()
-                return response            
+                response = self.rag.save_retrievable_docs(file,user_id,filter=True)            
                     
             if graph:
                 logger.info("summarizing graph")

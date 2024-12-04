@@ -3,18 +3,18 @@ import uuid
 import json
 import openai
 from app.prompts.memory_prompt import FACT_RETRIEVAL_PROMPT,get_update_memory_messages
+from .llm_handle.llm_models import LLMInterface,OpenAIModel,get_llm_model,openai_embedding_model
 import traceback
 
 class MemoryManager:
-    def __init__(self, llm, client,embedding_model):
+    def __init__(self, llm, client):
         """
         Initializes the MemoryManager with the necessary components.
         :param llm: The language model instance.
-        :param embedding_model: The embedding model instance.
         :param client: The Qdrant client instance.
         """
         self.llm = llm
-        self.embedding_model = embedding_model
+        self.embedding_model = openai_embedding_model
         self.client = client
 
     def get_fact_retrieval_message(self, messages):

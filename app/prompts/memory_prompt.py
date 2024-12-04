@@ -38,6 +38,8 @@ Output: {{"facts" : ["Proteins 'cell cycle' pathway"]}}
 Input: Me favourite movies are Inception and Interstellar.
 Output: {{"facts" : ["Favourite movies are Inception and Interstellar"]}}
 
+Input: pdf file abc.pdf
+Outputs: {{"facts" : ["abc.pdf"]}}
 Return the facts and preferences in a JSON format as shown above.
 
 Remember the following:
