@@ -2,8 +2,8 @@ services:
   assistant:
     build: .
     ports:
-      - "5001:5001"
-    command: gunicorn -w 4 --bind 0.0.0.0:5001 run:app
+      - "${FLASK_PORT}:${FLASK_PORT}"
+    command: gunicorn -w 4 --bind 0.0.0.0:$FLASK_PORT run:app
     restart: always
     depends_on:
       - qdrant

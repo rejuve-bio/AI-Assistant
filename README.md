@@ -59,7 +59,7 @@ Ensure that the environment variables are set correctly in `.env` before running
   * `ANNOTATION_AUTH_TOKEN`: Authentication token for the annotation service.
   * `ANNOTATION_SERVICE_URL`: The URL for the annotation service, which processes queries.
 * **Flask Configuration:**
-  * `FLASK_PORT`: Port for the Flask server (default: 5001).
+  * `FLASK_PORT`: Port for the Flask server (default: 5002).
 * **Qdrant configuration:**
   * `QDRANT_CLIENT`: Port for qdrant client(http://localhost:6333)
 
@@ -79,7 +79,7 @@ Run the Flask server with the following command:
 ```bash
 python run.py
 ```
-This will start the server at http://localhost:5001.
+This will start the server at http://localhost:5002.
 
 ### 2. Send a POST request to the `/query` endpoint
 You can send a POST request to the `/query` endpoint to interact with the AI Assistant.
@@ -87,7 +87,7 @@ You can send a POST request to the `/query` endpoint to interact with the AI Ass
 **Example using curl:**
 
 ```bash
-curl -X POST http://localhost:5001/query \
+curl -X POST http://localhost:5002/query \
   -H "Content-Type: application/json" \
   -d '{"query": "What enhancers are involved in the formation of the protein p78504?"}'
 ```
@@ -154,7 +154,7 @@ docker-compose up --build
 
 **Example using curl:**
 ```bash
-curl -X POST http://localhost:5001/query \
+curl -X POST http://localhost:5002/query \
   -H "Content-Type: application/json" \
   -d '{"query": "your query here"}'
 ```
