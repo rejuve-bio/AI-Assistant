@@ -15,7 +15,7 @@ Before you begin, ensure you have the following installed:
 First, clone the repository and navigate to the project folder:
 
 ```bash
-git clone [https://github.com/rejuve-bio/AI-Assistant.git](https://github.com/rejuve-bio/AI-Assistant.git)
+git clone https://github.com/rejuve-bio/AI-Assistant.git
 cd AI-Assistant
 ```
 
