@@ -26,7 +26,7 @@ class Qdrant:
     def __init__(self):
 
         try:
-            self.client = QdrantClient(os.environ.get('QDRANT_CLIENT','http://qdrant:6333'))
+            self.client = QdrantClient(os.environ.get('QDRANT_CLIENT','http://localhost:6333'))
             print(f"qdrant connected")
         except:
             print('qdrant connection is failed')
