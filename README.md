@@ -16,7 +16,7 @@ First, clone the repository and navigate to the project folder:
 
 ```bash
 git clone [https://github.com/rejuve-bio/AI-Assistant.git](https://github.com/rejuve-bio/AI-Assistant.git)
-cd ai-assistant
+cd AI-Assistant
 ```
 
 ### 2. Install dependencies using Poetry
