@@ -129,7 +129,7 @@ class RAG:
                 response = self.client.upsert_data(collection_name, df,user_id)
                 return response
         except Exception as e:
-            logger.error(f"Embedding generation failed. Data not upserted to collection {collection_name}. and Data {df}")
+            logger.error(f"Embedding generation failed. Data not upserted to collection {collection_name}")
             logger.error(f"Error saving to collection {collection_name}: {e}")
             traceback.print_exc()
 
