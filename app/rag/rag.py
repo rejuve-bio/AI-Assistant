@@ -111,7 +111,7 @@ class RAG:
             logger.error(f"Error generating dense embeddings: {e}")
             traceback.print_exc()
 
-    def save_doc_to_rag(self, file_name,data,user_id=None,collection_name=VECTOR_COLLECTION):
+    def save_doc_to_rag(self,data,file_name=None,user_id=None,collection_name=VECTOR_COLLECTION):
         """
         Saves the DataFrame with embeddings to the specified Qdrant collection.
 
