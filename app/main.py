@@ -98,7 +98,9 @@ class AiAssistance:
         user_agent.initiate_chat(group_manager, message=message, clear_history=False)
 
         response = group_chat.messages[2]['content']
-        return response
+        if response:
+            return response
+        return group_chat.messages[1]['content']
 
     async def save_memory(self,query,user_id):
         # saving the new query of the user to a memorymanager
@@ -107,7 +109,10 @@ class AiAssistance:
 
     async def assistant(self,query,user_id):
         # retrieving saved memories
-        context = self.client._retrieve_memory(user_id=user_id)
+        try:
+            context = self.client._retrieve_memory(user_id=user_id)
+        except:
+            context = {""}
         prompt = conversation_prompt.format(context=context,query=query)
         response = self.advanced_llm.generate(prompt)
 
@@ -119,7 +124,7 @@ class AiAssistance:
                 refactored_question = response.split("question:")[1].strip()
         await self.save_memory(query,user_id)
         response = self.agent(refactored_question, user_id)
-        return response
+        return response 
 
     def assistant_response(self,query,user_id,graph,graph_id,file=None):
         try:
@@ -140,7 +145,6 @@ class AiAssistance:
                 logger.info("agent calling")
                 response = asyncio.run(self.assistant(query, user_id))
                 return response
-
         except:
             traceback.print_exc()
 

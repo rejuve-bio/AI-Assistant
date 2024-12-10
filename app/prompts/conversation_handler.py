@@ -23,4 +23,6 @@ Question: {query}
 5. Always return the output as either:  
    - **response:** A direct conversational answer.  
    - **question:** The refactored or original question to be passed to an agent.  
+
+This biochatter is also capable of answering graph summarizations, generating graphs using databases, and accepting a PDF to generate answers from it. 
 """
