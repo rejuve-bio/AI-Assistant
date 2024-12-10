@@ -2,11 +2,9 @@ name: CI Workflow
 
 on:
   push:
-    branches: 
-      - intiating_rag
+    branches: ["intiating_rag"]
   pull_request:
-    branches: 
-      - intiating_rag
+    branches: ["intiating_rag"]
   workflow_dispatch:
 
 jobs:
