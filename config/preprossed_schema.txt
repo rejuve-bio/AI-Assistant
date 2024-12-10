@@ -1,21 +1,70 @@
-Schema
+### Schema
 
+#### Nodes:
 Node properties:
+gene {gene_type: STRING, gene_name: STRING, id: STRING, chr: STRING, start: STRING, end: STRING, synonyms: STRING}
+transcript {transcript_type: STRING, transcript_name: STRING, transcript_id: STRING, chr: STRING, gene_name: STRING, end: STRING, id: STRING, start: STRING}
+exon {gene_id: STRING, exon_id: STRING, transcript_id: STRING, end: STRING, chr: STRING, exon_number: STRING, id: STRING, start: STRING}
+super_enhancer {end: STRING, se_id: STRING, start: STRING, id: STRING, chr: STRING}
+clo {term_name: STRING, id: STRING, synonyms: STRING}
+enhancer {start: STRING, end: STRING, id: STRING, chr: STRING, data_source: STRING, enhancer_id: STRING}
+go {id: STRING, synonyms: STRING, term_name: STRING, subontology: STRING}
+pathway {pathway_name: STRING, id: STRING}
+tfbs {end: STRING, id: STRING, chr: STRING, start: STRING}
+uberon {synonyms: STRING, term_name: STRING, id: STRING} // Mostly tissue informaiton
+bto {synonyms: STRING, term_name: STRING, id: STRING}
+cl {term_name: STRING, id: STRING, synonyms: STRING}
+promoter {start: STRING, end: STRING, id: STRING, chr: STRING}
+protein {id: STRING, synonyms: STRING, accessions: STRING, protein_name: STRING}
+snp {raw_cadd_score: STRING, phred_score: STRING, end: STRING, chr: STRING, id: STRING, start: STRING, ref: STRING, caf_ref: STRING, alt: STRING, caf_alt: STRING}
+efo {term_name: STRING, synonyms: STRING, id: STRING, description: STRING}
+non_coding_rna {start: STRING, end: STRING, rna_type: STRING, id: STRING, chr: STRING}
+tad {end: STRING, id: STRING, chr: STRING, genes: STRING, start: STRING}
+structural_variant {start: STRING, end: STRING, id: STRING, evidence: STRING, variant_accession: STRING, variant_type: STRING, chr: STRING}
 
-gene {id: STRING, gene_name: STRING, gene_type: STRING, synonyms: STRING, start: INTEGER, end: INTEGER, chr: STRING}
-transcript {id: STRING, start: INTEGER, end: INTEGER, chr: STRING, transcript_id: STRING, transcript_name: STRING, transcript_type: STRING, label: STRING}
-exon {id: STRING, start: INTEGER, end: INTEGER, chr: STRING, exon_number: INTEGER, exon_id: STRING}
-protein {id: STRING, protein_name: STRING, accessions: STRING}
-promoter {id: STRING, start: INTEGER, end: INTEGER, chr: STRING}
-enhancer {id: STRING, start: INTEGER, end: INTEGER, chr: STRING}
+Note 
+- transcription factor have label `gene`
+- tfbs means transcription factor binding site
 
-The relationships:
-
+#### Relationships:
+(:gene)-[:expressed_in]->(:uberon)
+(:gene)-[:expressed_in]->(:efo)
+(:gene)-[:expressed_in]->(:clo)
+(:gene)-[:expressed_in]->(:cl)
 (:gene)-[:transcribed_to]->(:transcript)
+(:gene)-[:genes_pathways]->(:pathway)
+(:gene)-[:in_tad_region]->(:tad)
+(:gene)-[:regulates]->(:gene) // This is transcription factor to gene association
+(:gene)-[:tfbs_snp]->(:snp)
+(:gene)-[:binds_to]->(:tfbs)
+(:transcript)-[:includes]->(:exon)
 (:transcript)-[:transcribed_from]->(:gene)
 (:transcript)-[:translates_to]->(:protein)
-(:protein)-[:translation_of]->(:transcript)
+(:super_enhancer)-[:associated_with]->(:gene)
+(:clo)-[:subclass_of]->(:clo)
 (:enhancer)-[:associated_with]->(:gene)
+(:go)-[:subclass_of]->(:go)
+(:go)-[:go_gene_product]->(:protein)
+(:pathway)-[:child_pathway_of]->(:pathway)
+(:pathway)-[:parent_pathway_of]->(:pathway)
+(:uberon)-[:subclass_of]->(:uberon)
+(:bto)-[:subclass_of]->(:bto)
+(:cl)-[:part_of]->(:uberon)
+(:cl)-[:subclass_of]->(:cl)
+(:cl)-[:capable_of]->(:go)
 (:promoter)-[:associated_with]->(:gene)
-(:transcript)-[:includes]->(:exon)
-(:transcript)-[:includes]->(:exon)
+(:protein)-[:interacts_with]->(:protein)
+(:protein)-[:translation_of]->(:transcript)
+(:snp)-[:located_in]->(:gene)
+(:snp)-[:closest_gene]->(:gene)
+(:snp)-[:eqtl_association]->(:gene)
+(:snp)-[:activity_by_contact]->(:gene)
+(:snp)-[:chromatin_state]->(:uberon)
+(:snp)-[:chromatin_state]->(:efo)
+(:snp)-[:chromatin_state]->(:clo)
+(:snp)-[:chromatin_state]->(:cl)
+(:snp)-[:histone_modification]->(:uberon)
+(:snp)-[:histone_modification]->(:clo)
+(:snp)-[:histone_modification]->(:cl)
+(:efo)-[:subclass_of]->(:efo)
+(:non_coding_rna)-[:belongs_to]->(:go)
