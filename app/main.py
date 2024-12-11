@@ -130,7 +130,8 @@ class AiAssistance:
     def assistant_response(self,query,user_id,graph,graph_id,file=None):
         try:
             if file:
-                response = self.rag.save_retrievable_docs(file,user_id,filter=True)            
+                response = self.rag.save_retrievable_docs(file,user_id,filter=True)
+                return response            
                     
             if graph:
                 logger.info("summarizing graph")
