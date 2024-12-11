@@ -13,6 +13,7 @@ from app.memory_layer import MemoryManager
 from app.summarizer import Graph_Summarizer
 import asyncio
 import traceback
+import autogen
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -29,12 +30,12 @@ class AiAssistance:
         self.client = Qdrant()
         self.rag = RAG(client=self.client,llm=advanced_llm)
 
-        # this llm config is set only for openai
-        self.llm_config = {
-                        "model": self.advanced_llm.model_name,
-                        "api_key": self.advanced_llm.api_key,
-                        "cache_seed": None}
-     
+        
+        if self.advanced_llm.model_provider == 'gemini':
+            self.llm_config = [{"model":"gemini-1.5-flash","api_key": self.advanced_llm.api_key}]
+        else:
+            self.llm_config = [{"model": self.advanced_llm.model_name, "api_key":self.advanced_llm.api_key}]
+
     def summarize_graph(self,graph,query):
         summary = self.graph_summarizer.summary(graph,query)
         return summary
@@ -43,7 +44,7 @@ class AiAssistance:
         
         graph_agent = AssistantAgent(
             name="gragh_generate",
-            llm_config=self.llm_config,
+            llm_config = {"config_list" : self.llm_config},
             system_message=(
            "You are a knowledgeable assistant specializing in answering questions related to biological annotations. This includes identifying genes, proteins, terms, SNPs, transcripts, and interactions."
            "You have access to a bio knowledge graph to retrieve relevant data."
@@ -53,7 +54,7 @@ class AiAssistance:
 
         rag_agent = AssistantAgent(
             name="rag_retrival",
-            llm_config=self.llm_config,
+            llm_config = {"config_list" : self.llm_config},
             system_message=(
                 "You are a helpful assistant responsible for retrieving general informations"
                 "You can only use the functions provided to you. Reply 'TERMINATE' when the task is done."
@@ -92,7 +93,7 @@ class AiAssistance:
         group_chat = GroupChat(agents=[user_agent, rag_agent, graph_agent], messages=[],max_round=3)
         group_manager = GroupChatManager(
             groupchat=group_chat,
-            llm_config=self.llm_config,
+            llm_config = {"config_list" : self.llm_config},
             human_input_mode="NEVER")
 
         user_agent.initiate_chat(group_manager, message=message, clear_history=False)

@@ -1,3 +1,4 @@
+import google.generativeai as genai
 from openai import OpenAI
 from dotenv import load_dotenv
 import openai
@@ -17,12 +18,6 @@ load_dotenv()
 EMBEDDING_MODEL = "text-embedding-3-small"
 GEMINI_EMBEDDING_MODEL="models/text-embedding-004"
 api = os.getenv('OPENAI_API_KEY')
-
-    
-'''
-todo list: gemini chat completion and embbedding model
-'''
-
 
 # Function to generate OpenAI embeddings
 def openai_embedding_model(batch):
@@ -86,12 +81,12 @@ def get_llm_model(model_provider, model_version=None):
         if not openai_api_key:
             raise ValueError("OpenAI API key not found")
         
-        return OpenAIModel(openai_api_key, model_version or "gpt-3.5-turbo")
+        return OpenAIModel(openai_api_key, model_provider, model_version or "gpt-3.5-turbo")
     elif model_provider == 'gemini':
         gemini_api_key = os.getenv('GEMINI_API_KEY')
         if not gemini_api_key:
             raise ValueError("Gemini API key not found")
-        return GeminiModel(gemini_api_key, model_version or "gemini-pro")
+        return GeminiModel(gemini_api_key, model_provider, model_version or "gemini-pro")
     else:
         raise ValueError("Invalid model type in configuration")
 
@@ -101,12 +96,14 @@ class LLMInterface:
         raise NotImplementedError("Subclasses must implement the generate method")
 
 
-import google.generativeai as genai
 
 class GeminiModel(LLMInterface):
-    def __init__(self, api_key: str, model_name="gemini-pro"): 
+    def __init__(self, api_key: str, model_provider,model_name="gemini-pro"): 
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel(model_name or "gemini-pro")
+        self.model_name = model_name
+        self.model_provider = model_provider
+        self.api_key = api_key
 
     def generate(self, prompt: str,system_prompt=None, temperature=0.0, top_k=1) -> Dict[str, Any]:
         response = self.model.generate_content(
@@ -136,9 +133,10 @@ class GeminiModel(LLMInterface):
 
 
 class OpenAIModel(LLMInterface):
-    def __init__(self, api_key: str, model_name: str = "gpt-3.5-turbo"):
+    def __init__(self, api_key: str, model_provider, model_name: str = "gpt-3.5-turbo"):
         self.api_key = api_key
         self.model_name = model_name
+        self.model_provider = model_provider
         openai.api_key = self.api_key
     
     def generate(self, prompt: str, system_prompt=None) -> Dict[str, Any]:
