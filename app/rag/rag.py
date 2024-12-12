@@ -111,7 +111,7 @@ class RAG:
             logger.error(f"Error generating dense embeddings: {e}")
             traceback.print_exc()
 
-    def save_doc_to_rag(self, file_name,data,user_id=None,collection_name=VECTOR_COLLECTION):
+    def save_doc_to_rag(self,data,file_name=None,user_id=None,collection_name=VECTOR_COLLECTION):
         """
         Saves the DataFrame with embeddings to the specified Qdrant collection.
 
@@ -145,7 +145,7 @@ class RAG:
                 return {"error": "Your quota is full."}
 
             data = self.extract_preprocess_pdf(file, file_name)
-            saved_data = self.save_doc_to_rag(file_name,data=data,user_id=user_id,collection_name=USERS_PDF_COLLECTION)
+            saved_data = self.save_doc_to_rag(data=data, file_name=file_name,user_id=user_id,collection_name=USERS_PDF_COLLECTION)
             
             self.user_pdf[user_id]["count"]+=1
             self.user_pdf[user_id]["names"].append(file_name)

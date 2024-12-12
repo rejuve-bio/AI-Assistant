@@ -19,4 +19,4 @@ RUN poetry config virtualenvs.create false && poetry install --no-root
 COPY . /AI-Assistant
 
 # Run the application
-CMD ["gunicorn", "-w", "4", "--bind", "0.0.0.0:5001", "run:app"]
+CMD ["gunicorn", "-w", "4", "--bind", "0.0.0.0:$FLASK_PORT", "run:app"]
