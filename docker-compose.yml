@@ -1,0 +1,22 @@
+services:
+  assistant:
+    build: .
+    ports:
+      - "${FLASK_PORT}:${FLASK_PORT}"
+    command: gunicorn -w 4 --bind 0.0.0.0:$FLASK_PORT run:app
+    restart: always
+    depends_on:
+      - qdrant
+    environment:
+      - .env
+
+  qdrant:
+    image: qdrant/qdrant
+    ports: 
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - vectordata:/qdrant/storage
+
+volumes:
+  vectordata:

@@ -1,3 +1,1 @@
-llm_model: openai  # or gemini
-annotation_service_url: http://localhost:5000/query
-schema_path: config/preprossed_schema.txt
+SCHEMA_PATH: ./config/enhanced_schema.txt

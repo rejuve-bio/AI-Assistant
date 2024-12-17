@@ -1,3 +1,7 @@
 __pycache__/
 poetry.lock
 .env
+conversation_cache.json
+qdrant_storage
+biocypher-log
+.cache
