@@ -2,6 +2,7 @@
 FROM python:3.10-slim
 
 ENV PYTHONUNBUFFERED=1
+ENV FLASK_PORT=5000
 
 # Set the working directory
 WORKDIR /AI-Assistant
@@ -9,14 +10,11 @@ WORKDIR /AI-Assistant
 # Install Poetry
 RUN pip install poetry
 
-# Copy only the dependency files first
-COPY pyproject.toml poetry.lock /AI-Assistant/
-
-# Install dependencies
-RUN poetry config virtualenvs.create false && poetry install --no-root
-
 # Copy the application code
 COPY . /AI-Assistant
+
+# Install dependencies
+RUN poetry config virtualenvs.create false && poetry install --no-root --no-cache-dir
 
 # Run the application
 CMD ["gunicorn", "-w", "4", "--bind", "0.0.0.0:$FLASK_PORT", "run:app"]
