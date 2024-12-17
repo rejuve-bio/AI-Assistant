@@ -2,7 +2,6 @@
 FROM python:3.10-slim
 
 ENV PYTHONUNBUFFERED=1
-ENV FLASK_PORT=5000
 
 # Set the working directory
 WORKDIR /AI-Assistant
