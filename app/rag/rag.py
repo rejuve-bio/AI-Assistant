@@ -145,7 +145,7 @@ class RAG:
                 return {"error": "Your quota is full."}
 
             data = self.extract_preprocess_pdf(file, file_name)
-            saved_data = self.save_doc_to_rag(file_name,data=data,user_id=user_id,collection_name=USERS_PDF_COLLECTION)
+            saved_data = self.save_doc_to_rag(data=data, file_name=file_name,user_id=user_id,collection_name=USERS_PDF_COLLECTION)
             
             self.user_pdf[user_id]["count"]+=1
             self.user_pdf[user_id]["names"].append(file_name)

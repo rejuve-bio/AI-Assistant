@@ -24,6 +24,8 @@ pyjwt = "^2.10.0"
 flask-limiter = "^3.8.0"
 gunicorn = "^23.0.0"
 pypdf2 = "^3.0.1"
+pytest = "^8.3.4"
+autogen-agentchat = {version = ">=0.2,<1.0", extras = ["gemini", "llm"]}
 
 
 [build-system]
