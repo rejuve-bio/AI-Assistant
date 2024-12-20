@@ -27,7 +27,7 @@ def process_query(current_user_id):
             response = ai_assistant.assistant_response(query=query,user_id=current_user_id,graph=graph,graph_id=graph_id)
             return response
 
-        elif request.form:
+        elif 'file' in request.files:
             file = request.files.get('file')  
         
             # Ensure it's a valid PDF file
