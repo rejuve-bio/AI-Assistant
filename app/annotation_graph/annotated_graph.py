@@ -27,7 +27,7 @@ class Graph:
                                     password=os.getenv('NEO4J_PASSWORD'))
         self.kg_service_url = os.getenv('ANNOTATION_SERVICE_URL')
 
-    def query_knowledge_graph(self, json_query):
+    def query_knowledge_graph(self, json_query, token):
         """
         Query the knowledge graph service.
 
@@ -40,14 +40,13 @@ class Graph:
         logger.info("Starting knowledge graph query...")
 
         payload = {"requests": json_query}
-        auth_token = os.getenv('ANNOTATION_AUTH_TOKEN')
         
         try:
             logger.debug(f"Sending request to {self.kg_service_url} with payload: {payload}")
             response = requests.post(
                 self.kg_service_url,
                 json=payload,
-                headers={"Authorization": f"Bearer {auth_token}"}
+                headers={"Authorization": f"Bearer {token}"}
             )
             response.raise_for_status()
             json_response = response.json()
@@ -59,7 +58,7 @@ class Graph:
                 logger.error(f"Response content: {e.response.text}")
             return {"error": f"Failed to query knowledge graph: {str(e)}"}
 
-    def generate_graph(self, query):
+    def generate_graph(self, query, token):
         try:
             logger.info(f"Starting annotation query processing for question: '{query}'")
 
@@ -79,14 +78,19 @@ class Graph:
             
             # Use the updated JSON for subsequent steps
             validated_json = validation["updated_json"]
-            
+            validated_json["question"] = query
             # Query knowledge graph with validated JSON
-            graph = self.query_knowledge_graph(validated_json)
+            graph = self.query_knowledge_graph(validated_json, token)
         
             # Generate final answer using validated JSON
             # final_answer = self._provide_text_response(query, validated_json, graph)
+            response = {
+                "text": graph["answer"],
+                "resource": {"id": graph["annotation_id"], 
+                             "type": "annotation"},
+            }
             logger.info("Completed query processing.")
-            return graph
+            return response
             
         except Exception as e:
             logger.error(f"An error occurred during graph generation: {e}")
