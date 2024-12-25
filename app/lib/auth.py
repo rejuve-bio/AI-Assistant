@@ -28,6 +28,6 @@ def token_required(f):
             logging.error(f"Error docodcing token: {e}")
             return {'message': 'Token is invalid!'}, 403
         
-        # Pass current_user_id and maintain other args
-        return f(current_user_id, *args, **kwargs)
+        # Pass current_user_id, Bearer token and maintain other args
+        return f(current_user_id, token, *args, **kwargs)
     return decorated

@@ -9,7 +9,7 @@ main_bp = Blueprint('main', __name__)
 
 @main_bp.route('/query', methods=['POST'])
 @token_required
-def process_query(current_user_id):
+def process_query(current_user_id, token):
     """
     This API accepts a query request and returns a response containing content 
     and an optional graph (if the query is graph-related), or just content for queries 
