@@ -135,28 +135,31 @@ class RAG:
 
     def save_retrievable_docs(self,file,user_id,filter=True):
         try:
+            id = None
             if user_id not in self.user_pdf:
-                self.user_pdf[user_id] = {"count": 0, "names": []}
+                self.user_pdf[user_id] = {"count": 0, "names": [], id: id}
             
             file_name = file.filename
             if file_name in self.user_pdf[user_id]["names"]:
-                return {"error": "PDF already exists."}
+                return {"result": "PDF already exists.", "id":id}
             if self.user_pdf[user_id]["count"] >= PDF_LIMIT:
-                return {"error": "Your quota is full."}
+                return {"result": "Your quota is full.", "id":id}
 
             data = self.extract_preprocess_pdf(file, file_name)
             saved_data = self.save_doc_to_rag(data=data, file_name=file_name,user_id=user_id,collection_name=USERS_PDF_COLLECTION)
             
             self.user_pdf[user_id]["count"]+=1
             self.user_pdf[user_id]["names"].append(file_name)
+            self.user_pdf[user_id]["id"] = f"{user_id}_{file_name}"
             
             with open(self.user_pdf_file, 'w') as f:
                 json.dump(self.user_pdf,f)
 
             memory = MemoryManager(self.llm,self.client).add_memory(f"pdf file : {file_name}", user_id)
-            return saved_data
+            return {"result":saved_data,"id":self.user_pdf[user_id]["id"]}
         except:
             traceback.print_exc()
+            return {"result": "Error uploading your document.", "id":id}
 
     def query(self, query_str: str, user_id=None,collection=VECTOR_COLLECTION, filter=None):
         """
