@@ -4,7 +4,16 @@ import re
 import traceback
 import json
 import tiktoken
+import logging
+import os
+import requests
+from dotenv import load_dotenv
 from app.prompts.summarizer_prompts import SUMMARY_PROMPT, SUMMARY_PROMPT_BASED_ON_USER_QUERY,SUMMARY_PROMPT_CHUNKING,SUMMARY_PROMPT_CHUNKING_USER_QUERY
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+load_dotenv()
 class Graph_Summarizer: 
     '''
     Handles graph-related operations like processing nodes, edges, generating responses ...
@@ -18,6 +27,7 @@ class Graph_Summarizer:
         elif self.llm.__class__.__name__ == 'OpenAIModel':
             self.max_token=100000     
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        self.kg_service_url = os.getenv('ANNOTATION_SERVICE_URL')
 
     def clean_and_format_response(self,desc):
         desc = desc.strip()
@@ -140,20 +150,33 @@ class Graph_Summarizer:
         return self.descriptions
 
 
-    def get_graph_info(self):
-        # get the graph summary from the annotation endpoint to get the summary of the graph
-        pass
+    def get_graph_info(self, graph_id, token):
+        logger.info("querying the graph...")
+        
+        try:
+            logger.debug(f"Sending request to {self.kg_service_url}")
+            response = requests.get(
+                self.kg_service_url+'/annotation/'+graph_id,
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            response.raise_for_status()
+            json_response = response.json()
+            graph = json_response['graph']
+            return graph
+        except:
+            traceback.print_exc()
+        
 
-    def summary(self,graph,user_query=None,graph_id=None):
+    def summary(self,graph,user_query=None,graph_id=None, token = None):
         prev_summery=[]
         try:
 
             if graph_id:
-                graph_summary = self.get_graph_info()
+                graph_data = self.get_graph_info(graph_id, token)
                 if user_query:
-                    prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(description=graph_summary,user_query=user_query)
+                    prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(description=graph_data,user_query=user_query)
                 else:
-                    prompt = SUMMARY_PROMPT.format(description=graph_summary)
+                    prompt = SUMMARY_PROMPT.format(description=graph_data)
                 response = self.llm.generate(prompt)
                 return response
 
@@ -176,8 +199,8 @@ class Graph_Summarizer:
 
                     response = self.llm.generate(prompt)
                     prev_summery = [response]  
-                # cleaned_desc = self.clean_and_format_response(response)
-                return response
+                cleaned_desc = self.clean_and_format_response(response)
+                return cleaned_desc
         except:
             traceback.print_exc()
    
