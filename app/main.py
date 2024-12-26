@@ -127,26 +127,42 @@ class AiAssistance:
         response = self.agent(refactored_question, user_id, token)
         return response 
 
-    def assistant_response(self,query,user_id,token,graph,graph_id,file=None):
+    def assistant_response(self,query,user_id,token,graph=None,graph_id=None,file=None):
+        return_response = {
+            "text": None,
+            "resource": {}
+            }
+
         try:
             if file:
-                response = self.rag.save_retrievable_docs(file,user_id,filter=True)
-                return response            
-                    
-            if graph:
-                logger.info("summarizing graph")
-                summary = self.summarize_graph(graph=graph,query=query)
-                return summary
+                if file.filename.lower().endswith('.pdf'):
+                    response = self.rag.save_retrievable_docs(file,user_id,filter=True)            
+                    # response   should return pdf id
+                    return_response['text'] = response['result']
+                    return_response['resource']['type'] = "file"
+                    return_response['resource']['id'] = response['id']
+                    return return_response
+                else:
+                    response = "Only PDF files are supported."
+                    return_response['text'] = response
+                    return return_response, 400
                 
             if graph_id and query:
                 logger.info("explaining nodes")
                 summary = self.summarize_graph(token=token,graph_id=graph_id,query=query)
-                return summary
+                return_response['text'] = summary
+                return return_response
 
             if query:
                 logger.info("agent calling")
                 response = asyncio.run(self.assistant(query, user_id, token))
-                return response  # return the graph id and summary(result) or return only result           
+                if response.graph_id:
+                    return_response["text"] = response.summary
+                    return_response["resource"]["id"] = response.graph_id
+                
+                return_response["text"] = response
+
+                return return_response  # return the graph id and summary(result) or return only result           
         except:
             traceback.print_exc()
 
