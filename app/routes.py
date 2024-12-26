@@ -9,7 +9,7 @@ main_bp = Blueprint('main', __name__)
 
 @main_bp.route('/query', methods=['POST'])
 @token_required
-def process_query(current_user_id):
+def process_query(current_user_id, auth_token):
     """
     This API accepts a query request and returns a response containing content 
     and an optional graph (if the query is graph-related), or just content for queries 
@@ -24,7 +24,7 @@ def process_query(current_user_id):
             graph = data.get('graph', None)
             graph_id = data.get('graph_id', None)
             
-            response = ai_assistant.assistant_response(query=query,user_id=current_user_id,graph=graph,graph_id=graph_id)
+            response = ai_assistant.assistant_response(query=query,user_id=current_user_id,token=auth_token,graph=graph,graph_id=graph_id)
             return response
 
         elif 'file' in request.files:

@@ -40,7 +40,7 @@ class AiAssistance:
         summary = self.graph_summarizer.summary(graph,query)
         return summary
 
-    def agent(self,message,user_id):
+    def agent(self,message,user_id, token):
         
         graph_agent = AssistantAgent(
             name="gragh_generate",
@@ -83,7 +83,7 @@ class AiAssistance:
         @graph_agent.register_for_llm(description="Generate and handle bio-knowledge graphs for annotation-related queries.")
         def generate_graph(query:Annotated[str,f"always pass the question it self"]):
             try:
-                response = self.annotation_graph.generate_graph(message)
+                response = self.annotation_graph.generate_graph(message, token)
                 return response
             except Exception as e:
                 logger.error("Error in generating graph", exc_info=True)
@@ -108,7 +108,7 @@ class AiAssistance:
         memory_manager = MemoryManager(self.advanced_llm,client=self.client)
         memory_manager.add_memory(query, user_id)
 
-    async def assistant(self,query,user_id):
+    async def assistant(self,query,user_id, token):
         # retrieving saved memories
         try:
             context = self.client._retrieve_memory(user_id=user_id)
@@ -124,10 +124,10 @@ class AiAssistance:
             elif "question:" in response:
                 refactored_question = response.split("question:")[1].strip()
         await self.save_memory(query,user_id)
-        response = self.agent(refactored_question, user_id)
+        response = self.agent(refactored_question, user_id, token)
         return response 
 
-    def assistant_response(self,query,user_id,graph,graph_id,file=None):
+    def assistant_response(self,query,user_id,token,graph,graph_id,file=None):
         try:
             if file:
                 response = self.rag.save_retrievable_docs(file,user_id,filter=True)
@@ -145,7 +145,7 @@ class AiAssistance:
 
             if query:
                 logger.info("agent calling")
-                response = asyncio.run(self.assistant(query, user_id))
+                response = asyncio.run(self.assistant(query, user_id, token))
                 return response
         except:
             traceback.print_exc()
