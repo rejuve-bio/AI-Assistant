@@ -20,16 +20,7 @@ def process_query(current_user_id, auth_token):
 
     try:
         ai_assistant = current_app.config['ai_assistant']
-        data = request.form
-        if not data:
-            return "Invalid request format. Expecting JSON payload.", 400
-
-        # Extract fields from the input format
-        query = data.get('query', None)
-        context = data.get('context', {})
-        context_id = context.get('id', None)
-        resource = context.get('resource', None)
-
+    
         # Handle file upload
         if 'file' in request.files:
             file = request.files['file']
@@ -40,7 +31,17 @@ def process_query(current_user_id, auth_token):
                             query=None
                             )
             return response
-            
+        
+        data = request.form
+        if not data:
+            return "Invalid request format.", 400
+
+        # Extract fields from the input format
+        query = data.get('query', None)
+        context = data.get('context', {})
+        context_id = context.get('id', None)
+        resource = context.get('resource', None)
+        
         # Handle query processing
         response = ai_assistant.assistant_response(
             query=query,
