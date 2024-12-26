@@ -227,7 +227,10 @@ class RAG:
             prompt = RETRIEVE_PROMPT.format(query=query_str, retrieved_content=query_result)
             result = self.llm.generate(prompt)
             logger.info("Result generated successfully.")
-            return result
+            response = {
+                "text": result
+            }
+            return response
         except Exception as e:
             logger.error(f"An error occurred while generating the result: {e}")
             traceback.print_exc()
