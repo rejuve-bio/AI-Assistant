@@ -94,7 +94,7 @@ class Graph:
             
         except Exception as e:
             logger.error(f"An error occurred during graph generation: {e}")
-            return {"error": f"Unable to generate graph from the query: {query}"}
+            return {"text": f"Unable to generate graph from the query: {query}"}
 
     def _extract_relevant_information(self, query):
         try:

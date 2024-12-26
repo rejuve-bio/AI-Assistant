@@ -152,14 +152,9 @@ class AiAssistance:
             if query:
                 logger.info("agent calling")
                 response = asyncio.run(self.assistant(query, user_id, token))
-                if response.graph_id:
-                    return_response["text"] = response.summary
-                    return_response["resource"]["id"] = response.graph_id
-                
-                return_response["text"] = response
-
-                return return_response  # return the graph id and summary(result) or return only result           
+                return response           
         except:
             traceback.print_exc()
+
 
 
