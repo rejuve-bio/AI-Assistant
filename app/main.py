@@ -70,7 +70,7 @@ class AiAssistance:
 
         @user_agent.register_for_execution()
         @rag_agent.register_for_llm(description="Retrieve information for general knowledge queries.")
-        def get_general_response(query:Annotated[str,"always pass the question it self"],user_id=user_id) -> str:
+        def get_general_response() -> str:
             try:
                 response = self.rag.get_result_from_rag(message, user_id)
                 return response
@@ -81,13 +81,13 @@ class AiAssistance:
         
         @user_agent.register_for_execution()
         @graph_agent.register_for_llm(description="Generate and handle bio-knowledge graphs for annotation-related queries.")
-        def generate_graph(query:Annotated[str,f"always pass the question it self"]):
+        def generate_graph():
             try:
                 response = self.annotation_graph.generate_graph(message, token)
                 return response
             except Exception as e:
                 logger.error("Error in generating graph", exc_info=True)
-                return f"I couldn't generate a graph for the given question {query} please try again."
+                return f"I couldn't generate a graph for the given question {message} please try again."
 
 
         group_chat = GroupChat(agents=[user_agent, rag_agent, graph_agent], messages=[],max_round=3)
@@ -138,15 +138,15 @@ class AiAssistance:
                 summary = self.summarize_graph(graph=graph,query=query)
                 return summary
                 
-            if graph_id:
-                logger.info("summarizing graph")
-                summary = self.summarize_graph(graph_id=graph_id,query=query)
+            if graph_id and query:
+                logger.info("explaining nodes")
+                summary = self.summarize_graph(token=token,graph_id=graph_id,query=query)
                 return summary
 
             if query:
                 logger.info("agent calling")
                 response = asyncio.run(self.assistant(query, user_id, token))
-                return response
+                return response  # return the graph id and summary(result) or return only result           
         except:
             traceback.print_exc()
 
