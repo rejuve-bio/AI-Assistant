@@ -135,15 +135,23 @@ class RAG:
 
     def save_retrievable_docs(self,file,user_id,filter=True):
         try:
-            id = None
+            return_response = {
+                            "text": None,
+                            "resource": {}
+                            }
+
             if user_id not in self.user_pdf:
-                self.user_pdf[user_id] = {"count": 0, "names": [], id: id}
+                self.user_pdf[user_id] = {"count": 0, "names": [], "id": None}
             
             file_name = file.filename
             if file_name in self.user_pdf[user_id]["names"]:
-                return {"result": "PDF already exists.", "id":id}
+                return_response["text"] = "PDF already exists."
+                return_response["resource"]["id"] = self.user_pdf[user_id]["id"]
+                return return_response
             if self.user_pdf[user_id]["count"] >= PDF_LIMIT:
-                return {"result": "Your quota is full.", "id":id}
+                return_response["text"] = "Your quota is full."
+                return_response["resource"]["id"] = self.user_pdf[user_id]["id"]
+                return return_response
 
             data = self.extract_preprocess_pdf(file, file_name)
             saved_data = self.save_doc_to_rag(data=data, file_name=file_name,user_id=user_id,collection_name=USERS_PDF_COLLECTION)
@@ -156,10 +164,13 @@ class RAG:
                 json.dump(self.user_pdf,f)
 
             memory = MemoryManager(self.llm,self.client).add_memory(f"pdf file : {file_name}", user_id)
-            return {"result":saved_data,"id":self.user_pdf[user_id]["id"]}
+            return_response["text"] = saved_data
+            return_response["resource"]["id"] = self.user_pdf[user_id]["id"]
+            return_response["resource"]["type"] = "file"
+            return return_response
         except:
             traceback.print_exc()
-            return {"result": "Error uploading your document.", "id":id}
+            return_response["text"] = "Error uploading your document."
 
     def query(self, query_str: str, user_id=None,collection=VECTOR_COLLECTION, filter=None):
         """

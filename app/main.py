@@ -137,11 +137,7 @@ class AiAssistance:
             if file:
                 if file.filename.lower().endswith('.pdf'):
                     response = self.rag.save_retrievable_docs(file,user_id,filter=True)            
-                    # response   should return pdf id
-                    return_response['text'] = response['result']
-                    return_response['resource']['type'] = "file"
-                    return_response['resource']['id'] = response['id']
-                    return return_response
+                    return response
                 else:
                     response = "Only PDF files are supported."
                     return_response['text'] = response
