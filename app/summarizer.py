@@ -161,13 +161,18 @@ class Graph_Summarizer:
             )
             response.raise_for_status()
             json_response = response.json()
-            graph = json_response['graph']
+            graph = {
+                        "nodes": json_response.get("nodes", []),
+                        "edges": json_response.get("edges", []),
+                        "node_count": json_response.get("node_count",[]),
+                        "edge_count": json_response.get("edge_count",[]),
+                    }
             return graph
         except:
             traceback.print_exc()
         
 
-    def summary(self,graph,user_query=None,graph_id=None, token = None):
+    def summary(self,graph=None,user_query=None,graph_id=None, token = None):
         prev_summery=[]
         try:
 

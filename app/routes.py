@@ -2,7 +2,7 @@ from app.lib.auth import token_required
 from flask import Blueprint, request, current_app
 from dotenv import load_dotenv
 import traceback
-
+import json
 
 load_dotenv()
 main_bp = Blueprint('main', __name__)
@@ -38,16 +38,19 @@ def process_query(current_user_id, auth_token):
 
         # Extract fields from the input format
         query = data.get('query', None)
-        context = data.get('context', {})
+        context = json.loads(data.get('context', '{}'))  
         context_id = context.get('id', None)
         resource = context.get('resource', None)
-        
+        graph = data.get('graph',None)
+
+
         # Handle query processing
         response = ai_assistant.assistant_response(
             query=query,
             user_id=current_user_id,
             token=auth_token,
             graph_id=context_id,
+            graph=graph
         )
         return response
 

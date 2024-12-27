@@ -36,9 +36,6 @@ class AiAssistance:
         else:
             self.llm_config = [{"model": self.advanced_llm.model_name, "api_key":self.advanced_llm.api_key}]
 
-    def summarize_graph(self,graph,query):
-        summary = self.graph_summarizer.summary(graph,query)
-        return summary
 
     def agent(self,message,user_id, token):
         
@@ -128,33 +125,34 @@ class AiAssistance:
         return response 
 
     def assistant_response(self,query,user_id,token,graph=None,graph_id=None,file=None):
-        return_response = {
-            "text": None,
-            "resource": {}
-            }
+      
 
         try:
+          
             if file:
                 if file.filename.lower().endswith('.pdf'):
                     response = self.rag.save_retrievable_docs(file,user_id,filter=True)            
                     return response
                 else:
-                    response = "Only PDF files are supported."
-                    return_response['text'] = response
-                    return return_response, 400
+                    response = {
+                        'text': "Only PDF files are supported."
+                        }
+                    return response, 400
                 
             if graph_id and query:
                 logger.info("explaining nodes")
-                summary = self.summarize_graph(token=token,graph_id=graph_id,query=query)
-                return_response['text'] = summary
-                return return_response
+                summary = self.graph_summarizer.summary(token=token,graph_id=graph_id,user_query=query)
+                return summary
 
             if query:
                 logger.info("agent calling")
                 response = asyncio.run(self.assistant(query, user_id, token))
                 return response           
+
+            if graph:
+                summary = self.graph_summarizer.summary(user_query=query,graph=graph)
+                return summary
         except:
             traceback.print_exc()
-
 
 
