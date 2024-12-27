@@ -126,9 +126,10 @@ class AiAssistance:
 
     def assistant_response(self,query,user_id,token,graph=None,graph_id=None,file=None):
       
-
         try:
-          
+            if file and query and graph:
+                return {"text":"please pass a file to be uploaded or query and graph ids/graph at a time"}
+
             if file:
                 if file.filename.lower().endswith('.pdf'):
                     response = self.rag.save_retrievable_docs(file,user_id,filter=True)            
@@ -142,6 +143,10 @@ class AiAssistance:
             if graph_id and query:
                 logger.info("explaining nodes")
                 summary = self.graph_summarizer.summary(token=token,graph_id=graph_id,user_query=query)
+                return summary
+
+            if query and graph:
+                summary = self.graph_summarizer.summary(user_query=query,graph=graph)
                 return summary
 
             if query:
