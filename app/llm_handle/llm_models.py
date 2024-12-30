@@ -18,7 +18,7 @@ load_dotenv()
 EMBEDDING_MODEL = "text-embedding-3-small"
 GEMINI_EMBEDDING_MODEL="models/text-embedding-004"
 api = os.getenv('OPENAI_API_KEY')
-
+gemini_api = os.getenv('GEMINI_API_KEY')
 # Function to generate OpenAI embeddings
 def openai_embedding_model(batch):
     openai.api_key = api
@@ -57,7 +57,7 @@ def gemini_embedding_model(batch):
         logger.info(f"Embedding batch {i // batch_size + 1} of {len(batch) // batch_size + 1}")
 
     
-        genai.configure(api_key=api)
+        genai.configure(api_key=gemini_api)
         try:
                 response = genai.embed_content(
                     model=GEMINI_EMBEDDING_MODEL,
