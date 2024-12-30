@@ -142,7 +142,7 @@ class AiAssistance:
                 
             if graph_id and query:
                 logger.info("explaining nodes")
-                summary = self.graph_summarizer.annotate_by_id(token=token,graph_id=graph_id)
+                summary = self.graph_summarizer.annotate_by_id(token=token,graph_id=graph_id, query=query)
                 return summary
 
             if query and graph:
