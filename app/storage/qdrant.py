@@ -59,8 +59,10 @@ class Qdrant:
                     ]
 
                     if user_id:
+                        filename = df["filename"].to_list()[0]
                         for payload in payloads_list:
                             payload["user_id"] = user_id
+                            payload["id"] = f"{user_id}_{filename}"
                         
                     import random
                     if 'id' not in df.columns:

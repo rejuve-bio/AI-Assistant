@@ -4,7 +4,16 @@ import re
 import traceback
 import json
 import tiktoken
+import logging
+import os
+import requests
+from dotenv import load_dotenv
 from app.prompts.summarizer_prompts import SUMMARY_PROMPT, SUMMARY_PROMPT_BASED_ON_USER_QUERY,SUMMARY_PROMPT_CHUNKING,SUMMARY_PROMPT_CHUNKING_USER_QUERY
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+load_dotenv()
 class Graph_Summarizer: 
     '''
     Handles graph-related operations like processing nodes, edges, generating responses ...
@@ -18,6 +27,7 @@ class Graph_Summarizer:
         elif self.llm.__class__.__name__ == 'OpenAIModel':
             self.max_token=100000     
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        self.kg_service_url = os.getenv('ANNOTATION_SERVICE_URL')
 
     def clean_and_format_response(self,desc):
         desc = desc.strip()
@@ -124,14 +134,29 @@ class Graph_Summarizer:
 
 
     
-    def graph_description(self,graph):
-        nodes = {node['data']['id']: node['data'] for node in graph['nodes']}
-    
-        # Check if the 'edges' key exists in the graph
-        if len(graph['edges']) > 0:
+    def graph_description(self,graph, limited_nodes = 100):
+       
+        limited_node_ids = set()
+        for i in range(min(limited_nodes, len(graph['nodes']))):
+            limited_node_ids.add(graph['nodes'][i]['data']['id'])
+
+        limited_nodes_data = [node for node in graph['nodes'] if node['data']['id'] in limited_node_ids]
+        limited_edges_data = []
+        for edge in graph['edges']:
+            if edge['data']['source'] in limited_node_ids and edge['data']['target'] in limited_node_ids:
+                limited_edges_data.append(edge)
+
+        limited_graph = {
+            "nodes": limited_nodes_data,
+            "edges": limited_edges_data
+        }
+        nodes = {node['data']['id']: node['data'] for node in limited_graph['nodes']}
+
+        if len(limited_graph['edges']) > 0:
             edges = [{'source': edge['data']['source'],
                     'target': edge['data']['target'],
-                    'label': edge['data']['label']} for edge in graph['edges']]
+                    'label': edge['data']['label']} for edge in limited_graph['edges']]
+    
             self.description = self.generate_grouped_descriptions(edges, nodes, batch_size=10)
             self.descriptions = self.num_tokens_from_string("cl100k_base")
         else:
@@ -140,26 +165,60 @@ class Graph_Summarizer:
         return self.descriptions
 
 
-    def get_graph_info(self):
-        # get the graph summary from the annotation endpoint to get the summary of the graph
-        pass
-
-    def summary(self,graph,user_query=None,graph_id=None):
-        prev_summery=[]
+    def annotate_by_id(self,query, graph_id, token):
+        logger.info("querying annotation by graph id...")
+        
         try:
+            logger.debug(f"Sending request to {self.kg_service_url}")
+            response = requests.get(
+                "api url",
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            response.raise_for_status()
+            json_response = response.json()
+          
+            response =  {
+                        "annotation_id": response.get("annotation_id", []),
+                        "summary": response.get("summary", []),
+                    }
+            return response
+        except:
+            traceback.print_exc()
 
+
+    def get_graph_info(self, graph_id, token):
+        logger.info("querying the graph...")
+        
+        try:
+            logger.debug(f"Sending request to {self.kg_service_url}")
+            response = requests.get(
+                self.kg_service_url+'/annotation/'+graph_id,
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            response.raise_for_status()
+            json_response = response.json()
+          
+            graph =  {
+                        "nodes": graph.get("nodes", []),
+                        "edges": graph.get("edges", []),
+                        "node_count": graph.get("node_count",[]),
+                        "edge_count": graph.get("edge_count",[]),
+                    }
+            return graph
+        except:
+            traceback.print_exc()
+
+    def summary(self,graph=None,user_query=None,graph_id=None, token = None):
+
+        try:
             if graph_id:
-                graph_summary = self.get_graph_info()
-                if user_query:
-                    prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(description=graph_summary,user_query=user_query)
-                else:
-                    prompt = SUMMARY_PROMPT.format(description=graph_summary)
-                response = self.llm.generate(prompt)
-                return response
+                summary = self.get_graph_info(graph_id, token)
+                return summary
 
             if graph:
+                graph = self.graph_description(graph)
+
                 prev_summery=[]
-                self.graph_description(graph)
                 for i, batch in enumerate(self.descriptions):  
                     if prev_summery:
                         if user_query:
@@ -176,8 +235,9 @@ class Graph_Summarizer:
 
                     response = self.llm.generate(prompt)
                     prev_summery = [response]  
-                # cleaned_desc = self.clean_and_format_response(response)
-                return response
+                    return response
+                # cleaned_desc = self.clean_and_format_response(prev_summery)
+                # return cleaned_desc
         except:
             traceback.print_exc()
    

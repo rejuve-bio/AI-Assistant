@@ -5,3 +5,4 @@ conversation_cache.json
 qdrant_storage
 biocypher-log
 .cache
+user_pdf.json

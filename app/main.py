@@ -36,9 +36,6 @@ class AiAssistance:
         else:
             self.llm_config = [{"model": self.advanced_llm.model_name, "api_key":self.advanced_llm.api_key}]
 
-    def summarize_graph(self,graph,query):
-        summary = self.graph_summarizer.summary(graph,query)
-        return summary
 
     def agent(self,message,user_id, token):
         
@@ -70,7 +67,7 @@ class AiAssistance:
 
         @user_agent.register_for_execution()
         @rag_agent.register_for_llm(description="Retrieve information for general knowledge queries.")
-        def get_general_response(query:Annotated[str,"always pass the question it self"],user_id=user_id) -> str:
+        def get_general_response() -> str:
             try:
                 response = self.rag.get_result_from_rag(message, user_id)
                 return response
@@ -81,13 +78,13 @@ class AiAssistance:
         
         @user_agent.register_for_execution()
         @graph_agent.register_for_llm(description="Generate and handle bio-knowledge graphs for annotation-related queries.")
-        def generate_graph(query:Annotated[str,f"always pass the question it self"]):
+        def generate_graph():
             try:
                 response = self.annotation_graph.generate_graph(message, token)
                 return response
             except Exception as e:
                 logger.error("Error in generating graph", exc_info=True)
-                return f"I couldn't generate a graph for the given question {query} please try again."
+                return f"I couldn't generate a graph for the given question {message} please try again."
 
 
         group_chat = GroupChat(agents=[user_agent, rag_agent, graph_agent], messages=[],max_round=3)
@@ -127,26 +124,39 @@ class AiAssistance:
         response = self.agent(refactored_question, user_id, token)
         return response 
 
-    def assistant_response(self,query,user_id,token,graph,graph_id,file=None):
+    def assistant_response(self,query,user_id,token,graph=None,graph_id=None,file=None):
+      
         try:
+            if file and query and graph:
+                return {"text":"please pass a file to be uploaded or an anottation query with/without graph ids"}
+
             if file:
-                response = self.rag.save_retrievable_docs(file,user_id,filter=True)
-                return response            
-                    
-            if graph:
-                logger.info("summarizing graph")
-                summary = self.summarize_graph(graph=graph,query=query)
-                return summary
+                if file.filename.lower().endswith('.pdf'):
+                    response = self.rag.save_retrievable_docs(file,user_id,filter=True)            
+                    return response
+                else:
+                    response = {
+                        'text': "Only PDF files are supported."
+                        }
+                    return response, 400
                 
-            if graph_id:
-                logger.info("summarizing graph")
-                summary = self.summarize_graph(graph_id=graph_id,query=query)
+            if graph_id and query:
+                logger.info("explaining nodes")
+                summary = self.graph_summarizer.annotate_by_id(token=token,graph_id=graph_id)
+                return summary
+
+            if query and graph:
+                summary = self.graph_summarizer.summary(user_query=query,graph=graph)
                 return summary
 
             if query:
                 logger.info("agent calling")
                 response = asyncio.run(self.assistant(query, user_id, token))
-                return response
+                return response           
+
+            if graph:
+                summary = self.graph_summarizer.summary(user_query=query,graph=graph)
+                return summary
         except:
             traceback.print_exc()
 
