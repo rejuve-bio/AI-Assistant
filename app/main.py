@@ -128,7 +128,7 @@ class AiAssistance:
       
         try:
             if file and query and graph:
-                return {"text":"please pass a file to be uploaded or query and graph ids/graph at a time"}
+                return {"text":"please pass a file to be uploaded or an anottation query with/without graph ids"}
 
             if file:
                 if file.filename.lower().endswith('.pdf'):
@@ -142,7 +142,7 @@ class AiAssistance:
                 
             if graph_id and query:
                 logger.info("explaining nodes")
-                summary = self.graph_summarizer.summary(token=token,graph_id=graph_id,user_query=query)
+                summary = self.graph_summarizer.annotate_by_id(token=token,graph_id=graph_id)
                 return summary
 
             if query and graph:

@@ -165,6 +165,27 @@ class Graph_Summarizer:
         return self.descriptions
 
 
+    def annotate_by_id(self,query, graph_id, token):
+        logger.info("querying annotation by graph id...")
+        
+        try:
+            logger.debug(f"Sending request to {self.kg_service_url}")
+            response = requests.get(
+                "api url",
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            response.raise_for_status()
+            json_response = response.json()
+          
+            response =  {
+                        "annotation_id": response.get("annotation_id", []),
+                        "summary": response.get("summary", []),
+                    }
+            return response
+        except:
+            traceback.print_exc()
+
+
     def get_graph_info(self, graph_id, token):
         logger.info("querying the graph...")
         
@@ -186,38 +207,37 @@ class Graph_Summarizer:
             return graph
         except:
             traceback.print_exc()
-        
 
     def summary(self,graph=None,user_query=None,graph_id=None, token = None):
-        prev_summery=[]
+
         try:
             if graph_id:
-                graph = self.get_graph_info(graph_id, token)
-                self.graph_description(graph)
+                summary = self.get_graph_info(graph_id, token)
+                return summary
 
             if graph:
                 graph = self.graph_description(graph)
 
-            prev_summery=[]
-            for i, batch in enumerate(self.descriptions):  
-                if prev_summery:
-                    if user_query:
-                        prompt = SUMMARY_PROMPT_CHUNKING_USER_QUERY.format(description=batch,user_query=user_query,prev_summery=prev_summery)
+                prev_summery=[]
+                for i, batch in enumerate(self.descriptions):  
+                    if prev_summery:
+                        if user_query:
+                            prompt = SUMMARY_PROMPT_CHUNKING_USER_QUERY.format(description=batch,user_query=user_query,prev_summery=prev_summery)
+                        else:
+                            prompt = SUMMARY_PROMPT_CHUNKING.format(description=batch,prev_summery=prev_summery)
                     else:
-                        prompt = SUMMARY_PROMPT_CHUNKING.format(description=batch,prev_summery=prev_summery)
-                else:
-                    if user_query:
-                        prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(description=batch,user_query=user_query)
-                        print("prompt", prompt)
-                    else:
-                        prompt = SUMMARY_PROMPT.format(description=batch)
-                        print("prompt", prompt)
+                        if user_query:
+                            prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(description=batch,user_query=user_query)
+                            print("prompt", prompt)
+                        else:
+                            prompt = SUMMARY_PROMPT.format(description=batch)
+                            print("prompt", prompt)
 
-                response = self.llm.generate(prompt)
-                prev_summery = [response]  
-                return response
-            # cleaned_desc = self.clean_and_format_response(prev_summery)
-            # return cleaned_desc
+                    response = self.llm.generate(prompt)
+                    prev_summery = [response]  
+                    return response
+                # cleaned_desc = self.clean_and_format_response(prev_summery)
+                # return cleaned_desc
         except:
             traceback.print_exc()
    
