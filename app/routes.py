@@ -41,7 +41,7 @@ def process_query(current_user_id, auth_token):
         context = json.loads(data.get('context', '{}'))  
         context_id = context.get('id', None)
         resource = context.get('resource', None)
-        graph = json.loads(data.get('graph',None))
+        graph = data.get('graph',None)
 
 
         # Handle query processing
