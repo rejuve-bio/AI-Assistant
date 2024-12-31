@@ -73,6 +73,16 @@ docker run -d \
     -p 6333:6333 \
     -v qdrant_data:/qdrant/storage qdrant/qdrant
 ```
+
+### Authentication
+First, generate and copy your authentication token:
+```bash
+python helper/access_token_generator.py
+```
+Use this token in your API requests:
+- For Postman: Add header `Authorization: Bearer your_token_here`
+- For cURL: Add `-H "Authorization: Bearer your_token_here"`
+
 ### 1. Start the Flask Server
 Run the Flask server with the following command:
 
