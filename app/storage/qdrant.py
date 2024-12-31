@@ -10,7 +10,6 @@ from qdrant_client.models import PointStruct, PointIdsList
 from dotenv import load_dotenv
 import uuid
 
-OPEN_AI_VECTOR_SIZE=1536
 MAX_MEMORY_LIMIT = 10
 MAX_PDF_LIMIT = 2
 USER_COLLECTION = os.getenv("USER_COLLECTION","USER_COLLECTIONS")
@@ -40,9 +39,11 @@ class Qdrant:
             print("no such collection exists")
             try:
                 logger.info(f"creating collection {collection_name}")
+                # Get vector size based on model type
+                vector_size = 768 if isinstance(self.llm, GeminiModel) else 1536
                 self.client.create_collection(
                     collection_name,
-                    vectors_config=models.VectorParams(size=OPEN_AI_VECTOR_SIZE, distance=models.Distance.DOT) )
+                    vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.DOT) )
                 print(f"Collection '{collection_name}' CREATED.")
             except:
                 traceback.print_exc()

@@ -1,7 +1,10 @@
 from app.prompts.rag_prompts import SYSTEM_PROMPT, RETRIEVE_PROMPT
 from app.prompts.pdf_prompt import PDF_SUMMARY_PROMPT
-from app.llm_handle.llm_models import LLMInterface, openai_embedding_model
-from app.llm_handle.llm_models import openai_embedding_model
+from app.llm_handle.llm_models import (
+    LLMInterface,
+    openai_embedding_model,
+    gemini_embedding_model,
+)
 from app.memory_layer import MemoryManager
 from PyPDF2 import PdfReader
 import traceback
@@ -34,8 +37,12 @@ class RAG:
         self.llm = llm
         if self.llm.__class__.__name__ == 'GeminiModel':
             self.max_token=2000
+            self.embedding_model = gemini_embedding_model
+            self.embedding_size = 768 # Gemini embedding size
         elif self.llm.__class__.__name__ == 'OpenAIModel':
             self.max_token=8000
+            self.embedding_model = openai_embedding_model
+            self.embedding_size = 1536 # OpenAI embedding size
         logger.info("RAG initialized with LLM model and Qdrant client.")
 
         self.user_pdf_file = "user_pdf.json"
@@ -101,9 +108,9 @@ class RAG:
         """
         try:
             logger.info("Generating embeddings for content column.")
-            embeddings = openai_embedding_model(df['content'].tolist())
+            embeddings = self.embedding_model(df['content'].tolist())
             embed = np.array(embeddings)
-            embedding = embed.reshape(-1, 1536)  # Reshaping for Qdrant's format
+            embedding = embed.reshape(-1, self.embedding_size) # Dynamic embedding size for Qdrant's format
             df['dense'] = embedding.tolist()  # Add embeddings to DataFrame
             logger.info("Embeddings generated successfully.")
             return df
@@ -190,13 +197,13 @@ class RAG:
                 query_str = [query_str]  
 
             query = {}
-            embeddings = openai_embedding_model(query_str)
+            embeddings = self.embedding_model(query_str)
             if not embeddings or len(embeddings) == 0:
                 logger.error("Failed to generate dense embeddings for the query.")
                 return None
 
             embed = np.array(embeddings)
-            query["dense"] = embed.reshape(-1, 1536).tolist()[0]
+            query["dense"] = embed.reshape(-1, self.embedding_size).tolist()[0]
 
             result = self.client.retrieve_data(collection, query["dense"],user_id,filter)
             logger.warning("results found for the query.")
