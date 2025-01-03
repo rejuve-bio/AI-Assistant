@@ -58,6 +58,8 @@ Ensure that the environment variables are set correctly in `.env` before running
 * **Annotation Service Configuration:**
   * `ANNOTATION_AUTH_TOKEN`: Authentication token for the annotation service.
   * `ANNOTATION_SERVICE_URL`: The URL for the annotation service, which processes queries.
+* **Authentication:**
+  * `JWT_SECRET`: Secret key for JWT token generation and validation.
 * **Flask Configuration:**
   * `FLASK_PORT`: Port for the Flask server (default: 5002).
 * **Qdrant configuration:**
