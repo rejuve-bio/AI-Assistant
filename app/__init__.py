@@ -86,7 +86,7 @@ def create_app():
     # intialize qdrant connection
     # uploading data first time
     try:
-        client = Qdrant()
+        client = Qdrant(advanced_llm)
 
         collections = client.client.get_collections()
         if collections and collections.collections:

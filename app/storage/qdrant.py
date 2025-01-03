@@ -22,8 +22,9 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 class Qdrant:
 
-    def __init__(self):
+    def __init__(self, llm=None):
 
+        self.llm = llm
         try:
             self.client = QdrantClient(os.environ.get('QDRANT_CLIENT','http://localhost:6333'))
             print(f"qdrant connected")
@@ -40,7 +41,7 @@ class Qdrant:
             try:
                 logger.info(f"creating collection {collection_name}")
                 # Get vector size based on model type
-                vector_size = 768 if isinstance(self.llm, GeminiModel) else 1536
+                vector_size = 768 if self.llm.__class__.__name__ == "GeminiModel" else 1536
                 self.client.create_collection(
                     collection_name,
                     vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.DOT) )

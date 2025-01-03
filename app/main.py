@@ -27,7 +27,7 @@ class AiAssistance:
         self.basic_llm = basic_llm
         self.annotation_graph = Graph(advanced_llm, schema_handler)
         self.graph_summarizer = Graph_Summarizer(self.advanced_llm)
-        self.client = Qdrant()
+        self.client = Qdrant(advanced_llm)
         self.rag = RAG(client=self.client,llm=advanced_llm)
 
         
