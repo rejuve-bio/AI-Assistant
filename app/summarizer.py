@@ -211,31 +211,37 @@ class Graph_Summarizer:
     def summary(self,graph=None,user_query=None,graph_id=None, token = None):
 
         try:
+            # send the qeury and the annotation id for the annotation endpoint for the answer
+            # if graph_id:
+            #     result = self.annotate_by_id(graph_id, token)
+            #     return result
+
+            # Get the graph and return an answer for the query based on the provided graph
             if graph_id:
-                summary = self.get_graph_info(graph_id, token)
-                return summary
+                graph_info = self.get_graph_info(graph_id, token)
+                graph = self.graph_description(graph_info)
 
             if graph:
                 graph = self.graph_description(graph)
 
-                prev_summery=[]
-                for i, batch in enumerate(self.descriptions):  
-                    if prev_summery:
-                        if user_query:
-                            prompt = SUMMARY_PROMPT_CHUNKING_USER_QUERY.format(description=batch,user_query=user_query,prev_summery=prev_summery)
-                        else:
-                            prompt = SUMMARY_PROMPT_CHUNKING.format(description=batch,prev_summery=prev_summery)
+            prev_summery=[]
+            for i, batch in enumerate(self.descriptions):  
+                if prev_summery:
+                    if user_query:
+                        prompt = SUMMARY_PROMPT_CHUNKING_USER_QUERY.format(description=batch,user_query=user_query,prev_summery=prev_summery)
                     else:
-                        if user_query:
-                            prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(description=batch,user_query=user_query)
-                            print("prompt", prompt)
-                        else:
-                            prompt = SUMMARY_PROMPT.format(description=batch)
-                            print("prompt", prompt)
+                        prompt = SUMMARY_PROMPT_CHUNKING.format(description=batch,prev_summery=prev_summery)
+                else:
+                    if user_query:
+                        prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(description=batch,user_query=user_query)
+                        print("prompt", prompt)
+                    else:
+                        prompt = SUMMARY_PROMPT.format(description=batch)
+                        print("prompt", prompt)
 
-                    response = self.llm.generate(prompt)
-                    prev_summery = [response]  
-                    return response
+                response = self.llm.generate(prompt)
+                prev_summery = [response]  
+                return response
                 # cleaned_desc = self.clean_and_format_response(prev_summery)
                 # return cleaned_desc
         except:
