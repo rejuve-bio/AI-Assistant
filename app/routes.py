@@ -21,37 +21,28 @@ def process_query(current_user_id, auth_token):
     try:
         ai_assistant = current_app.config['ai_assistant']
     
-        # Handle file upload
-        if 'file' in request.files:
-            file = request.files['file']
-            response = ai_assistant.assistant_response(
-                            user_id=current_user_id,
-                            file=file,
-                            token=None,
-                            query=None
-                            )
-            return response
-        
-        data = request.form
-        if not data:
-            return "Invalid request format.", 400
+        if not request.form and 'file' not in request.files:
+            return "Null request is Invalid format.", 400
 
-        # Extract fields from the input format
+        data = request.form
         query = data.get('query', None)
         context = json.loads(data.get('context', '{}'))  
         context_id = context.get('id', None)
         resource = context.get('resource', None)
         graph = data.get('graph',None)
-
-
-        # Handle query processing
+        
+        # Handle file upload
+        file = None
+        if 'file' in request.files:
+            file = request.files['file']            
+        
         response = ai_assistant.assistant_response(
             query=query,
+            file=file,
             user_id=current_user_id,
             token=auth_token,
             graph_id=context_id,
-            graph=graph
-        )
+            graph=graph)
         return response
 
     except Exception as e:

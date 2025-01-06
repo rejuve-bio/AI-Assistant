@@ -127,8 +127,8 @@ class AiAssistance:
     def assistant_response(self,query,user_id,token,graph=None,graph_id=None,file=None):
       
         try:
-            if file and query and graph:
-                return {"text":"please pass a file to be uploaded or an anottation query with/without graph ids"}
+            if (file and query) or (file and graph):
+                return {"text":"please pass a file to be uploaded or a query with/without graph ids not both"}
 
             if file:
                 if file.filename.lower().endswith('.pdf'):
