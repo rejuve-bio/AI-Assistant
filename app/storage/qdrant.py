@@ -40,7 +40,7 @@ class Qdrant:
             try:
                 logger.info(f"creating collection {collection_name}")
                 # Get vector size based on model type
-                vector_size = 768 if isinstance(self.llm, GeminiModel) else 1536
+                vector_size = 1536
                 self.client.create_collection(
                     collection_name,
                     vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.DOT) )
@@ -86,38 +86,41 @@ class Qdrant:
                     print("Error saving:", e)
             
     def retrieve_data(self,collection, query,user_id,filter=None):
-        if filter:
+        try:
+            if filter:
+                result = self.client.search(
+                        collection_name=collection,
+                        query_vector=query,
+                        with_payload=True,
+                        score_threshold=0.3,
+                        query_filter= models.Filter(
+                                    must=[models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id),),]),
+                        limit=10)
+                response = {}
+                for i, point in enumerate(result):
+                    response[i] = {
+                        "score": point.score,
+                        "content": point.payload.get('content', 'No content available')
+                    }
+                return response
+        
             result = self.client.search(
                     collection_name=collection,
                     query_vector=query,
                     with_payload=True,
                     score_threshold=0.3,
-                    query_filter= models.Filter(
-                                must=[models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id),),]),
                     limit=10)
             response = {}
             for i, point in enumerate(result):
                 response[i] = {
+                    "id": point.id,
                     "score": point.score,
+                    "authors": point.payload.get('authors', 'Unknown'),
                     "content": point.payload.get('content', 'No content available')
                 }
             return response
-    
-        result = self.client.search(
-                collection_name=collection,
-                query_vector=query,
-                with_payload=True,
-                score_threshold=0.3,
-                limit=10)
-        response = {}
-        for i, point in enumerate(result):
-            response[i] = {
-                "id": point.id,
-                "score": point.score,
-                "authors": point.payload.get('authors', 'Unknown'),
-                "content": point.payload.get('content', 'No content available')
-            }
-        return response
+        except:
+            return {"error":"not found"}
 
     def _create_memory_update_memory(self,user_id,data, embedding, metadata,memory_id=None):
 

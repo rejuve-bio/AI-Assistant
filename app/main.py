@@ -117,7 +117,7 @@ class AiAssistance:
         if response:
             if "response:" in response:
                 result = response.split("response:")[1].strip()
-                return result
+                return {"text":result.strip('"')}
             elif "question:" in response:
                 refactored_question = response.split("question:")[1].strip()
         await self.save_memory(query,user_id)
