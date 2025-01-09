@@ -196,8 +196,10 @@ class Graph_Summarizer:
         
         try:
             logger.debug(f"Sending request to {self.kg_service_url}")
+            params =  {"source": "ai-assistant"}
             response = requests.get(
                 self.kg_service_url+'/annotation/'+graph_id,
+                params=params,
                 headers={"Authorization": f"Bearer {token}"}
             )
             response.raise_for_status()

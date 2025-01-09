@@ -38,14 +38,15 @@ class Graph:
             dict: The JSON response from the knowledge graph service or an error message.
         """
         logger.info("Starting knowledge graph query...")
-
+        params = {"source": "ai-assistant"}
         payload = {"requests": json_query}
         
         try:
             logger.debug(f"Sending request to {self.kg_service_url} with payload: {payload}")
             response = requests.post(
-                self.kg_service_url,
+                self.kg_service_url+'/query',
                 json=payload,
+                params=params,
                 headers={"Authorization": f"Bearer {token}"}
             )
             response.raise_for_status()
