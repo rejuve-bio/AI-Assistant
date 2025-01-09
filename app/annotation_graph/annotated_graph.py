@@ -74,7 +74,7 @@ class Graph:
             # If validation failed, return the intermediate steps
             if validation["validation_report"]["validation_status"] == "failed":
                 logger.error("Validation failed for the constructed json query")
-                return {"error": f"Unable to generate graph from the query: {query}"}
+                return {"text": f"Unable to generate graph from the query: {query}"}
             
             # Use the updated JSON for subsequent steps
             validated_json = validation["updated_json"]
