@@ -38,14 +38,15 @@ class Graph:
             dict: The JSON response from the knowledge graph service or an error message.
         """
         logger.info("Starting knowledge graph query...")
-
+        params = {"source": "ai-assistant"}
         payload = {"requests": json_query}
         
         try:
             logger.debug(f"Sending request to {self.kg_service_url} with payload: {payload}")
             response = requests.post(
-                self.kg_service_url,
+                self.kg_service_url+'/query',
                 json=payload,
+                params=params,
                 headers={"Authorization": f"Bearer {token}"}
             )
             response.raise_for_status()
@@ -74,7 +75,7 @@ class Graph:
             # If validation failed, return the intermediate steps
             if validation["validation_report"]["validation_status"] == "failed":
                 logger.error("Validation failed for the constructed json query")
-                return {"error": f"Unable to generate graph from the query: {query}"}
+                return {"text": f"Unable to generate graph from the query: {query}"}
             
             # Use the updated JSON for subsequent steps
             validated_json = validation["updated_json"]
