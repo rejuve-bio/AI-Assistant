@@ -135,6 +135,10 @@ class Graph_Summarizer:
 
     
     def graph_description(self,graph, limited_nodes = 100):
+        if not graph:
+            self.descriptions = "no graph is returned"
+            return self.descriptions
+            
         limited_node_ids = set()
         if isinstance(graph, dict) and 'nodes' in graph:
             if len(graph['nodes']):
@@ -166,7 +170,7 @@ class Graph_Summarizer:
             return self.descriptions
 
 
-    # def annotate_by_id(self,query, graph_id, token):
+    # def annotate_by_id(self, graph_id, token,query=None):
     #     logger.info("querying annotation by graph id...")
         
     #     try:
@@ -179,167 +183,55 @@ class Graph_Summarizer:
     #         json_response = response.json()
           
     #         response =  {
-    #                     "annotation_id": response.get("annotation_id", []),
-    #                     "summary": response.get("summary", []),
-    #                 }
-    #         return response
-    #     except:
-            # traceback.print_exc()
+    #                     "annotation_id": json_response.get("annotation_id", []),
+    #                     "summary": json_response.get("summary", []),
+        #             }
+        #     return response
+        # except:
+        #     traceback.print_exc()
 
 
     def get_graph_info(self, graph_id, token):
         logger.info("querying the graph...")
         
         try:
-        #     logger.debug(f"Sending request to {self.kg_service_url}")
-        #     response = requests.get(
-        #         self.kg_service_url+'/annotation/'+graph_id,
-        #         headers={"Authorization": f"Bearer {token}"}
-        #     )
-        #     response.raise_for_status()
-        #     json_response = response.json()
-            graph = {
-    "nodes": [
-        {
-            "data": {
-                "id": "gene ensg00000163947",
-                "type": "gene",
-                "name": "ARHGEF3"
-            }
-        },
-        {
-            "data": {
-                "id": "protein q9nr81",
-                "type": "protein",
-                "name": "ARHG3"
-            }
-        },
-        {
-            "data": {
-                "id": "transcript enst00000338458",
-                "type": "transcript",
-                "name": "ARHGEF3-202"
-            }
-        },
-        {
-            "data": {
-                "id": "transcript enst00000413728",
-                "type": "transcript",
-                "name": "ARHGEF3-203"
-            }
-        },
-        {
-            "data": {
-                "id": "transcript enst00000296315",
-                "type": "transcript",
-                "name": "ARHGEF3-201"
-            }
-        }
-    ],
-    "edges": [
-        {
-            "data": {
-                "edge_id": "gene_transcribed_to_transcript",
-                "label": "transcribed_to",
-                "source": "gene ensg00000163947",
-                "target": "transcript enst00000338458"
-            }
-        },
-        {
-            "data": {
-                "edge_id": "transcript_translates_to_protein",
-                "label": "translates_to",
-                "source": "transcript enst00000338458",
-                "target": "protein q9nr81"
-            }
-        },
-        {
-            "data": {
-                "edge_id": "gene_transcribed_to_transcript",
-                "label": "transcribed_to",
-                "source": "gene ensg00000163947",
-                "target": "transcript enst00000413728"
-            }
-        },
-        {
-            "data": {
-                "edge_id": "transcript_translates_to_protein",
-                "label": "translates_to",
-                "source": "transcript enst00000413728",
-                "target": "protein q9nr81"
-            }
-        },
-        {
-            "data": {
-                "edge_id": "gene_transcribed_to_transcript",
-                "label": "transcribed_to",
-                "source": "gene ensg00000163947",
-                "target": "transcript enst00000296315"
-            }
-        },
-        {
-            "data": {
-                "edge_id": "transcript_translates_to_protein",
-                "label": "translates_to",
-                "source": "transcript enst00000296315",
-                "target": "protein q9nr81"
-            }
-        }
-    ],
-    "node_count": 5,
-    "edge_count": 6,
-    "node_count_by_label": [
-        {
-            "count": 1,
-            "label": "gene"
-        },
-        {
-            "count": 1,
-            "label": "protein"
-        },
-        {
-            "count": 3,
-            "label": "transcript"
-        }
-    ],
-    "edge_count_by_label": [
-        {
-            "count": 3,
-            "relationship_type": "transcribed_to"
-        },
-        {
-            "count": 3,
-            "relationship_type": "translates_to"
-        }
-    ],
-    "title": "Gene ARHGEF3 and its Transcription and Translation Pathway",
-    "summary": "The graph data presents a clear hierarchical relationship among various biological entities, primarily focusing on the transcription and translation processes. The source node, identified as the gene ensg00000163947, transcribes into multiple transcripts (enst00000338458, enst00000413728, and enst00000296315). Each of these transcripts subsequently translates into the same protein, q9nr81. This indicates a trend where a single gene can give rise to multiple transcripts, which in turn produce the same protein, highlighting the potential for alternative splicing or the presence of isoforms that may not differ in their final protein product.\n\nIn terms of metrics, the graph consists of four distinct nodes: one source gene and three transcripts, all of which ultimately connect to a single protein node. This results in a total of four nodes and four directed edges, illustrating a straightforward yet effective flow of information from gene to protein. The edges represent the relationships of transcription and translation, emphasizing the linear progression from genetic information to functional protein.\n\nThe central node in this network is the protein q9nr81, which serves as the endpoint of the transcription and translation processes initiated by the source gene. This protein is crucial as it integrates the outputs of multiple transcripts, suggesting that it may play a significant role in cellular functions or pathways. The presence of multiple transcripts leading to a single protein underscores the importance of this node in the biological context, as it may be involved in various regulatory mechanisms or functional redundancies.\n\nNotably, the graph exhibits a chain-like structure where the source gene leads to multiple transcripts, which then converge on a single protein. This linear arrangement highlights a clear pathway of gene expression, but it also suggests a potential hub-like characteristic in the protein node, as it connects multiple transcripts. Such structures are essential in understanding how genes can influence protein synthesis and function, particularly in complex biological systems.\n\nThe data also hints at the possibility of alternative splicing, given that multiple transcripts are derived from a single gene. This phenomenon allows for the generation of diverse protein isoforms from a single genetic source, which can have different functional roles or regulatory mechanisms. The presence of multiple transcripts translating into the same protein suggests that while the end product is consistent, the regulatory elements or conditions under which these transcripts are expressed may vary, leading to different biological outcomes.\n\nOverall, the relationships depicted in the graph reveal a streamlined process of gene expression, where a single gene can produce multiple transcripts that ultimately yield the same protein. This simplicity belies the complexity of regulatory mechanisms that may govern the expression of these transcripts, as well as the potential for functional diversity in the resulting protein. The interconnectedness of these nodes emphasizes the intricate nature of biological systems and the importance of understanding the relationships between genes, transcripts, and proteins.",
-    "annotation_id": "677b9ac9187492b174e86eba",
-    "created_at": "2025-01-06T08:56:41.180000",
-    "updated_at": "2025-01-06T08:56:41.180000"
-}
+            logger.debug(f"Sending request to {self.kg_service_url}")
+            response = requests.get(
+                self.kg_service_url+'/annotation/'+graph_id,
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            response.raise_for_status()
+            json_response = response.json()
             graph =  {
-                        "nodes": graph.get("nodes", []),
-                        "edges": graph.get("edges", []),
-                        "node_count": graph.get("node_count",[]),
-                        "edge_count": graph.get("edge_count",[]),
+                        "nodes": json_response.get("nodes", []),
+                        "edges": json_response.get("edges", []),
+                        "node_count": json_response.get("node_count",[]),
+                        "edge_count": json_response.get("edge_count",[]),
                     }
             return graph
         except:
             traceback.print_exc()
+            logger.info("error generating graph information from /annotation endpoint")
+            return []
 
     def summary(self,graph=None,user_query=None,graph_id=None, token = None):
 
         try:
-            # send the qeury and the annotation id for the annotation endpoint for the answer
+            # if graph_id and user_query:
+            #     result = self.annotate_by_id(graph_id=graph_id, query=user_query,token= token)
+            #     return result
+
+            # # send the qeury and the annotation id for the annotation endpoint for the answer
             # if graph_id:
-            #     result = self.annotate_by_id(graph_id, token)
+            #     result = self.annotate_by_id(graph_id=graph_id, token=token)
             #     return result
 
             # Get the graph and return an answer for the query based on the provided graph
             if graph_id:
                 graph_info = self.get_graph_info(graph_id, token)
                 graph = self.graph_description(graph_info)
+                print("this is graph ", graph)
+                print(self.descriptions)
 
             if graph:
                 graph = self.graph_description(graph)
