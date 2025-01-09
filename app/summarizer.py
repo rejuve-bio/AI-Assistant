@@ -170,71 +170,72 @@ class Graph_Summarizer:
             return self.descriptions
 
 
-    # def annotate_by_id(self, graph_id, token,query=None):
-    #     logger.info("querying annotation by graph id...")
-        
-    #     try:
-    #         logger.debug(f"Sending request to {self.kg_service_url}")
-    #         response = requests.get(
-    #             "api url",
-    #             headers={"Authorization": f"Bearer {token}"}
-    #         )
-    #         response.raise_for_status()
-    #         json_response = response.json()
-          
-    #         response =  {
-    #                     "annotation_id": json_response.get("annotation_id", []),
-    #                     "summary": json_response.get("summary", []),
-        #             }
-        #     return response
-        # except:
-        #     traceback.print_exc()
-
-
-    def get_graph_info(self, graph_id, token):
-        logger.info("querying the graph...")
+    def annotate_by_id(self, graph_id, token,query=None):
+        logger.info("querying annotation by graph id...")
         
         try:
-            logger.debug(f"Sending request to {self.kg_service_url}")
             params =  {"source": "ai-assistant"}
-            response = requests.get(
-                self.kg_service_url+'/annotation/'+graph_id,
-                params=params,
-                headers={"Authorization": f"Bearer {token}"}
-            )
+            if query:
+                logger.debug(f"Sending request to {self.kg_service_url}")
+                json = {"requests": {"question":query}}
+                response = requests.get(
+                    self.kg_service_url+'/annotation/'+graph_id,
+                    params=params,
+                    json=json,
+                    headers={"Authorization": f"Bearer {token}"}
+                )
+            else:
+                logger.debug(f"Sending request to {self.kg_service_url}")
+                response = requests.get(
+                    self.kg_service_url+'/annotation/'+graph_id,
+                    params=params,
+                    headers={"Authorization": f"Bearer {token}"}
+                )                
             response.raise_for_status()
             json_response = response.json()
-            graph =  {
-                        "nodes": json_response.get("nodes", []),
-                        "edges": json_response.get("edges", []),
-                        "node_count": json_response.get("node_count",[]),
-                        "edge_count": json_response.get("edge_count",[]),
-                    }
-            return graph
+        
+            response =  {
+                        "answer": json_response.get("answer", []) }
+            return response
         except:
             traceback.print_exc()
             logger.info("error generating graph information from /annotation endpoint")
             return []
 
+
+    # def get_graph_info(self, graph_id, token):
+    #     logger.info("querying the graph...")
+        
+    #     try:
+    #         logger.debug(f"Sending request to {self.kg_service_url}")
+    #         params =  {"source": "ai-assistant"}
+    #         response = requests.get(
+    #             self.kg_service_url+'/annotation/'+graph_id,
+    #             params=params,
+    #             headers={"Authorization": f"Bearer {token}"}
+    #         )
+    #         response.raise_for_status()
+    #         json_response = response.json()
+    #         graph =  {
+    #                     "nodes": json_response.get("nodes", []),
+    #                     "edges": json_response.get("edges", []),
+    #                     "node_count": json_response.get("node_count",[]),
+    #                     "edge_count": json_response.get("edge_count",[]),
+    #                 }
+    #         return graph
+    #     except:
+    #         traceback.print_exc()
+    #         logger.info("error generating graph information from /annotation endpoint")
+    #         return []
+
     def summary(self,graph=None,user_query=None,graph_id=None, token = None):
 
         try:
-            # if graph_id and user_query:
-            #     result = self.annotate_by_id(graph_id=graph_id, query=user_query,token= token)
-            #     return result
-
-            # # send the qeury and the annotation id for the annotation endpoint for the answer
-            # if graph_id:
-            #     result = self.annotate_by_id(graph_id=graph_id, token=token)
-            #     return result
-
-            # Get the graph and return an answer for the query based on the provided graph
+            # send the query and the annotation id for the annotation endpoint for the answer
             if graph_id:
-                graph_info = self.get_graph_info(graph_id, token)
-                graph = self.graph_description(graph_info)
-                print("this is graph ", graph)
-                print(self.descriptions)
-
+                result = self.annotate_by_id(graph_id=graph_id, query=user_query,token= token)
+                return result
+                
             if graph:
                 graph = self.graph_description(graph)
 
