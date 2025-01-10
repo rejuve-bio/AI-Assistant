@@ -135,92 +135,107 @@ class Graph_Summarizer:
 
     
     def graph_description(self,graph, limited_nodes = 100):
-       
+        if not graph:
+            self.descriptions = "no graph is returned"
+            return self.descriptions
+            
         limited_node_ids = set()
-        for i in range(min(limited_nodes, len(graph['nodes']))):
-            limited_node_ids.add(graph['nodes'][i]['data']['id'])
+        if isinstance(graph, dict) and 'nodes' in graph:
+            if len(graph['nodes']):
+                for i in range(min(limited_nodes, len(graph['nodes']))):
+                    limited_node_ids.add(graph['nodes'][i]['data']['id'])
 
-        limited_nodes_data = [node for node in graph['nodes'] if node['data']['id'] in limited_node_ids]
-        limited_edges_data = []
-        for edge in graph['edges']:
-            if edge['data']['source'] in limited_node_ids and edge['data']['target'] in limited_node_ids:
-                limited_edges_data.append(edge)
+                limited_nodes_data = [node for node in graph['nodes'] if node['data']['id'] in limited_node_ids]
+                limited_edges_data = []
+                for edge in graph['edges']:
+                    if edge['data']['source'] in limited_node_ids and edge['data']['target'] in limited_node_ids:
+                        limited_edges_data.append(edge)
 
-        limited_graph = {
-            "nodes": limited_nodes_data,
-            "edges": limited_edges_data
-        }
-        nodes = {node['data']['id']: node['data'] for node in limited_graph['nodes']}
+                limited_graph = {
+                    "nodes": limited_nodes_data,
+                    "edges": limited_edges_data
+                }
+                nodes = {node['data']['id']: node['data'] for node in limited_graph['nodes']}
+ 
+                if len(limited_graph['edges']) > 0:
+                    edges = [{'source': edge['data']['source'],
+                            'target': edge['data']['target'],
+                            'label': edge['data']['label']} for edge in limited_graph['edges']]
+            
+                self.description = self.generate_grouped_descriptions(edges, nodes, batch_size=10)
+                self.descriptions = self.num_tokens_from_string("cl100k_base")
+            else:
+                self.descriptions = []
 
-        if len(limited_graph['edges']) > 0:
-            edges = [{'source': edge['data']['source'],
-                    'target': edge['data']['target'],
-                    'label': edge['data']['label']} for edge in limited_graph['edges']]
-    
-            self.description = self.generate_grouped_descriptions(edges, nodes, batch_size=10)
-            self.descriptions = self.num_tokens_from_string("cl100k_base")
-        else:
-            self.descriptions = self.nodes_description(nodes)
-        
-        return self.descriptions
+            return self.descriptions
 
 
-    def annotate_by_id(self,query, graph_id, token):
+    def annotate_by_id(self, graph_id, token,query=None):
         logger.info("querying annotation by graph id...")
         
         try:
-            logger.debug(f"Sending request to {self.kg_service_url}")
-            response = requests.get(
-                "api url",
-                headers={"Authorization": f"Bearer {token}"}
-            )
+            params =  {"source": "ai-assistant"}
+            if query:
+                logger.debug(f"Sending request to {self.kg_service_url}")
+                json = {"requests": {"question":query}}
+                response = requests.get(
+                    self.kg_service_url+'/annotation/'+graph_id,
+                    params=params,
+                    json=json,
+                    headers={"Authorization": f"Bearer {token}"}
+                )
+            else:
+                logger.debug(f"Sending request to {self.kg_service_url}")
+                response = requests.get(
+                    self.kg_service_url+'/annotation/'+graph_id,
+                    params=params,
+                    headers={"Authorization": f"Bearer {token}"}
+                )                
             response.raise_for_status()
             json_response = response.json()
-          
+        
             response =  {
-                        "annotation_id": response.get("annotation_id", []),
-                        "summary": response.get("summary", []),
-                    }
+                        "answer": json_response.get("answer", []) }
             return response
         except:
             traceback.print_exc()
+            logger.info("error generating graph information from /annotation endpoint")
+            return []
 
 
-    def get_graph_info(self, graph_id, token):
-        logger.info("querying the graph...")
+    # def get_graph_info(self, graph_id, token):
+    #     logger.info("querying the graph...")
         
-        try:
-            logger.debug(f"Sending request to {self.kg_service_url}")
-            response = requests.get(
-                self.kg_service_url+'/annotation/'+graph_id,
-                headers={"Authorization": f"Bearer {token}"}
-            )
-            response.raise_for_status()
-            json_response = response.json()
-          
-            graph =  {
-                        "nodes": graph.get("nodes", []),
-                        "edges": graph.get("edges", []),
-                        "node_count": graph.get("node_count",[]),
-                        "edge_count": graph.get("edge_count",[]),
-                    }
-            return graph
-        except:
-            traceback.print_exc()
+    #     try:
+    #         logger.debug(f"Sending request to {self.kg_service_url}")
+    #         params =  {"source": "ai-assistant"}
+    #         response = requests.get(
+    #             self.kg_service_url+'/annotation/'+graph_id,
+    #             params=params,
+    #             headers={"Authorization": f"Bearer {token}"}
+    #         )
+    #         response.raise_for_status()
+    #         json_response = response.json()
+    #         graph =  {
+    #                     "nodes": json_response.get("nodes", []),
+    #                     "edges": json_response.get("edges", []),
+    #                     "node_count": json_response.get("node_count",[]),
+    #                     "edge_count": json_response.get("edge_count",[]),
+    #                 }
+    #         return graph
+    #     except:
+    #         traceback.print_exc()
+    #         logger.info("error generating graph information from /annotation endpoint")
+    #         return []
 
     def summary(self,graph=None,user_query=None,graph_id=None, token = None):
 
         try:
-            # send the qeury and the annotation id for the annotation endpoint for the answer
-            # if graph_id:
-            #     result = self.annotate_by_id(graph_id, token)
-            #     return result
-
-            # Get the graph and return an answer for the query based on the provided graph
+            # send the query and the annotation id for the annotation endpoint for the answer
             if graph_id:
-                graph_info = self.get_graph_info(graph_id, token)
-                graph = self.graph_description(graph_info)
-
+                result = self.annotate_by_id(graph_id=graph_id, query=user_query,token= token)
+                return result
+                
             if graph:
                 graph = self.graph_description(graph)
 
@@ -241,7 +256,7 @@ class Graph_Summarizer:
 
                 response = self.llm.generate(prompt)
                 prev_summery = [response]  
-                return response
+                return {"text": prev_summery}
                 # cleaned_desc = self.clean_and_format_response(prev_summery)
                 # return cleaned_desc
         except:

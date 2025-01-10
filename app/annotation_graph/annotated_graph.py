@@ -38,19 +38,28 @@ class Graph:
             dict: The JSON response from the knowledge graph service or an error message.
         """
         logger.info("Starting knowledge graph query...")
-
+        source = "ai-assistant"
+        limit = 100
+        property =  True
+        
+        params = {
+            "source": source,
+            "limit": limit,  
+            "properties": property
+        }
         payload = {"requests": json_query}
         
         try:
             logger.debug(f"Sending request to {self.kg_service_url} with payload: {payload}")
             response = requests.post(
-                self.kg_service_url,
+                self.kg_service_url+'/query',
                 json=payload,
+                params=params,
                 headers={"Authorization": f"Bearer {token}"}
             )
             response.raise_for_status()
             json_response = response.json()
-            logger.info(f"Successfully queried the knowledge graph. 'nodes count': {len(json_response.get('nodes'))} 'edges count': {len(json_response.get('edges', []))}")
+            # logger.info(f"Successfully queried the knowledge graph. 'nodes count': {len(json_response.get('nodes'))} 'edges count': {len(json_response.get('edges', []))}")
             return response.json()
         except requests.RequestException as e:
             logger.error(f"Error querying knowledge graph: {e}")
@@ -74,7 +83,7 @@ class Graph:
             # If validation failed, return the intermediate steps
             if validation["validation_report"]["validation_status"] == "failed":
                 logger.error("Validation failed for the constructed json query")
-                return {"error": f"Unable to generate graph from the query: {query}"}
+                return {"text": f"Unable to generate graph from the query: {query}"}
             
             # Use the updated JSON for subsequent steps
             validated_json = validation["updated_json"]

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION","SITE_INFORMATION")
 USER_COLLECTION = os.getenv("USER_COLLECTION","CHAT_MEMORY")
 USERS_PDF_COLLECTION = os.getenv("PDF_COLLECTION","PDF_COLLECTION")
-PDF_LIMIT=2
+PDF_LIMIT=5
 class RAG:
 
     def __init__(self, client, llm: LLMInterface) -> None:

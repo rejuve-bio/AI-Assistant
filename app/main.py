@@ -127,8 +127,8 @@ class AiAssistance:
     def assistant_response(self,query,user_id,token,graph=None,graph_id=None,file=None):
       
         try:
-            if file and query and graph:
-                return {"text":"please pass a file to be uploaded or an anottation query with/without graph ids"}
+            if (file and query) or (file and graph):
+                return {"text":"please pass a file to be uploaded or a query with/without graph ids not both"}
 
             if file:
                 if file.filename.lower().endswith('.pdf'):
@@ -142,7 +142,7 @@ class AiAssistance:
                 
             if graph_id and query:
                 logger.info("explaining nodes")
-                summary = self.graph_summarizer.annotate_by_id(token=token,graph_id=graph_id, query=query)
+                summary = self.graph_summarizer.summary(token=token,graph_id=graph_id, user_query=query)
                 return summary
 
             if query and graph:
