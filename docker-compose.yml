@@ -1,9 +1,12 @@
 services:
   assistant:
     build: .
+    volumes:
+      - .:/AI-Assistant:rw
+      - static:/static
     ports:
       - "${FLASK_PORT}:${FLASK_PORT}"
-    command: gunicorn -w 4 --bind 0.0.0.0:$FLASK_PORT run:app
+    command: gunicorn -w 4 --bind 0.0.0.0:$FLASK_PORT --timeout 60 --loglevel debug run:app
     restart: always
     depends_on:
       - qdrant
@@ -20,3 +23,4 @@ services:
 
 volumes:
   vectordata:
+  static:
