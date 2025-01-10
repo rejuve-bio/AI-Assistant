@@ -195,7 +195,7 @@ class Graph_Summarizer:
             json_response = response.json()
         
             response =  {
-                        "answer": json_response.get("answer", []) }
+                        "text": json_response.get("answer", []) }
             return response
         except:
             traceback.print_exc()
