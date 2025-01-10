@@ -38,7 +38,15 @@ class Graph:
             dict: The JSON response from the knowledge graph service or an error message.
         """
         logger.info("Starting knowledge graph query...")
-        params = {"source": "ai-assistant"}
+        source = "ai-assistant"
+        limit = 100
+        property =  True
+        
+        params = {
+            "source": source,
+            "limit": limit,  
+            "properties": property
+        }
         payload = {"requests": json_query}
         
         try:
@@ -51,7 +59,7 @@ class Graph:
             )
             response.raise_for_status()
             json_response = response.json()
-            logger.info(f"Successfully queried the knowledge graph. 'nodes count': {len(json_response.get('nodes'))} 'edges count': {len(json_response.get('edges', []))}")
+            # logger.info(f"Successfully queried the knowledge graph. 'nodes count': {len(json_response.get('nodes'))} 'edges count': {len(json_response.get('edges', []))}")
             return response.json()
         except requests.RequestException as e:
             logger.error(f"Error querying knowledge graph: {e}")
