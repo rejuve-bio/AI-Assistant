@@ -147,7 +147,7 @@ class AiAssistance:
                     return summary
                 if resource=="hypothesis":
                     logger.info("no hypothesis graph ids")
-                    return "null"                
+                    return {"text":"null"}
 
             if query and graph:
                 summary = self.graph_summarizer.summary(user_query=query,graph=graph)
