@@ -148,6 +148,8 @@ class AiAssistance:
                 if resource=="hypothesis":
                     logger.info("no hypothesis graph ids")
                     return {"text":"null"}
+                else:
+                    return {"text":f"Unsupported resource type: '{resource}'"}
 
             if query and graph:
                 summary = self.graph_summarizer.summary(user_query=query,graph=graph)
