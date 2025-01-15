@@ -42,7 +42,8 @@ def process_query(current_user_id, auth_token):
             user_id=current_user_id,
             token=auth_token,
             graph_id=context_id,
-            graph=graph)
+            graph=graph,
+            resource=resource)
         return response
 
     except Exception as e:

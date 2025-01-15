@@ -124,7 +124,7 @@ class AiAssistance:
         response = self.agent(refactored_question, user_id, token)
         return response 
 
-    def assistant_response(self,query,user_id,token,graph=None,graph_id=None,file=None):
+    def assistant_response(self,query,user_id,token,graph=None,graph_id=None,file=None,resource="annotation"):
       
         try:
             if (file and query) or (file and graph):
@@ -142,8 +142,12 @@ class AiAssistance:
                 
             if graph_id and query:
                 logger.info("explaining nodes")
-                summary = self.graph_summarizer.summary(token=token,graph_id=graph_id, user_query=query)
-                return summary
+                if resource=="annotation":
+                    summary = self.graph_summarizer.summary(token=token,graph_id=graph_id, user_query=query)
+                    return summary
+                if resource=="hypothesis":
+                    logger.info("no hypothesis graph ids")
+                    return "null"                
 
             if query and graph:
                 summary = self.graph_summarizer.summary(user_query=query,graph=graph)
