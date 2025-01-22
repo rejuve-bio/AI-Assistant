@@ -33,6 +33,7 @@ class AiAssistance:
         
         if self.advanced_llm.model_provider == 'gemini':
             self.llm_config = [{"model":"gemini-1.5-flash","api_key": self.advanced_llm.api_key}]
+            advanced_llm.reinitialize_model(self.llm_config[0]["model"])
         else:
             self.llm_config = [{"model": self.advanced_llm.model_name, "api_key":self.advanced_llm.api_key}]
 

@@ -100,10 +100,14 @@ class LLMInterface:
 class GeminiModel(LLMInterface):
     def __init__(self, api_key: str, model_provider,model_name="gemini-pro"): 
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(model_name or "gemini-pro")
-        self.model_name = model_name
         self.model_provider = model_provider
         self.api_key = api_key
+        self.reinitialize_model(model_name)
+
+    def reinitialize_model(self, model_name):
+        """Reinitialize the model with a new model name"""
+        self.model = genai.GenerativeModel(model_name)
+        self.model_name = model_name
 
     def generate(self, prompt: str,system_prompt=None, temperature=0.0, top_k=1) -> Dict[str, Any]:
         response = self.model.generate_content(
