@@ -13,8 +13,8 @@ class Neo4jConnection:
     def __new__(cls, uri: str = None, username: str = None, password: str = None):
         if cls._instance is None:
             cls._instance = super(Neo4jConnection, cls).__new__(cls)
-            if uri and username and password:
-                cls._driver = GraphDatabase.driver(uri, auth=(username, password))
+            if username and password:
+                cls._driver = GraphDatabase.driver('neo4j://localhost:7687', auth=(username, password))
         return cls._instance
 
     @classmethod
