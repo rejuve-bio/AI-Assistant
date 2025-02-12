@@ -40,10 +40,13 @@ class Qdrant:
             try:
                 logger.info(f"creating collection {collection_name}")
                 # Get vector size based on model type
-                vector_size = 1536
+                #####################################
+                vector_size = 768 # changed to 768 from 1536
+                ###########################
                 self.client.create_collection(
                     collection_name,
                     vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.DOT) )
+                    # why DOT product is used as distance metric?
                 print(f"Collection '{collection_name}' CREATED.")
             except:
                 traceback.print_exc()
