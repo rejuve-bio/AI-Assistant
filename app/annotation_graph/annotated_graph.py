@@ -2,6 +2,7 @@ import copy
 import json
 import logging
 from flask import current_app
+import random
 import requests
 import os
 from dotenv import load_dotenv
@@ -27,6 +28,106 @@ class Graph:
                                     password=os.getenv('NEO4J_PASSWORD'))
         self.kg_service_url = os.getenv('ANNOTATION_SERVICE_URL')
 
+
+################################################################################################################################################3
+
+    def query_knowledge_graph_local(self, json_query, token=None):
+        # Initialize the Neo4j driver and prepare the graph container.
+        driver = self.neo4j.get_driver()
+        graph = {"nodes": [], "edges": []}
+        added_nodes = {}  # To avoid duplicate nodes (keyed by node id)
+
+        # Define a helper function to build property conditions and parameters.
+        def build_conditions_and_params(properties, prefix="src"):
+            conditions = []
+            params = {}
+            for key, value in properties.items():
+                param_key = f"{prefix}_{key}"
+                conditions.append(f"{prefix}.{key} = ${param_key}")
+                params[param_key] = value
+            return " AND ".join(conditions), params
+
+        try:
+            with driver.session() as session:
+                # Process each predicate in the json_query. source, target and reltion_type
+                for predicate in json_query.get("predicates", []):
+                    source_key = predicate.get("source")
+                    target_key = predicate.get("target")
+                    relationship_type = predicate.get("type")
+                    
+                    # Look up the corresponding node definitions.
+                    source_node_def = next((node for node in json_query["nodes"] if node["node_id"] == source_key), None)
+                    target_node_def = next((node for node in json_query["nodes"] if node["node_id"] == target_key), None)
+                    
+                    # If we cannot find either node definition, skip this predicate.
+                    if not source_node_def or not target_node_def:
+                        continue
+
+                    source_label = source_node_def.get("type", "")
+                    target_label = target_node_def.get("type", "")
+                    source_props = source_node_def.get("properties", {})
+                    
+                    # Build the property condition and parameters for the source node.
+                    conditions, params = build_conditions_and_params(source_props, prefix="src")
+                    where_clause = f"WHERE {conditions}" if conditions else ""
+                    
+                    # Construct the dynamic Cypher query.
+                    # It finds the source node based on its label and properties and then
+                    # matches the relationship to a target node with the given target label.
+                    query = f"""
+                    MATCH (src:{source_label})
+                    {where_clause}
+                    MATCH (src)-[r:{relationship_type}]->(tgt:{target_label})
+                    RETURN src, tgt
+                    """
+                    
+                    # Execute the query.
+                    result = session.run(query, **params)
+                    
+                    # Process the result records.
+                    for record in result:
+                        src_node = record["src"]
+                        tgt_node = record["tgt"]
+                        
+                        # Add the source node to the graph if not already added.
+                        if src_node.id not in added_nodes:
+                            node_data = {
+                                "id": src_node.id,
+                                "label": source_label,
+                                "properties": dict(src_node)
+                            }
+                            graph["nodes"].append(node_data)
+                            added_nodes[src_node.id] = node_data
+                            
+                        # Add the target node similarly.
+                        if tgt_node.id not in added_nodes:
+                            node_data = {
+                                "id": tgt_node.id,
+                                "label": target_label,
+                                "properties": dict(tgt_node)
+                            }
+                            graph["nodes"].append(node_data)
+                            added_nodes[tgt_node.id] = node_data
+                            
+                        # Finally, add the edge for the relationship.
+                        edge_data = {
+                            "source": src_node.id,
+                            "target": tgt_node.id,
+                            "type": relationship_type
+                        }
+                        graph["edges"].append(edge_data)
+                        
+        finally:
+            driver.close()
+
+
+        response={}
+        response["answer"]=graph
+        response["annotation_id"]=random.randint(100000, 999999)
+        logger.info(f"Constructed Knowledge graph: \n{json.dumps(response, indent=2)}")
+        return response
+
+###################################################################################################################################
     def query_knowledge_graph(self, json_query, token):
         """
         Query the knowledge graph service.
@@ -47,8 +148,7 @@ class Graph:
             "limit": limit,  
             "properties": property
         }
-        payload = {"requests": json_query}
-        
+        payload = {"requests": json_query}     
         try:
             logger.debug(f"Sending request to {self.kg_service_url} with payload: {payload}")
             response = requests.post(
@@ -59,8 +159,10 @@ class Graph:
             )
             response.raise_for_status()
             json_response = response.json()
-            # logger.info(f"Successfully queried the knowledge graph. 'nodes count': {len(json_response.get('nodes'))} 'edges count': {len(json_response.get('edges', []))}")
+            #logger.info(f"Successfully queried the knowledge graph. 'nodes count': {len(json_response.get('nodes'))} 'edges count': {len(json_response.get('edges', []))}")
+           
             return response.json()
+        
         except requests.RequestException as e:
             logger.error(f"Error querying knowledge graph: {e}")
             if e.response is not None:
@@ -89,10 +191,14 @@ class Graph:
             validated_json = validation["updated_json"]
             validated_json["question"] = query
             # Query knowledge graph with validated JSON
-            graph = self.query_knowledge_graph(validated_json, token)
+            #####################################################################
+            graph = self.query_knowledge_graph_local(validated_json, token)
+            #######################################################################
         
             # Generate final answer using validated JSON
             # final_answer = self._provide_text_response(query, validated_json, graph)
+
+            
             response = {
                 "text": graph["answer"],
                 "resource": {"id": graph["annotation_id"], 
@@ -108,6 +214,7 @@ class Graph:
     def _extract_relevant_information(self, query):
         try:
             logger.info("Extracting relevant information from the query.")
+            #print(f"enhanced_schema: {self.enhanced_schema}")
             prompt = EXTRACT_RELEVANT_INFORMATION_PROMPT.format(schema=self.enhanced_schema, query=query)
             extracted_info =  self.llm.generate(prompt)
             logger.info(f"Extracted data: \n{extracted_info}")
@@ -202,7 +309,7 @@ class Graph:
                 t = node_types.get(edge['target'])
                 rel = edge['type']
                 conn = f'{s}-{rel}-{t}'
-                
+                #print(f"processe schema {self.schema_handler.processed_schema}")
                 if conn not in self.schema_handler.processed_schema:
                     rev = f'{t}-{rel}-{s}'
                     if rev not in self.schema_handler.processed_schema:
