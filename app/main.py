@@ -5,7 +5,7 @@ from app.annotation_graph.schema_handler import SchemaHandler
 from app.rag.rag import RAG
 from .annotation_graph.annotated_graph import Graph
 from .llm_handle.llm_models import LLMInterface,OpenAIModel,get_llm_model,openai_embedding_model
-from autogen import AssistantAgent, UserProxyAgent, GroupChat, GroupChatManager
+from autogen import AssistantAgent, UserProxyAgent, GroupChat, GroupChatManager, ConversableAgent
 from typing import Annotated
 from app.storage.qdrant import Qdrant
 from app.prompts.conversation_handler import conversation_prompt
@@ -23,7 +23,7 @@ load_dotenv()
 class AiAssistance:
 
     def __init__(self, advanced_llm:LLMInterface, basic_llm:LLMInterface, schema_handler:SchemaHandler) -> None:
-        self.advanced_llm = advanced_llm     
+        self.advanced_llm = advanced_llm  
         self.basic_llm = basic_llm
         self.annotation_graph = Graph(advanced_llm, schema_handler)
         self.graph_summarizer = Graph_Summarizer(self.advanced_llm)
@@ -32,20 +32,23 @@ class AiAssistance:
 
         
         if self.advanced_llm.model_provider == 'gemini':
-            self.llm_config = [{"model":"gemini-1.5-flash","api_key": self.advanced_llm.api_key}]
+            self.llm_config = [{"model":"gemini-pro",
+                                "api_key": self.advanced_llm.api_key, 
+                                  "base_url": "https://generativelanguage.googleapis.com/v1beta",
+                                  "api_type": "google" }]
+            print("gemini model selected")
         else:
             self.llm_config = [{"model": self.advanced_llm.model_name, "api_key":self.advanced_llm.api_key}]
 
 
     def agent(self,message,user_id, token):
-        
-        graph_agent = AssistantAgent(
+        graph_agent = ConversableAgent(
             name="gragh_generate",
             llm_config = {"config_list" : self.llm_config},
-            system_message=(
+            system_message=(        
            "You are a knowledgeable assistant specializing in answering questions related to biological annotations. This includes identifying genes, proteins, terms, SNPs, transcripts, and interactions."
            "You have access to a bio knowledge graph to retrieve relevant data."
-           "Please note that you can only use the functions provided to you. When your task is complete, Reply 'TERMINATE' when the task is done."
+           "Please note that you can only use the functions provided to you specifically to retrieve relevant data using the users query given to you below. When your task is complete, Reply 'TERMINATE' when the task is done."
             )
         )
 
@@ -59,7 +62,12 @@ class AiAssistance:
 
         user_agent = UserProxyAgent(
             name="user",
-            llm_config=False,
+            llm_config={"config_list" : self.llm_config},
+            system_message=(
+                "You are a user who is interacting with the assistant. You can ask questions and get answers from the assistant."
+                "Please note that you can only use the two agents(rag_agent, and the graph_agent). Generate an answer that is clear and understandable for humans with the response still containing its core content."
+                " When your task is complete, Reply 'TERMINATE' when the task is done."
+                ),
             code_execution_config=False,
             human_input_mode="NEVER",
             is_termination_msg=lambda x: x.get("content", "") and x.get("content", "").rstrip().endswith("TERMINATE"))
@@ -75,10 +83,11 @@ class AiAssistance:
                 logger.error("Error in retrieving response", exc_info=True)
                 return "Error in retrieving response."
 
-        
+
         @user_agent.register_for_execution()
         @graph_agent.register_for_llm(description="Generate and handle bio-knowledge graphs for annotation-related queries.")
         def generate_graph():
+            print("generate graph called")
             try:
                 response = self.annotation_graph.generate_graph(message, token)
                 return response
@@ -86,15 +95,14 @@ class AiAssistance:
                 logger.error("Error in generating graph", exc_info=True)
                 return f"I couldn't generate a graph for the given question {message} please try again."
 
-
-        group_chat = GroupChat(agents=[user_agent, rag_agent, graph_agent], messages=[],max_round=3)
+        print("agents created")
+        group_chat = GroupChat(agents=[user_agent, graph_agent, rag_agent], messages=[],max_round=3)
         group_manager = GroupChatManager(
             groupchat=group_chat,
             llm_config = {"config_list" : self.llm_config},
             human_input_mode="NEVER")
-
+        print("group manager created")
         user_agent.initiate_chat(group_manager, message=message, clear_history=False)
-
         response = group_chat.messages[2]['content']
         if response:
             return response
@@ -158,12 +166,14 @@ class AiAssistance:
             if query:
                 logger.info("agent calling")
                 response = asyncio.run(self.assistant(query, user_id, token))
-                return response           
-
+                return response               
+                           
             if graph:
                 summary = self.graph_summarizer.summary(user_query=query,graph=graph)
                 return summary
         except:
             traceback.print_exc()
+
+        
 
 
