@@ -3,6 +3,7 @@ from flask import Flask
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
+from flask_cors import CORS
 from app.annotation_graph.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import get_llm_model
 from app.storage.qdrant import Qdrant
@@ -38,6 +39,7 @@ def create_app():
     """Creates and configures the Flask application."""
     logger.info('Creating Flask app')
     app = Flask(__name__)
+    CORS(app)
     
     config = load_config()
     app.config.update(config)
