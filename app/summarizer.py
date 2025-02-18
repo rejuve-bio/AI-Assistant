@@ -178,7 +178,7 @@ class Graph_Summarizer:
             if query:
                 logger.debug(f"Sending request to {self.kg_service_url}")
                 json = {"requests": {"question":query}}
-                response = requests.get(
+                response = requests.post(
                     self.kg_service_url+'/annotation/'+graph_id,
                     params=params,
                     json=json,

@@ -22,7 +22,7 @@ def token_required(f):
             if 'Bearer' in token:
                 token = token.split()[1]
             
-            data = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            data = jwt.decode(token, JWT_SECRET, algorithms=["HS256"], options={"verify_sub": False})
             current_user_id = data['user_id']
         except Exception as e:
             logging.error(f"Error docodcing token: {e}")
