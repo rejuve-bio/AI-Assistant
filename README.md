@@ -21,35 +21,34 @@ AI-ASSISTANT/
 │   ├── lib/
 │   │   └── auth.py                  # JWT authentication decorator for API endpoints  
 │   ├── llm_handle/
-│   │   └── ilm_models.py            # LLM interface (OpenAI/Gemini implementations)
+│   │   └── ilm_models.py            # LLM interface
 |   |
 │   ├── prompts/                     # LLM prompt templates
 │   │
 │   ├── rag/
-│   │   └── rag.py                   # RAG pipeline: PDF processing & vector search
+│   │   └── rag.py                   # RAG pipeline
 │   │
 │   ├── storage/
-│   │   └── qdrant.py                # Qdrant vector DB CRUD operations
+│   │   └── qdrant.py                # Qdrant vector DB
 │   │
 │   ├── __init__.py                  # Python package initializer
 │   ├── main.py                      # Core application logic & multi-agent orchestration
 │   ├── memory_layer.py              # Conversation memory manager
 │   ├── routes.py                    # Flask API endpoint definitions
-│   └── summarizer.py                # Biological graph/text summarization engine
+│   └── summarizer.py                # Summarization engine
 |
 ├── config/                          # Schema/configuration files
 |
 ├── helper/
-│   ├── __init__.py                  # Python package marker
 │   └── access_token_generator.py    # JWT token generation utility
 |
 ├── .env.example                     # Environment variable template
-├── .gitignore                       # Version control exclusion rules
+├── .gitignore                      
 ├── docker-compose.yml               # Qdrant service definitions
 ├── Dockerfile                       # Application containerization setup
 ├── poetry.lock                      
-├── pyproject.toml                   # Poetry dependencies (LLMs, DB drivers)
-├── README.md                        # Project documentation
+├── pyproject.toml                   # Poetry dependencies
+├── README.md                       
 ├── run.py                           # Flask server entry point
 └── sample_data.json                
 ```
@@ -60,41 +59,32 @@ AI-ASSISTANT/
 **Purpose**: Query structured biological data with schema-enforced accuracy.  
 
 #### Key Processes:  
-- **Query Parsing & Validation**  
-  1. **Entity Extraction**: Uses LLMs to identify key biological terms (e.g., "BRCA1", "ESR1") from natural language queries.  
-  2. **Schema Compliance Check**: Validates entities against BioCypher schemas (`schema_config.yaml`):  
-     - Verifies node types  
-     - Checks valid relationship directions  
-     - Filters invalid properties  
-
+- Query Parsing & Validation  
+  - *Entity Extraction*
+  - *Schema Compliance Check*
+    
 <!-- - **Graph Traversal & Pathfinding**
   - Employs **Depth-First Search (DFS)** to discover biological pathways between entities.  
   - Converts raw paths into structured JSON using predefined templates (`dfs_json_format.py`).   -->
 
-- **Neo4j Integration**  
-  - **Fuzzy Matching**: Resolves typos/variants (e.g., "BRCA-1" → "BRCA1") using Levenshtein distance similarity.  
+- Neo4j Integration  
+- Integration with the Annotation Service
 
-- **Integration with the Annotation Service**
-  - The annotation service receives a validated JSON query via a POST request to its /query endpoint (with necessary parameters and authentication). It then processes the query and returns the corresponding graph data.
 
 ### 2. **Document Intelligence Pipeline**  
 **Purpose**: Transform unstructured text/PDFs into searchable biological knowledge.  
 
 #### Workflow:  
 1. **PDF Processing**  
-   - **Text Extraction**: Uses PyPDF2 to parse research papers.  
-   - **Summarization**: Generates abstracts/key insights using LLMs.  
+   - *Text Extraction*  
+   - *Summarization*  
 
 2. **Adaptive Chunking**  
-   - Splits documents into context-preserving segments based on LLM token limits.  
-   - Maintains document structure (headers, sections) for accurate retrieval.  
-
 3. **Semantic Search**  
-   - **Vector Embeddings**: Uses OpenAI/Gemini models to convert text into embeddings.  
-   - **Hybrid Storage**:  
-     - *General Knowledge*: Preloaded datasets in `VECTOR_COLLECTION`.  
-     - *User-Specific Data*: Private PDFs in `USER_COLLECTION` with JWT-based access control.  
-   - **Contextual Retrieval**: Combines vector similarity and metadata.  
+   - Vector Embeddings  
+   - Hybrid Storage  
+     - *General Knowledge* and *User-Specific Data*  
+   - Contextual Retrieval
 
 
 ### 3. **Conversational Intelligence**  
@@ -102,14 +92,12 @@ AI-ASSISTANT/
 
 #### Components:  
 - **Multi-Agent Workflow** (AutoGen):  
-  - **Graph Agent**: Specializes in biological entity recognition and Cypher query generation.  
-  - **RAG Agent**: Retrieves and synthesizes information from documents. 
-  - **Summarizer**: Converts raw graph data into plain-language explanations.  
+  - `Graph Agent`  
+  - `RAG Agent`
 
 - **Memory Management**:  
-  - **Short-Term Context**: The system retains recent conversation history for context. 
-  - **Long-Term Memory**: Stores key facts as vectors in Qdrant for cross-session recall.  
-  - **LRU Eviction**: Limits memory storage to 10 interactions per user.
+  - Short-Term Context
+  - Long-Term Memory
 
 ---
 ## System Architecture  
@@ -155,7 +143,7 @@ AI-ASSISTANT/
    - Registers authentication middleware for JWT validation.
 ---
 ## Authentication & Security  
-- **JWT Tokens**: Required for all API endpoints. Generated via `access_token_generator.py`.  
+- **JWT Tokens**: Required for all API endpoints. Generated via `access_token_generator.py`.
 - **Rate Limiting**: Prevents API abuse (200 requests/minute/IP).  
 - **Data Isolation**: User-specific PDFs/vectors stored in separate Qdrant collections.  
 ---
@@ -234,14 +222,6 @@ python run.py
 ```bash
 docker-compose up --build
 ```
-
-### 3. API Endpoints  
-
-| Endpoint | Method | Functionality |  
-|----------|--------|---------------|  
-| `/query` | POST | Unified endpoint for queries, graph queries, document search, and PDF uploads |  
-| `/auth/token` | GET | Generate JWT for API access |  
-
 
 #### POST `/query`  
 
