@@ -11,6 +11,7 @@ from app.annotation_graph.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import LLMInterface
 from app.prompts.annotation_prompts import EXTRACT_RELEVANT_INFORMATION_PROMPT, JSON_CONVERSION_PROMPT, SELECT_PROPERTY_VALUE_PROMPT
 from .dfs_handler import *
+from app.summarizer import Graph_Summarizer
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,17 +28,18 @@ class Graph:
                                     username=os.getenv('NEO4J_USERNAME'), 
                                     password=os.getenv('NEO4J_PASSWORD'))
         self.kg_service_url = os.getenv('ANNOTATION_SERVICE_URL')
+        self.graph_summarizer = Graph_Summarizer(self.llm)
 
 
 ################################################################################################################################################3
-
-    def query_knowledge_graph_local(self, json_query, token=None):
+    # Mock function to query the knowledge graph locally
+    def query_knowledge_graph_local(self, json_query, user_query=None, token=None):
         # Initialize the Neo4j driver and prepare the graph container.
         driver = self.neo4j.get_driver()
         graph = {"nodes": [], "edges": []}
-        added_nodes = {}  # To avoid duplicate nodes (keyed by node id)
+        added_nodes = {}  # To avoid duplicate nodes keyed by node id
 
-        # Define a helper function to build property conditions and parameters.
+        # Helper function to build property conditions and parameters.
         def build_conditions_and_params(properties, prefix="src"):
             conditions = []
             params = {}
@@ -49,7 +51,7 @@ class Graph:
 
         try:
             with driver.session() as session:
-                # Process each predicate in the json_query. source, target and reltion_type
+                # Process each predicate in the json_query.
                 for predicate in json_query.get("predicates", []):
                     source_key = predicate.get("source")
                     target_key = predicate.get("target")
@@ -59,26 +61,24 @@ class Graph:
                     source_node_def = next((node for node in json_query["nodes"] if node["node_id"] == source_key), None)
                     target_node_def = next((node for node in json_query["nodes"] if node["node_id"] == target_key), None)
                     
-                    # If we cannot find either node definition, skip this predicate.
+                    # Skip this predicate if either node definition is missing.
                     if not source_node_def or not target_node_def:
                         continue
 
                     source_label = source_node_def.get("type", "")
                     target_label = target_node_def.get("type", "")
                     source_props = source_node_def.get("properties", {})
-                    
+
                     # Build the property condition and parameters for the source node.
                     conditions, params = build_conditions_and_params(source_props, prefix="src")
                     where_clause = f"WHERE {conditions}" if conditions else ""
                     
                     # Construct the dynamic Cypher query.
-                    # It finds the source node based on its label and properties and then
-                    # matches the relationship to a target node with the given target label.
                     query = f"""
-                    MATCH (src:{source_label})
-                    {where_clause}
-                    MATCH (src)-[r:{relationship_type}]->(tgt:{target_label})
-                    RETURN src, tgt
+                        MATCH (src:{source_label})
+                        {where_clause}
+                        MATCH (src)-[r:{relationship_type}]->(tgt:{target_label})
+                        RETURN src, tgt
                     """
                     
                     # Execute the query.
@@ -88,31 +88,31 @@ class Graph:
                     for record in result:
                         src_node = record["src"]
                         tgt_node = record["tgt"]
-                        
-                        # Add the source node to the graph if not already added.
+
+                        # Add the source node if not already added.
                         if src_node.id not in added_nodes:
                             node_data = {
-                                "id": src_node.id,
+                                "id": str(src_node.id),
                                 "label": source_label,
                                 "properties": dict(src_node)
                             }
                             graph["nodes"].append(node_data)
-                            added_nodes[src_node.id] = node_data
-                            
+                            added_nodes[str(src_node.id)] = node_data
+
                         # Add the target node similarly.
                         if tgt_node.id not in added_nodes:
                             node_data = {
-                                "id": tgt_node.id,
+                                "id": str(tgt_node.id),
                                 "label": target_label,
                                 "properties": dict(tgt_node)
                             }
                             graph["nodes"].append(node_data)
-                            added_nodes[tgt_node.id] = node_data
-                            
-                        # Finally, add the edge for the relationship.
+                            added_nodes[str(tgt_node.id)] = node_data
+
+                        # Add the edge for the relationship.
                         edge_data = {
-                            "source": src_node.id,
-                            "target": tgt_node.id,
+                            "source": str(src_node.id),
+                            "target": str(tgt_node.id),
                             "type": relationship_type
                         }
                         graph["edges"].append(edge_data)
@@ -120,11 +120,20 @@ class Graph:
         finally:
             driver.close()
 
+        # Reformat the graph so each node and edge is encapsulated within a "data" key.
+        formatted_graph = {
+            "nodes": [{"data": node} for node in graph["nodes"]],
+            "edges": [
+                {"data": {"source": edge["source"], "target": edge["target"], "label": edge["type"]}}
+                for edge in graph["edges"]
+            ]
+        }
 
-        response={}
-        response["answer"]=graph
-        response["annotation_id"]=random.randint(100000, 999999)
-        logger.info(f"Constructed Knowledge graph: \n{json.dumps(response, indent=2)}")
+        response = {}
+        response["graph"] = formatted_graph
+        logger.info(f"Graph data: {formatted_graph}")
+        response["answer"] = self.graph_summarizer.summary(graph=formatted_graph, user_query=user_query)
+        response["annotation_id"] = random.randint(100000, 999999)
         return response
 
 ###################################################################################################################################
@@ -192,7 +201,7 @@ class Graph:
             validated_json["question"] = query
             # Query knowledge graph with validated JSON
             #####################################################################
-            graph = self.query_knowledge_graph_local(validated_json, token)
+            graph = self.query_knowledge_graph_local(json_query= validated_json, user_query= query, token=token)
             #######################################################################
         
             # Generate final answer using validated JSON
