@@ -177,30 +177,35 @@ class Graph_Summarizer:
             params =  {"source": "ai-assistant"}
             if query:
                 logger.debug(f"Sending request to {self.kg_service_url}")
-                json = {"requests": {"question":query}}
+                json_payload = {"requests": {"question": query}}  # Use json_payload to avoid variable name conflict
                 response = requests.post(
-                    self.kg_service_url+'/annotation/'+graph_id,
+                    self.kg_service_url + '/annotation/' + graph_id,
                     params=params,
-                    json=json,
+                    json=json_payload,
                     headers={"Authorization": f"Bearer {token}"}
                 )
             else:
                 logger.debug(f"Sending request to {self.kg_service_url}")
                 response = requests.get(
-                    self.kg_service_url+'/annotation/'+graph_id,
+                    self.kg_service_url + '/annotation/' + graph_id,
                     params=params,
                     headers={"Authorization": f"Bearer {token}"}
-                )                
+                )
+            # Raise an exception if the request was unsuccessful
             response.raise_for_status()
+
+            # Parse the JSON response
             json_response = response.json()
-        
-            response =  {
-                        "text": json_response.get("answer", []) }
+            response = {
+                "text": json_response.get("answer", [])
+ }
             return response
-        except:
+
+        except Exception as e:
+            # Log the error and stack trace
             traceback.print_exc()
-            logger.info("error generating graph information from /annotation endpoint")
-            return []
+            logger.error("Error generating graph information from /annotation endpoint")
+            return {"text": "Error generating graph information"}
 
 
     # def get_graph_info(self, graph_id, token):
