@@ -140,16 +140,36 @@ class AiAssistance:
                         }
                     return response, 400
                 
-            if graph_id and query:
-                logger.info("explaining nodes")
-                if resource=="annotation":
-                    summary = self.graph_summarizer.summary(token=token,graph_id=graph_id, user_query=query)
-                    return summary
-                if resource=="hypothesis":
-                    logger.info("no hypothesis graph ids")
-                    return {"text":"null"}
+            if graph_id:  
+                logger.info("Explaining nodes")
+
+                # Case 1: Both graph_id and query are provided
+                if query:
+                    logger.debug("Query provided with graph_id")
+                    if resource == "annotation":
+                        # Process summary with query
+                        summary = self.graph_summarizer.summary(token=token, graph_id=graph_id, user_query=query)
+                        return summary
+                    elif resource == "hypothesis":
+                        logger.info("Hypothesis resource with query")
+                        return {"text": "Explanation for hypothesis resource with query."}
+                    else:
+                        logger.error(f"Unsupported resource type: '{resource}'")
+                        return {"text": f"Unsupported resource type: '{resource}'"}
+
+                # Case 2: Only graph_id is provided (no query)
                 else:
-                    return {"text":f"Unsupported resource type: '{resource}'"}
+                    logger.debug("No query provided, but graph_id is available")
+                    if resource == "annotation":
+                        # Process summary without query
+                        summary = self.graph_summarizer.summary(token=token, graph_id=graph_id, user_query=None)
+                        return summary
+                    elif resource == "hypothesis":
+                        logger.info("Hypothesis resource, no query provided")
+                        return {"text": "Explanation for hypothesis resource without query."}
+                    else:
+                        logger.error(f"Unsupported resource type: '{resource}'")
+                        return {"text": f"Unsupported resource type: '{resource}'"}
 
             if query and graph:
                 summary = self.graph_summarizer.summary(user_query=query,graph=graph)
