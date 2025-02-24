@@ -37,15 +37,21 @@ class AiAssistance:
             self.llm_config = [{"model": self.advanced_llm.model_name, "api_key":self.advanced_llm.api_key}]
 
 
+    def preprocess_message(self,message):
+        if " and " in message:
+            message = message.replace(" and ", " ").strip()
+            return message
+        return message
+
     def agent(self,message,user_id, token):
-        
+        message = self.preprocess_message(message)
         graph_agent = AssistantAgent(
             name="gragh_generate",
             llm_config = {"config_list" : self.llm_config},
             system_message=(
-           "You are a knowledgeable assistant specializing in answering questions related to biological annotations. This includes identifying genes, proteins, terms, SNPs, transcripts, and interactions."
-           "You have access to a bio knowledge graph to retrieve relevant data."
-           "Please note that you can only use the functions provided to you. When your task is complete, Reply 'TERMINATE' when the task is done."
+                "You are a knowledgeable assistant specializing in answering questions related to biological annotations, such as identifying genes, proteins, terms, SNPs, transcripts, and interactions."
+                " You have access to a bio knowledge graph to retrieve relevant data."
+                " You can only use the functions provided to you. When your task is complete, reply 'TERMINATE' when the task is done."
             )
         )
 
@@ -80,6 +86,7 @@ class AiAssistance:
         @graph_agent.register_for_llm(description="Generate and handle bio-knowledge graphs for annotation-related queries.")
         def generate_graph():
             try:
+                logger.info(f"Generating graph with arguments: {message}")  # Add this line to log the arguments
                 response = self.annotation_graph.generate_graph(message, token)
                 return response
             except Exception as e:
