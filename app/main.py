@@ -14,6 +14,7 @@ from app.summarizer import Graph_Summarizer
 import asyncio
 import traceback
 import autogen
+import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -29,26 +30,54 @@ class AiAssistance:
         self.graph_summarizer = Graph_Summarizer(self.advanced_llm)
         self.client = Qdrant()
         self.rag = RAG(client=self.client,llm=advanced_llm)
+        # initialize memory manager for saving user queries here
+        # memory_manager = MemoryManager(self.advanced_llm,client=self.client)
 
         
         if self.advanced_llm.model_provider == 'gemini':
-            self.llm_config = [{"model":"gemini-pro",
+            self.llm_config = [{"model":f"{os.getenv('BASIC_LLM_VERSION')}",
                                 "api_key": self.advanced_llm.api_key, 
                                   "base_url": "https://generativelanguage.googleapis.com/v1beta",
                                   "api_type": "google" }]
             print("gemini model selected")
+        #adding local llm into the options
+        elif self.advanced_llm.model_provider == 'local':
+             self.llm_config = [
+                                    {
+                                        "model": f"{os.getenv('BASIC_LLM_VERSION')}",
+                                        "base_url": "http://127.0.0.1:1234/v1",
+                                        "api_key": "NULL"
+                                    }
+                                ]
         else:
             self.llm_config = [{"model": self.advanced_llm.model_name, "api_key":self.advanced_llm.api_key}]
 
+#### Adding another agent to classify the users question and route it to the appropriate agent
 
+   ##############################################################################################################
+   
     def agent(self,message,user_id, token):
-        graph_agent = ConversableAgent(
+        classifier_agent= AssistantAgent(
+            name="classifier",
+            llm_config = {"config_list" : self.llm_config},
+            system_message=(
+                "You are a classifier model that can classify the input text into different categories."
+                "Classify the users query depending on the the intenetion of the question."
+                "If the user is asking questions related to biological annotations, or graph related question then classify the question as 'bio_annotation'."
+                "If the user is asking general knowledsge questions then classify the question as 'general_knowledge'."
+                "Output only the classification of the question."
+                " Reply 'TERMINATE' when the task is done."
+            ),
+            description="Classify the input text into different categories. Output only the caltagories alone as either 'bio_annotation' or 'general_knowledge'."
+        )
+        
+        graph_agent = AssistantAgent(
             name="gragh_generate",
             llm_config = {"config_list" : self.llm_config},
             system_message=(        
-           "You are a knowledgeable assistant specializing in answering questions related to biological annotations. This includes identifying genes, proteins, terms, SNPs, transcripts, and interactions."
-           "You have access to a bio knowledge graph to retrieve relevant data."
-           "Please note that you can only use the functions provided to you specifically to retrieve relevant data using the users query given to you below. When your task is complete, Reply 'TERMINATE' when the task is done."
+            "You are a knowledgeable assistant specializing in answering questions related to biological annotations. This includes identifying genes, proteins, terms, SNPs, transcripts, and interactions."
+            "You have access to a bio knowledge graph to retrieve relevant data."
+            "Please note that you can only use the functions provided to you specifically to retrieve relevant data using the users query given to you below. When your task is complete, Reply 'TERMINATE' when the task is done."
             )
         )
 
@@ -58,7 +87,7 @@ class AiAssistance:
             system_message=(
                 "You are a helpful assistant responsible for retrieving general informations"
                 "You can only use the functions provided to you. Reply 'TERMINATE' when the task is done."
-               ),)
+                ),)
 
         user_agent = UserProxyAgent(
             name="user",
@@ -78,7 +107,12 @@ class AiAssistance:
         def get_general_response() -> str:
             try:
                 response = self.rag.get_result_from_rag(message, user_id)
-                return response
+                # Addding if condition to check if the response is a dictionary or a string
+                if isinstance(response, dict):
+                    return response["text"]
+                elif isinstance(response, str):
+                    return response
+                
             except Exception as e:
                 logger.error("Error in retrieving response", exc_info=True)
                 return "Error in retrieving response."
@@ -96,17 +130,41 @@ class AiAssistance:
                 return f"I couldn't generate a graph for the given question {message} please try again."
 
         print("agents created")
-        group_chat = GroupChat(agents=[user_agent, graph_agent, rag_agent], messages=[],max_round=3)
-        group_manager = GroupChatManager(
-            groupchat=group_chat,
-            llm_config = {"config_list" : self.llm_config},
-            human_input_mode="NEVER")
+        # classify the users question
+        classifiction_message=[{"role": "User","content":message}]
+        classification= classifier_agent.generate_reply(classifiction_message)
+        print(f"classification of the users question is {classification['content'].strip()}")
+        if classification['content'].strip() == 'bio_annotation':
+            group_chat = GroupChat(agents=[user_agent, graph_agent], messages=[],max_round=3)
+            group_manager = GroupChatManager(
+                groupchat=group_chat,
+                llm_config = {"config_list" : self.llm_config},
+                human_input_mode="NEVER")
+        elif classification['content'].strip() == 'general_knowledge':  
+            group_chat = GroupChat(agents=[user_agent, rag_agent], messages=[],max_round=3)
+            group_manager = GroupChatManager(
+                groupchat=group_chat,
+                llm_config = {"config_list" : self.llm_config},
+                human_input_mode="NEVER")
+        else:
+            print("Invalid classification, Defaulting to Groupchat with both agents")
+            group_chat = GroupChat(agents=[user_agent, graph_agent, rag_agent], messages=[],max_round=3)
+            group_manager = GroupChatManager(
+                groupchat=group_chat,
+                llm_config = {"config_list" : self.llm_config},
+                human_input_mode="NEVER")  
+            
+            
         print("group manager created")
         user_agent.initiate_chat(group_manager, message=message, clear_history=False)
+        # changed the number of rounds to 5
+        # response is the 4th message in the group chat
         response = group_chat.messages[2]['content']
         if response:
             return response
         return group_chat.messages[1]['content']
+
+   ##############################################################################################################
 
     async def save_memory(self,query,user_id):
         # saving the new query of the user to a memorymanager
