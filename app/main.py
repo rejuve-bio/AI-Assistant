@@ -53,32 +53,35 @@ class AiAssistance:
             self.llm_config = [{"model": self.advanced_llm.model_name, "api_key":self.advanced_llm.api_key}]
 
 #### Adding another agent to classify the users question and route it to the appropriate agent
+    def preprocess_message(self,message):
+        if " and " in message:
+            message = message.replace(" and ", " ").strip()
+            return message
+        return message
 
-   ##############################################################################################################
-   
     def agent(self,message,user_id, token):
+        message = self.preprocess_message(message)
         classifier_agent= AssistantAgent(
-            name="classifier",
-            llm_config = {"config_list" : self.llm_config},
-            system_message=(
-                "You are a classifier model that can classify the input text into different categories."
-                "Classify the users query depending on the the intenetion of the question."
-                "If the user is asking questions related to biological annotations, or graph related question then classify the question as 'bio_annotation'."
-                "If the user is asking general knowledsge questions then classify the question as 'general_knowledge'."
-                "Output only the classification of the question."
-                " Reply 'TERMINATE' when the task is done."
+        name="classifier",
+        llm_config = {"config_list" : self.llm_config},
+        system_message=(
+            "You are a classifier model that can classify the input text into different categories."
+            "Classify the users query depending on the the intenetion of the question."
+            "If the user is asking questions related to biological annotations, or graph related question then classify the question as 'bio_annotation'."
+            "If the user is asking general knowledsge questions then classify the question as 'general_knowledge'."
+            "Output only the classification of the question."
+            " Reply 'TERMINATE' when the task is done."
             ),
-            description="Classify the input text into different categories. Output only the caltagories alone as either 'bio_annotation' or 'general_knowledge'."
+        description="Classify the input text into different categories. Output only the caltagories alone as either 'bio_annotation' or 'general_knowledge'."
         )
-        
         graph_agent = AssistantAgent(
             name="gragh_generate",
             llm_config = {"config_list" : self.llm_config},
-            system_message=(        
-            "You are a knowledgeable assistant specializing in answering questions related to biological annotations. This includes identifying genes, proteins, terms, SNPs, transcripts, and interactions."
-            "You have access to a bio knowledge graph to retrieve relevant data."
-            "Please note that you can only use the functions provided to you specifically to retrieve relevant data using the users query given to you below. When your task is complete, Reply 'TERMINATE' when the task is done."
-            )
+            system_message=(
+                "You are a knowledgeable assistant specializing in answering questions related to biological annotations, such as identifying genes, proteins, terms, SNPs, transcripts, and interactions."
+                " You have access to a bio knowledge graph to retrieve relevant data."
+                " You can only use the functions provided to you. When your task is complete, reply 'TERMINATE' when the task is done."
+               )
         )
 
         rag_agent = AssistantAgent(
@@ -123,6 +126,7 @@ class AiAssistance:
         def generate_graph():
             print("generate graph called")
             try:
+                logger.info(f"Generating graph with arguments: {message}")  # Add this line to log the arguments
                 response = self.annotation_graph.generate_graph(message, token)
                 return response
             except Exception as e:
@@ -164,7 +168,6 @@ class AiAssistance:
             return response
         return group_chat.messages[1]['content']
 
-   ##############################################################################################################
 
     async def save_memory(self,query,user_id):
         # saving the new query of the user to a memorymanager
@@ -206,16 +209,36 @@ class AiAssistance:
                         }
                     return response, 400
                 
-            if graph_id and query:
-                logger.info("explaining nodes")
-                if resource=="annotation":
-                    summary = self.graph_summarizer.summary(token=token,graph_id=graph_id, user_query=query)
-                    return summary
-                if resource=="hypothesis":
-                    logger.info("no hypothesis graph ids")
-                    return {"text":"null"}
+            if graph_id:  
+                logger.info("Explaining nodes")
+
+                # Case 1: Both graph_id and query are provided
+                if query:
+                    logger.debug("Query provided with graph_id")
+                    if resource == "annotation":
+                        # Process summary with query
+                        summary = self.graph_summarizer.summary(token=token, graph_id=graph_id, user_query=query)
+                        return summary
+                    elif resource == "hypothesis":
+                        logger.info("Hypothesis resource with query")
+                        return {"text": "Explanation for hypothesis resource with query."}
+                    else:
+                        logger.error(f"Unsupported resource type: '{resource}'")
+                        return {"text": f"Unsupported resource type: '{resource}'"}
+
+                # Case 2: Only graph_id is provided (no query)
                 else:
-                    return {"text":f"Unsupported resource type: '{resource}'"}
+                    logger.debug("No query provided, but graph_id is available")
+                    if resource == "annotation":
+                        # Process summary without query
+                        summary = self.graph_summarizer.summary(token=token, graph_id=graph_id, user_query=None)
+                        return summary
+                    elif resource == "hypothesis":
+                        logger.info("Hypothesis resource, no query provided")
+                        return {"text": "Explanation for hypothesis resource without query."}
+                    else:
+                        logger.error(f"Unsupported resource type: '{resource}'")
+                        return {"text": f"Unsupported resource type: '{resource}'"}
 
             if query and graph:
                 summary = self.graph_summarizer.summary(user_query=query,graph=graph)
