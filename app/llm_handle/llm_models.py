@@ -87,6 +87,13 @@ def get_llm_model(model_provider, model_version=None):
         if not gemini_api_key:
             raise ValueError("Gemini API key not found")
         return GeminiModel(gemini_api_key, model_provider, model_version or "gemini-pro")
+    elif model_provider == 'local':
+        local_endpoint = os.getenv('LOCAL_LLM_ENDPOINT')
+        if not local_endpoint:
+            raise ValueError("Local LLM endpoint not found")
+        if not model_version:
+            raise ValueError("Model version must be specified for local LLM")
+        return LocalLMModel(local_endpoint, model_provider, model_version or "phi-3.1-mini-128k-instruct")
     else:
         raise ValueError("Invalid model type in configuration")
 
@@ -161,6 +168,47 @@ class OpenAIModel(LLMInterface):
             return json.loads(json_content)
         except json.JSONDecodeError:
             return json_content
+
+    def _extract_json_from_codeblock(self, content: str) -> str:
+        start = content.find("```json")
+        end = content.rfind("```")
+        if start != -1 and end != -1:
+            json_content = content[start + 7:end].strip()
+            return json_content
+        else:
+            return content
+
+class LocalLMModel(LLMInterface):
+    def __init__(self, endpoint: str, model_provider: str, model_name: str):
+        self.endpoint = endpoint
+        self.model_provider = model_provider
+        self.model_name = model_name
+
+    def generate(self, prompt: str, system_prompt=None, temperature=0.0, max_tokens=1000) -> Dict[str, Any]:
+        url = f"{self.endpoint}/v1/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        messages = [{"role": "user", "content": prompt}]
+        if system_prompt:
+            messages.insert(0, {"role": "system", "content": system_prompt})
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            content = data['choices'][0]['message']['content']
+            json_content = self._extract_json_from_codeblock(content)
+            try:
+                return json.loads(json_content)
+            except json.JSONDecodeError:
+                return json_content
+        except requests.RequestException as e:
+            logger.error(f"Error communicating with local LLM: {e}")
+            raise
 
     def _extract_json_from_codeblock(self, content: str) -> str:
         start = content.find("```json")
