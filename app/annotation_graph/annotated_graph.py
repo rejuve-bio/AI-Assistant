@@ -225,7 +225,7 @@ class Graph:
             logger.info("Extracting relevant information from the query.")
             #print(f"enhanced_schema: {self.enhanced_schema}")
             prompt = EXTRACT_RELEVANT_INFORMATION_PROMPT.format(schema=self.enhanced_schema, query=query)
-            extracted_info =  self.llm.generate(prompt)
+            extracted_info =  self.llm.generate(prompt, system_prompt='Don\'t take the examples as information, they are just a guide on how to format it ont information. Don\'t return the examples as information Return only the extracted information from the query alone, never add any additional information.')
             logger.info(f"Extracted data: \n{extracted_info}")
             return extracted_info
         except Exception as e:
@@ -236,7 +236,7 @@ class Graph:
         try:
             logger.info("Converting relevant information to annotation JSON format.")
             prompt = JSON_CONVERSION_PROMPT.format(query=query, extracted_information=relevant_information, schema=self.enhanced_schema)
-            json_data = self.llm.generate(prompt)
+            json_data = self.llm.generate(prompt=prompt, system_prompt='Return only the JSON in the targeted format, from only the extracted information. Never add any other information')
             logger.info(f"Converted JSON:\n{json.dumps(json_data, indent=2)}")
             return json_data
         except Exception as e:
@@ -355,7 +355,7 @@ class Graph:
     def _select_best_matching_property_value(self, user_input_value, possible_values):
         try:
             prompt = SELECT_PROPERTY_VALUE_PROMPT.format(search_query = user_input_value, possible_values=possible_values)
-            selected_value = self.llm.generate(prompt)
+            selected_value = self.llm.generate(prompt, system_prompt='Output should be as described and nothing more.')
             logger.info(f"Selected value: {selected_value}")
             return selected_value
         except Exception as e:
