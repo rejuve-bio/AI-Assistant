@@ -7,3 +7,4 @@ biocypher-log
 .cache
 user_pdf.json
 history.json
+logfiles
