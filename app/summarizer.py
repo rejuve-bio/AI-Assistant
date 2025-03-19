@@ -177,29 +177,38 @@ class Graph_Summarizer:
             params =  {"source": "ai-assistant"}
             if query:
                 logger.debug(f"Sending request to {self.kg_service_url}")
-                json_payload = {"requests": {"question": query}}  # Use json_payload to avoid variable name conflict
+                json_payload = {"requests": {"question": query}}  
                 response = requests.post(
                     self.kg_service_url + '/annotation/' + graph_id,
-                    params=params,
+                    params=params,  
                     json=json_payload,
                     headers={"Authorization": f"Bearer {token}"}
                 )
+                json_response = response.json()
+                response = {
+                    "text": json_response.get("answer") if json_response.get("answer") is not None else "Graph is too big, No summaries provided to answer your question"
+                }
+                logger.info(f"response is {response}")
+                logger.info(f"Quering annotation by id with user query is Done")
+                return response
             else:
                 logger.debug(f"Sending request to {self.kg_service_url}")
                 response = requests.get(
                     self.kg_service_url + '/annotation/' + graph_id,
-                    params=params,
+                    # params=params, need title to be added form the annotation
                     headers={"Authorization": f"Bearer {token}"}
                 )
-            # Raise an exception if the request was unsuccessful
-            response.raise_for_status()
+                logger.info(f"Quering annotation by id is Done")
+                # Raise an exception if the request was unsuccessful
+                response.raise_for_status()
 
-            # Parse the JSON response
-            json_response = response.json()
-            response = {
-                "text": json_response.get("answer", [])
- }
-            return response
+                # Parse the JSON response
+                json_response = response.json()
+                response = {
+                        "text": json_response.get("answer") if json_response.get("answer") is not None else json_response.get("title")
+                        }
+                logger.info(f"response is {response}")
+                return response
 
         except Exception as e:
             # Log the error and stack trace
