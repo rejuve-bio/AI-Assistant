@@ -44,7 +44,7 @@ class AiAssistance:
         elif self.advanced_llm.model_provider == 'local':
              self.llm_config = [
                                     {
-                                        "model": f"{os.getenv('BASIC_LLM_VERSION')}",
+                                        "model": f"{os.getenv('ADVANCED_LLM_VERSION')}",
                                         "base_url": "http://127.0.0.1:1234/v1",
                                         "api_key": "NULL"
                                     }
@@ -61,18 +61,22 @@ class AiAssistance:
 
     def agent(self,message,user_id, token):
         message = self.preprocess_message(message)
-        classifier_agent= AssistantAgent(
-        name="classifier",
-        llm_config = {"config_list" : self.llm_config},
-        system_message=(
-            "You are a classifier model that can classify the input text into different categories."
-            "Classify the users query depending on the the intenetion of the question."
-            "If the user is asking questions related to biological annotations, or graph related question then classify the question as 'bio_annotation'."
-            "If the user is asking general knowledsge questions then classify the question as 'general_knowledge'."
-            "Output only the classification of the question."
-            " Reply 'TERMINATE' when the task is done."
+
+        
+        # classify the users question nased on users explicit intent
+        classifier_agent = AssistantAgent(
+            name="classifier",
+            llm_config={"config_list": self.llm_config},
+            system_message=(
+                "You are a text classifier. Your task is to classify each user query into one of two categories: 'bio_annotation' or 'general_knowledge'. "
+                "A query should be classified as 'bio_annotation' only if it demonstrates an explicit intent to obtain detailed information or annotations "
+                "about specific biological entities, such as a gene, protein, enhancer, exon, pathway, promoter, snp, super_enhancer, or transcript. "
+                "For example, if the user is asking for specific knowledge, details, or annotations about one of these biological elements, then label the query as 'bio_annotation'. "
+                "If the mentioned terms appear only in a general or casual context without a clear intent to obtain detailed biological knowledge, classify the query as 'general_knowledge'. "
+                "Output only the classification label ('bio_annotation' or 'general_knowledge') without any additional text. "
+                "When you have completed all classifications, reply with 'TERMINATE'."
             ),
-        description="Classify the input text into different categories. Output only the caltagories alone as either 'bio_annotation' or 'general_knowledge'."
+            description="Classifies input text into 'bio_annotation' for queries with explicit intent to obtain detailed biological information on entities like genes, proteins, enhancers, exons, pathways, promoters, snps, super_enhancers, or transcripts; otherwise classifies as 'general_knowledge'."
         )
         graph_agent = AssistantAgent(
             name="gragh_generate",
@@ -139,31 +143,26 @@ class AiAssistance:
         classification= classifier_agent.generate_reply(classifiction_message)
         print(f"classification of the users question is {classification['content'].strip()}")
         if classification['content'].strip() == 'bio_annotation':
-            group_chat = GroupChat(agents=[user_agent, graph_agent], messages=[],max_round=3)
-            group_manager = GroupChatManager(
-                groupchat=group_chat,
-                llm_config = {"config_list" : self.llm_config},
-                human_input_mode="NEVER")
+           # response using imitiate chat because they are just two agents interacting
+           response = user_agent.initiate_chat(graph_agent,message=message, max_turns=3)
+           response= response.chat_history[3]['content']
+           
         elif classification['content'].strip() == 'general_knowledge':  
-            group_chat = GroupChat(agents=[user_agent, rag_agent], messages=[],max_round=3)
-            group_manager = GroupChatManager(
-                groupchat=group_chat,
-                llm_config = {"config_list" : self.llm_config},
-                human_input_mode="NEVER")
+           response= user_agent.initiate_chat(rag_agent,message=message, max_turns=3)
+           response= response.chat_history[3]['content']
         else:
             print("Invalid classification, Defaulting to Groupchat with both agents")
             group_chat = GroupChat(agents=[user_agent, graph_agent, rag_agent], messages=[],max_round=3)
             group_manager = GroupChatManager(
                 groupchat=group_chat,
                 llm_config = {"config_list" : self.llm_config},
-                human_input_mode="NEVER")  
-            
-            
-        print("group manager created")
-        user_agent.initiate_chat(group_manager, message=message, clear_history=False)
-        # changed the number of rounds to 5
-        # response is the 4th message in the group chat
-        response = group_chat.messages[2]['content']
+                human_input_mode="NEVER")           
+            print("group manager created")
+            user_agent.initiate_chat(group_manager, message=message, clear_history=False)
+            # response is the 2nd message in the group chat
+            response = group_chat.messages[2]['content']
+
+
         if response:
             return response
         return group_chat.messages[1]['content']
@@ -171,6 +170,8 @@ class AiAssistance:
 
     async def save_memory(self,query,user_id):
         # saving the new query of the user to a memorymanager
+
+        logger.info(f"Conversation record:\n {query}")
         memory_manager = MemoryManager(self.advanced_llm,client=self.client)
         memory_manager.add_memory(query, user_id)
 
@@ -189,8 +190,10 @@ class AiAssistance:
                 return {"text":result.strip('"')}
             elif "question:" in response:
                 refactored_question = response.split("question:")[1].strip()
-        await self.save_memory(query,user_id)
+        # Save both the both the users query and the Ai-assistants response
         response = self.agent(refactored_question, user_id, token)
+        query_response= f"User: {query} \n Assistant: {response}" # conversation to be saved
+        await self.save_memory(query_response,user_id)
         return response 
 
     def assistant_response(self,query,user_id,token,graph=None,graph_id=None,file=None,resource="annotation"):
