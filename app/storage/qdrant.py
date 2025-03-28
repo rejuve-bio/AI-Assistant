@@ -35,6 +35,7 @@ class Qdrant:
 
         try:
             self.client.get_collection(collection_name)
+            print(f"Collection '{collection_name}' EXISTS.")
         except:
             print("no such collection exists")
             try:
@@ -124,47 +125,66 @@ class Qdrant:
             return response
         except:
             return {"error":"not found"}
-
-    def _create_memory_update_memory(self,user_id,data, embedding, metadata,memory_id=None):
-
+   
+    def _create_memory_update_memory(self, user_id, data, embedding, metadata=None, memory_id=None):
         self.get_create_collection(USER_COLLECTION)
-
         current_time = datetime.utcnow().isoformat()
-        data = [{"content": data, "user_id": user_id, "created_at_updated_at": current_time, "status":USER_MEMORY_NAME}]
-        if memory_id:
+        payload_data = [{
+            "content": data,
+            "user_id": user_id,
+            "created_at_updated_at": current_time,
+            "status": USER_MEMORY_NAME
+        }]
+
+        try:
+            # Convert embedding to proper format
+            if not isinstance(embedding, list) or not all(isinstance(x, float) for x in embedding):
+                raise ValueError("Invalid embedding format")
+
+            # Qdrant requires vectors to be list[list[float]] even for single points
+            vectors = [embedding]  # Wrap single embedding in a list
+
+            if memory_id:
+                # Update existing memory
                 self.client.upsert(
                     collection_name=USER_COLLECTION,
                     points=models.Batch(
-                    ids=[memory_id],
-                    vectors=embedding,
-                    payloads=data,),)
+                        ids=[memory_id],     # Must be list[str]
+                        vectors=vectors,     # Now [[float, float,...]]
+                        payloads=payload_data,
+                    )
+                )
                 return memory_id
-        # check if a collection have top 10 collections
-        try:
+
+            # Handle new memory creation
+            # Check and enforce memory limit
             memories = self.client.scroll(USER_COLLECTION, with_payload=True)
             if len(memories[0]) >= MAX_MEMORY_LIMIT:
                 sorted_memories = sorted(
                     memories[0],
-                    key=lambda memory: memory.payload["created_at_updated_at"]
+                    key=lambda m: m.payload["created_at_updated_at"]
                 )
-                # Delete the oldest memory
-                oldest_memory_id = sorted_memories[0].id
-                self._delete_memory(oldest_memory_id)
+                oldest_id = sorted_memories[0].id
+                self._delete_memory(oldest_id)
+                logger.info(f"Deleted oldest memory {oldest_id} due to limit {MAX_MEMORY_LIMIT}")
 
-                logger.info(f"older memory is being deleted since you have reached the limit {MAX_MEMORY_LIMIT}")
-
-            logger.info("uploading new memory")
-            memory_id = [str(uuid.uuid4())]
+            # Create new memory with proper ID format
+            memory_id = str(uuid.uuid4())  # Single string ID
             self.client.upsert(
-                    collection_name=USER_COLLECTION,
-                    points=models.Batch(
-                        ids=memory_id,
-                        vectors=embedding,
-                        payloads=data,),)
-            logger.info("collection updated")
-            return memory_id
-        except:
+                collection_name=USER_COLLECTION,
+                points=models.Batch(
+                    ids=[memory_id],      # Wrap in list
+                    vectors=vectors,       # Proper [[float,...]] format
+                    payloads=payload_data,
+                )
+            )
+            logger.info(f"Created new memory {memory_id}")
+            return memory_id  # Return string ID
+
+        except Exception as e:
+            logger.error(f"Memory operation failed: {str(e)}")
             traceback.print_exc()
+            return None
 
 
     def _delete_memory(self, memory_id):
@@ -179,6 +199,8 @@ class Qdrant:
 
     def _retrieve_memory(self,user_id,embedding=None):
         try:
+            #added the get_create_collection function to create a collection if it does not exist
+            self.get_create_collection(USER_COLLECTION)
             if embedding:
                 result = self.client.search(
                         collection_name=USER_COLLECTION,
