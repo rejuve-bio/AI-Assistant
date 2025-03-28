@@ -232,7 +232,7 @@ class RAG:
                 return None
 
             prompt = RETRIEVE_PROMPT.format(query=query_str, retrieved_content=query_result)
-            result = self.llm.generate(prompt)
+            result = self.llm.generate(prompt, system_prompt=SYSTEM_PROMPT)
             logger.info("Result generated successfully.")
             response = {
                 "text": result
