@@ -9,6 +9,8 @@ from typing import List
 from qdrant_client.models import PointStruct, PointIdsList
 from dotenv import load_dotenv
 import uuid
+from datetime import datetime
+import random
 
 MAX_MEMORY_LIMIT = 10
 MAX_PDF_LIMIT = 2
@@ -64,12 +66,15 @@ class Qdrant:
                     ]
 
                     if user_id:
+                        # Noting the time of uploading the file
+                        upsert_time= datetime.now().isoformat()
                         filename = df["filename"].to_list()[0]
                         for payload in payloads_list:
                             payload["user_id"] = user_id
                             payload["id"] = f"{user_id}_{filename}"
+                            payload["time"] =  upsert_time     # Adding to track the time of the upserted data
                         
-                    import random
+                    
                     if 'id' not in df.columns:
                         df['id'] = [random.randint(100000, 999999) for _ in range(len(df))]
                     
@@ -120,12 +125,13 @@ class Qdrant:
                     "id": point.id,
                     "score": point.score,
                     "authors": point.payload.get('authors', 'Unknown'),
-                    "content": point.payload.get('content', 'No content available')
+                    "content": point.payload.get('content', 'No content available'),
+                    "filename": point.payload.get('filename')
                 }
             return response
         except:
             return {"error":"not found"}
-   
+    # Metadata as a parameter? What does metadata represent?
     def _create_memory_update_memory(self, user_id, data, embedding, metadata=None, memory_id=None):
         self.get_create_collection(USER_COLLECTION)
         current_time = datetime.utcnow().isoformat()
@@ -246,3 +252,81 @@ class Qdrant:
         except:
             traceback.print_exc()
             return None
+        
+    # Updating the time of the recently used document.
+    def update_payload_info(self, collection_name, file_name):
+        self.client.set_payload(
+            collection_name=f"{collection_name}",
+            payload={
+                "time": datetime.now().isoformat()
+            },
+            points=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="filename",
+                        match=models.MatchValue(value=file_name),  # Filter using file_name
+                    ),
+                ],
+            ),
+        )
+    # deleting function that deletes all the least recently used file points
+    def delete_pdf(self, collection_name, file_name=None):
+        if file_name:
+            self.client.delete(
+                    collection_name=collection_name,
+                    points_selector=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="content",
+                                match=models.MatchValue(value=file_name)
+                            ),
+                        ],
+                    ),
+                )
+            
+        else:
+            # Retrieve all points (files) from the collection
+            print(f"Collection name:  {collection_name}")
+            response = self.client.scroll(
+                            collection_name=collection_name,
+                            limit=10000  # Adjust limit based on how many files you expect
+                        )
+            # response is of type tuple thus
+            response= response[0]
+
+            print(type(response))
+            # print(f' responses: {response}')
+            # If the response is empty, return early
+            if not response:
+                print("could find any points")
+                return
+
+            # Extract the file names and timestamps
+            
+            selected_file = None
+            min_timestamp = None
+
+            # Find the file with the least timestamp
+            for file in response:
+                timestamp = file.payload['time']
+                if timestamp:
+                    if min_timestamp is None or timestamp < min_timestamp:
+                        min_timestamp = timestamp
+                        selected_file = file.payload['filename']
+                        file_id = file.payload['id']
+
+            # If a file was found, delete it
+            if selected_file:
+                print(f"deleting the file with name  {selected_file} and id {file_id}")
+                self.client.delete(
+                    collection_name=collection_name,
+                    points_selector=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="filename",
+                                match=models.MatchValue(value=selected_file)
+                            ),
+                        ],
+                    ),
+                )
+            return selected_file, file_id

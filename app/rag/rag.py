@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 
 
 VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION","SITE_INFORMATION")
-USER_COLLECTION = os.getenv("USER_COLLECTION","CHAT_MEMORY")
+USER_COLLECTION = os.getenv("USER_COLLECTION","USER_COLLECTIONS")
 USERS_PDF_COLLECTION = os.getenv("PDF_COLLECTION","PDF_COLLECTION")
-PDF_LIMIT=5
+PDF_LIMIT=3
 class RAG:
 
     def __init__(self, client, llm: LLMInterface) -> None:
@@ -148,29 +148,39 @@ class RAG:
                             }
 
             if user_id not in self.user_pdf:
-                self.user_pdf[user_id] = {"count": 0, "names": [], "id": None}
+                self.user_pdf[user_id] = {"count": 0, "names": [], "id": None, "ids_list": []}
             
             file_name = file.filename
+            # Check if the file is a PDF and the pdfs name
+            logger.info(f"Uploading PDF file {file_name} for user {user_id}.")
             if file_name in self.user_pdf[user_id]["names"]:
                 return_response["text"] = "PDF already exists."
                 return_response["resource"]["id"] = self.user_pdf[user_id]["id"]
                 return return_response
             if self.user_pdf[user_id]["count"] >= PDF_LIMIT:
-                return_response["text"] = "Your quota is full."
-                return_response["resource"]["id"] = self.user_pdf[user_id]["id"]
-                return return_response
+                logger.info("quota past the limit, deleting the least recntly used file")
+                # deleting the pdf from the pdf_collection collection
+                deleted_file, deleted_id= self.client.delete_pdf(collection_name = USERS_PDF_COLLECTION)
+                # deleting the information from the users collection
+                self.client.delete_pdf(collection_name= USER_COLLECTION, file_name=deleted_file)
+                self.user_pdf[user_id]["names"].remove(deleted_file)
+                self.user_pdf[user_id]["ids_list"].remove(deleted_id)
+
+
 
             data = self.extract_preprocess_pdf(file, file_name)
             saved_data = self.save_doc_to_rag(data=data, file_name=file_name,user_id=user_id,collection_name=USERS_PDF_COLLECTION)
             
-            self.user_pdf[user_id]["count"]+=1
+            if self.user_pdf[user_id]["count"] < PDF_LIMIT:
+                self.user_pdf[user_id]["count"] += 1
             self.user_pdf[user_id]["names"].append(file_name)
             self.user_pdf[user_id]["id"] = f"{user_id}_{file_name}"
+            self.user_pdf[user_id]["ids_list"].append(f"{user_id}_{file_name}")
             
             with open(self.user_pdf_file, 'w') as f:
                 json.dump(self.user_pdf,f)
 
-            memory = MemoryManager(self.llm,self.client).add_memory(f"pdf file : {file_name}", user_id)
+            memory = MemoryManager(self.llm,self.client).add_memory(f"pdf file {file_name}", user_id)
             return_response["text"] = saved_data
             return_response["resource"]["id"] = self.user_pdf[user_id]["id"]
             return_response["resource"]["type"] = "file"
@@ -206,6 +216,9 @@ class RAG:
             query["dense"] = embed.reshape(-1, self.embedding_size).tolist()[0]
 
             result = self.client.retrieve_data(collection, query["dense"],user_id,filter)
+            
+            logger.info("updating the time of the recently accessed file")
+            self.client.update_payload_info(collection_name = collection, file_name= result["filename"])
             logger.warning("results found for the query.")
             return result
         except Exception as e:
@@ -227,6 +240,7 @@ class RAG:
             result1 = self.query(query_str=query_str, user_id=user_id)
             result2 = self.query(query_str=query_str, user_id=user_id,filter=True)
             query_result = {**result1, **result2}
+            logger.info(json.dumps(query_result))
             if query_result is None:
                 logger.error("No query result to process.")
                 return None
