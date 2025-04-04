@@ -4,9 +4,12 @@ from pprint import pprint
 from rapidfuzz import process
 from bioblend.galaxy import GalaxyInstance
 from dotenv import load_dotenv
+import json
 from sys import path
 path.append('app')
+
 from llm_handle.llm_models import GeminiModel
+from galaxy_prompts import TOOL_PROMPT, WORKFLOW_PROMPT, DATASET_PROMPT
 
 class GalaxyInformer:
     def __init__(self, entity_type):
@@ -18,22 +21,17 @@ class GalaxyInformer:
             'dataset': {
                 'get_method': self._get_datasets,
                 'search_fields': ['name', 'full_path'],
-                'summary_prompt': 'Provide a detailed summary of the dataset within 100 words'
+                'summary_prompt': DATASET_PROMPT
             },
             'tool': {
                 'get_method': self._get_tools,
                 'search_fields': ['name'],
-                'summary_prompt': 'Provide a detailed summary of the tool within 100 words'
-            },
-            'visualization': {
-                'get_method': self._get_visualizations,
-                'search_fields': ['name'],
-                'summary_prompt': 'Provide a detailed summary of the visualization within 100 words'
+                'summary_prompt': TOOL_PROMPT
             },
             'workflow': {
                 'get_method': self._get_workflows,
                 'search_fields': ['name'],
-                'summary_prompt': 'Provide a detailed summary of the workflow within 100 words'
+                'summary_prompt': WORKFLOW_PROMPT
             }
         }
 
@@ -80,13 +78,6 @@ class GalaxyInformer:
             'name': tool['name']
         } for tool in self.gi.tools.get_tools()]
 
-    def _get_visualizations(self):
-        return [{
-            'description': vis['description'],
-            'id': vis['id'],
-            'name': vis['name']
-        } for vis in self.gi.visual.get_visualizations()]
-
     def _get_workflows(self):
         return [{
             'model_class': wf['model_class'],
@@ -99,7 +90,7 @@ class GalaxyInformer:
         """Get all entities based on configured type"""
         return self._entity_config[self.entity_type]['get_method']()
 
-    def search_entities(self, query, threshold=70):
+    def search_entities(self, query, threshold=85):
         """Unified fuzzy search with priority fields"""
         entities = self.get_entities()
         config = self._entity_config[self.entity_type]
@@ -125,6 +116,8 @@ class GalaxyInformer:
                     if score and score[1] >= threshold:
                         matches.append((entity, score[1]))
 
+                    pprint(score)
+
         return sorted(matches, key=lambda x: x[1], reverse=True)[0] if matches else None
 
     def get_entity_info(self, search_query, entity_id=None):
@@ -142,35 +135,36 @@ class GalaxyInformer:
         detail_methods = {
             'dataset': lambda id: self.gi.datasets.show_dataset(id),
             'tool': lambda id: self.gi.tools.show_tool(id, io_details=True),
-            'visualization': lambda id: self.gi.visual.show_visualization(id),
             'workflow': lambda id: self.gi.workflows.show_workflow(id)
         }
         
-        details = detail_methods[self.entity_type](entity['id'])
-        prompt = f"All details of the {self.entity_type}:\n{entity}\n{details}"
-        
-        return self.llm.generate(
-            prompt=prompt,
-            system_prompt=self._entity_config[self.entity_type]['summary_prompt']
-        )
+        details = detail_methods[self.entity_type](entity['id'])       
+        response = self.llm.generate(prompt= self._entity_config[self.entity_type]['summary_prompt'].format(input= details))
+        print(type(response))
+        if isinstance(response, str):
+            try:
+                response= json.loads(response)
+            except json.JSONDecodeError:
+                print("Failed to decode JSON response")
+                try:
+                    return dict(response)
+                except:
+                    return response
+        return response 
+    
 
 # Usage Examples
 if __name__ == "__main__":
     # Dataset example
     dataset_manager = GalaxyInformer('dataset')
-    print(dataset_manager.get_entity_info("1.bed"))
-    print('\n\n\n')
+    pprint(dataset_manager.get_entity_info("1.bed"))
+    print('\n\n\n') 
     
     # Tool example
     tool_manager = GalaxyInformer('tool')
-    print(tool_manager.get_entity_info("Genbank to GFF2"))
+    pprint(tool_manager.get_entity_info('genbank to gff3'))
     print('\n\n\n')
     
-    # Visualization example
-    vis_manager = GalaxyInformer('visualization')
-    print(vis_manager.get_entity_info("bar horizontal"))
-    print('\n\n\n')
-    
-    # Workflow example
+    # Workflow example    
     workflow_manager = GalaxyInformer('workflow')
-    print(workflow_manager.get_entity_info("Annotation"))
+    pprint(workflow_manager.get_entity_info("Annotation"))
