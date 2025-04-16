@@ -4,8 +4,9 @@ import logging
 from typing import Dict, List
 import json
 
-from bioblend.galaxy.objects import GalaxyInstance
-from bioblend.galaxy.objects.wrappers import History, Dataset, HistoryDatasetAssociation, HistoryDatasetCollectionAssociation
+from bioblend.galaxy import GalaxyInstance as GalaxyInstance_client
+from bioblend.galaxy.objects import GalaxyInstance as GalaxyInstance_object
+from bioblend.galaxy.objects.wrappers import History, Dataset, Invocation, HistoryDatasetAssociation, HistoryDatasetCollectionAssociation
 from dotenv import load_dotenv
 import time
 from sys import path
@@ -23,7 +24,7 @@ class GalaxyExecutor:
     
     def __init__(self, galaxy_url: str = galaxy_url, api_key: str = api_key):
         self.logger = self._setup_logger()
-        self.gi = self._connect_galaxy(galaxy_url, api_key)
+        self.gi, self.gi_client= self._connect_galaxy(galaxy_url, api_key)
 
     def _setup_logger(self) -> logging.Logger:
         """Configure and return logger instance."""
@@ -35,12 +36,13 @@ class GalaxyExecutor:
         logger.setLevel(logging.INFO)
         return logger
 
-    def _connect_galaxy(self, url: str, key: str) -> GalaxyInstance:
-        """Establish connection to Galaxy instance with retry logic."""
+    def _connect_galaxy(self, url: str, key: str):
+        """Establish connection to Galaxy instance."""
         try:
-            gi = GalaxyInstance(url=url, api_key=key)
+            gi = GalaxyInstance_object(url=url, api_key=key)
+            gi_client=GalaxyInstance_client(url=url, key=key)
             self.logger.info(f"Connected to Galaxy: {url}")
-            return gi
+            return gi, gi_client
         except Exception as e:
             self.logger.info(f"Connection failed: {e}")
 
@@ -106,18 +108,6 @@ class GalaxyExecutor:
             if created_history and not keep_history:
                 self._purge_history(history)
 
-    def get_step_output(self, step):
-        outputs = {}
-        
-        if hasattr(step, "get_outputs"):
-            outputs.update(step.get_outputs())  # Returns dict[str, HistoryDatasetAssociation]
-        
-        if hasattr(step, "get_output_collections"):
-            outputs.update(step.get_output_collections())  # Returns dict[str, HistoryDatasetCollectionAssociation]
-
-        return outputs  # Combined dict of all outputs
-
-
     def invoke_workflow(
         self,
         inputs: Dict,
@@ -151,43 +141,20 @@ class GalaxyExecutor:
                 # initialize the workflow object
                 workflow=None
                 workflow_json = json.loads(wf_read)
-                workflow_list= self.gi.workflows.get()
-
+                workflow_list= self.gi_client.workflows.get_workflows(published=True)
+                self.logger.info(f'workflow list: {len(workflow_list)}')
                 for wf in workflow_list:
-                    if wf.name==workflow_json["name"]:
-                        self.logger.info(f'workflow {wf.name} already exists in the instance, skipping import')
-                        workflow=self.gi.workflows.get(wf.id)
+                    if wf['name']==workflow_json["name"]:
+                        self.logger.info(f"workflow {wf['name']} already exists in the instance, skipping import")
+                        workflow=self.gi.workflows.get(wf['id'])
                         break
                 if workflow is None:
                     workflow=self.gi.workflows.import_new(wf_read)
                     self.logger.info(f"workflow {workflow.name} imported")
-                print('''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''')
-                print(workflow.inputs)
-
-                ## Input structure Examples ##
-
-
-                # input of the files should be formated like this for the rnaseq-pe.ga workflow
-                # {'0': {'label': 'Collection paired FASTQ files', 'value': '', 'uuid': '020f7580-f647-471f-b210-dbf9dfcf80bf'},
-                #  '1': {'label': 'Forward adapter', 'value': '', 'uuid': '6d1de206-97c4-41ba-8702-a980f748a689'},
-                #  '2': {'label': 'Reverse adapter', 'value': '', 'uuid': '7aae38b8-39a8-4fba-bc6b-bda8c1ea9162'},
-                #  '3': {'label': 'Generate additional QC reports', 'value': '', 'uuid': 'bea331ce-d6fa-4312-8dce-a8b13bc4e77b'},
-                #  '4': {'label': 'Reference genome', 'value': '', 'uuid': 'a72b29ae-65a7-4e4d-a996-2943ab5b02aa'}, 
-                # '5': {'label': 'GTF file of annotation', 'value': '', 'uuid': '4987fd01-b72c-4bc0-9d49-a840a0d04b8e'}, 
-                # '6': {'label': 'Strandedness', 'value': '', 'uuid': '2ccf2242-dddd-45b6-8cea-746d9b5d49bc'}, 
-                # '7': {'label': 'Use featureCounts for generating count tables', 'value': '', 'uuid': 'f43d45e6-5692-41cb-8cfc-205dbeab1bd0'}, 
-                # '8': {'label': 'Compute Cufflinks FPKM', 'value': '', 'uuid': '78868cdb-baff-4388-a41a-a700259da1ed'},
-                #  '9': {'label': 'GTF with regions to exclude from FPKM normalization with Cufflinks', 'value': '', 'uuid': '0d4e1623-adc9-4ff3-8156-7e1322b1e278'},
-                #  '10': {'label': 'Compute StringTie FPKM', 'value': '', 'uuid': '056f11f4-bdd9-4361-b037-2c0822320cc2'}}
-
-
-                # input of the files should be formated like this for the Generic-variation-analysis-on-WGS-PE-data.ga workflow
-                # {'0': {'label': 'Paired Collection', 'value': '', 'uuid': '2352cd98-29f2-456b-a807-ede1227f6089'},
-                #   '1': {'label': 'GenBank genome', 'value': '', 'uuid': '5e6e8cac-8a75-42e8-9932-6c63bcebb861'}, 
-                #  '2': {'label': 'Name for genome database', 'value': '', 'uuid': '7e5e0a5f-4386-44cb-8941-f04ec7d8b725'}}
-                print('''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''')
+                self.logger.info(workflow.inputs)
             else:
                 raise ValueError("Invalid workflow parameters")
+            
         
             if workflow.is_runnable:
                 self.logger.info(f"Invoking workflow: {workflow.name}")
@@ -195,45 +162,47 @@ class GalaxyExecutor:
             else:
                 raise RuntimeError("Tools missing in instance, Workflow is not runnable")
             
-            # using invocation.wait() to wait for the workflow to finish will work just fine but to monitor the steps
-            #invocation = invocation.wait()
+            invocation_outputs=[]
+            while True:
+                step_jobs = self.gi_client.invocations.get_invocation_step_jobs_summary(invocation_id=invocation.id)
+                all_ok = True
+                ## Tracking the workflow invocation and also getting the intermediate outputs when job state is ok.
+                previous_states = {}
 
-            # Monitoring the steps of the workflows invocation
-            # Keep track of previous states
-            step_states = {}
-            intermediate_outputs=[]
-            self.logger.info(f"workflow state: {invocation.state}")
-            while invocation.state != "ready":
+                step_no=1 # step number counter for logging
+                for step in step_jobs:
+                    step_id = step['id']
+                    states = step['states']
+                    current_state = 'ok' if states.get('ok') == 1 else 'error' if states.get('error') == 1 else str(states)
 
+                    # Check if state has changed
+                    if previous_states.get(step_id) != current_state:
+                        self.logger.info(f"Step: {step_no} ... job id: {step_id} ... state: {states}")
+                        previous_states[step_id] = current_state
 
-                # Refresh invocation state, but doesn't seem to do the job???
-                # Possibly trying this using the client api will work since it is more direct
-                invocation = invocation.refresh()
-                print(invocation.state)
+                    if current_state == 'ok':
+                        job = self.gi_client.jobs.show_job(step_id)
+                        # Adjusting output key handling if the name is uncertain
+                        outputs = job.get('outputs', {})
+                        if outputs:
+                            first_output = next(iter(outputs.values())) # since the name of the outputs keeps changing.
+                            step_output_id = first_output['id']
+                            output = self.gi.datasets.get(step_output_id)
+                            invocation_outputs.append(output)
+                    elif current_state != 'ok':
+                        all_ok = False
+                    step_no +=1
+                
+                if all_ok:
+                    self.logger.info("All jobs are ok! Workflow invocation has completed successfully.")
+                    break
+                elif any(step['states'].get('error') == 1 for step in step_jobs):
+                    self.logger.info("One or more jobs failed. Workflow invocation has errors.")
+                    invocation.cancel()
+                    break
+                time.sleep(3)
 
-                for step in invocation.steps:
-                    label = f"step_{step.order_index}"
-                    prev_state = step_states.get(label)
-                    current_state = step.state
-
-                    # Log only if state changed
-                    if current_state != prev_state:
-                        step_states[label] = current_state
-                        if current_state == "ready":
-                            step_output=self.get_step_output(step)
-                            intermediate_outputs.append(step_output)
-                            self.logger.info(f"Step {label} completed successfully.")
-
-                    # Handle failure immediately
-                    if current_state == "failed":
-                        self.logger.error(f"Step {label} failed. Cancelling workflow.")
-                        invocation.cancel()
-                        raise RuntimeError(f"Workflow failed at step: {label}")
-
-            time.sleep(1)
-
-            self.logger.info("Workflow completed successfully.")
-            return self._prepare_result(history=history, outputs=invocation, start_time=start_time, created_history=created_history, keep_history=keep_history)
+            return self._prepare_result(history=history, outputs=invocation_outputs, start_time=start_time, created_history=created_history, keep_history=keep_history)
             
         except Exception as e:
             self.logger.error(f"Workflow invocation failed: {str(e)}")
@@ -245,6 +214,7 @@ class GalaxyExecutor:
             if not keep_workflow:
                 # delete workflow if the workflow is temporarily created
                 workflow.delete()
+                
 
     def _download_outputs(self, outputs: List[Dataset], output_path: str, output_type: str = None) -> None:
         """Download Galaxy datasets to local filesystem."""
@@ -283,7 +253,7 @@ class GalaxyExecutor:
         elapsed_time = time.time() - start_time
         result = {
             "history_id": history.id,
-            "output_ids": [ds.id for ds in outputs],
+            "output_ids": [ds.id for ds in outputs] ,
             "output_names": [ds.name for ds in outputs],
             "execution_time": elapsed_time,
             "history_preserved": keep_history or not created_history,
