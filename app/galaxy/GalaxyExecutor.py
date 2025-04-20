@@ -4,9 +4,9 @@ import logging
 from typing import Dict, List
 import json
 
-from bioblend.galaxy import GalaxyInstance as GalaxyInstance_client
-from bioblend.galaxy.objects import GalaxyInstance as GalaxyInstance_object
-from bioblend.galaxy.objects.wrappers import History, Dataset, Invocation, HistoryDatasetAssociation, HistoryDatasetCollectionAssociation
+from bioblend.galaxy.toolshed import ToolShedClient
+from bioblend.galaxy.objects import GalaxyInstance
+from bioblend.galaxy.objects.wrappers import History, Dataset
 from dotenv import load_dotenv
 import time
 from sys import path
@@ -25,6 +25,7 @@ class GalaxyExecutor:
     def __init__(self, galaxy_url: str = galaxy_url, api_key: str = api_key):
         self.logger = self._setup_logger()
         self.gi, self.gi_client= self._connect_galaxy(galaxy_url, api_key)
+        self.toolshed = ToolShedClient(self.gi_client)
 
     def _setup_logger(self) -> logging.Logger:
         """Configure and return logger instance."""
@@ -39,8 +40,8 @@ class GalaxyExecutor:
     def _connect_galaxy(self, url: str, key: str):
         """Establish connection to Galaxy instance."""
         try:
-            gi = GalaxyInstance_object(url=url, api_key=key)
-            gi_client=GalaxyInstance_client(url=url, key=key)
+            gi = GalaxyInstance(url=url, api_key=key)
+            gi_client=gi.gi
             self.logger.info(f"Connected to Galaxy: {url}")
             return gi, gi_client
         except Exception as e:
@@ -108,6 +109,63 @@ class GalaxyExecutor:
             if created_history and not keep_history:
                 self._purge_history(history)
 
+    # Funciton to check if a version compatible tool exists within the galaxy instance for workflow invocation
+    def tool_exists(self, step) -> bool:
+        tool_id = step.get('tool_id')
+        if not tool_id:
+            return True
+
+        try:
+            tool = self.gi_client.tools.show_tool(tool_id)
+        except Exception:
+            return False
+        if not tool:
+            return False
+
+        # Grab repository info (None if local tool)
+        step_repo = step.get('tool_shed_repository')
+        tool_repo = tool.get('tool_shed_repository')
+        # If the step was defined to come from a Tool Shed, enforce that
+        if step_repo:
+            # tool must also be from a Tool Shed
+            if not tool_repo:
+                return False
+            # revisions must match exactly
+            if tool_repo.get('changeset_revision') != step_repo.get('changeset_revision'):
+                return False
+
+        # If step_repo is None, we’re happy with any existing tool (shed or local)
+        return True
+
+    # Fucntion that installs tools missing in the galaxy instance for the workflow invocation        
+    def tool_check_install(self, steps):
+        if steps['tool_id'] is None:  
+                    self.logger.info(f"skipping step {steps['id']}")
+        else:
+            tool_check=self.tool_exists(steps)
+            if not tool_check:
+                self.logger.info(f'installing tool for step {steps["id"]} ')
+                toolshed_info=steps['tool_shed_repository']
+                try:
+                    install_result = self.gi_client.toolshed.install_repository_revision(
+                                                                            tool_shed_url=f'https://{toolshed_info["tool_shed"]}',
+                                                                            name=toolshed_info["name"],
+                                                                            owner=toolshed_info["owner"],
+                                                                            changeset_revision=toolshed_info["changeset_revision"],
+                                                                            install_tool_dependencies=True,          # use Tool Shed recipes
+                                                                            install_repository_dependencies=True,    # install any declared repo-level deps
+                                                                            install_resolver_dependencies=True,      # invoke Conda to fetch packages
+                                                                            tool_panel_section_id=None,             # or set to your desired panel section
+                                                                            new_tool_panel_section_label= None
+                                                                        )
+                    for repo_info in install_result:
+                        self.logger.info(f"  - Name: {repo_info.get('name')}, Owner: {repo_info.get('owner')}, Status: {repo_info.get('status')}, Error: {repo_info.get('error_message', 'None') if repo_info.get('status')!='installed' else 'None'}")
+                    
+                except Exception:
+                    self.logger.info(f'failed to install tool with name: {toolshed_info["name"]}')
+            else:
+                self.logger.info(f'tool found for step {steps["id"]}, skipping installation')
+
     def invoke_workflow(
         self,
         inputs: Dict,
@@ -155,10 +213,23 @@ class GalaxyExecutor:
             else:
                 raise ValueError("Invalid workflow parameters")
             
+            # Checking and installing tools from the toolshed missing from the galaxy instance to run the workflow
+            self.logger.info('checking if the tools in the workflow exist in the galaxy instance')
+            workflow_steps = workflow_json['steps']
+            
+            for steps in workflow_steps.values():
+                self.tool_check_install(steps)     
+                if steps['type']=='subworkflow':
+                    self.logger.info(f"installing subworkflow step tools for step {steps['id']}")
+                    for sub_steps in steps['subworkflow']['steps'].values():
+                        self.tool_check_install(sub_steps)
         
             if workflow.is_runnable:
                 self.logger.info(f"Invoking workflow: {workflow.name}")
-                invocation = workflow.invoke( inputs=inputs, history=history)
+                # Attempting to combine the clients and the objects api to get optimal implementation.
+                # invocation = workflow.invoke( inputs=inputs, history=history) # is also possible to use but for more specific 
+                invoke=self.gi_client.workflows.invoke_workflow(workflow_id=workflow.id, inputs=inputs, history_id=history.id,parameters_normalized=True, require_exact_tool_versions=False)
+                invocation=self.gi.invocations.get(invoke['id'])
             else:
                 raise RuntimeError("Tools missing in instance, Workflow is not runnable")
             
@@ -342,9 +413,8 @@ def Execute (
         
         return final_result
         
-    except Exception as e:
-        galaxy.logger.error(f"File conversion failed: {str(e)}")
-        raise
+    except Exception:
+        raise 
     finally:
         if created_history and not keep_history:
             galaxy._purge_history(history)
@@ -359,7 +429,7 @@ if __name__=="__main__":
     }
     workflow_params = {
         'type': 'workflow_file',
-        'file': 'E:/Icog/Code/AI_Assistant_Rejuve/Galaxy/bioblend-tutorial-main/test-data/convert_to_tab.ga',
+        'file': 'E:/Icog/Code/AI_Assistant_Rejuve/Galaxy/Experiment_workflow/rnaseq-pe.ga',
         'keep_workflow': False
     }
 
