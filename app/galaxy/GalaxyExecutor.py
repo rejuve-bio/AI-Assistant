@@ -12,7 +12,7 @@ import time
 from sys import path
 path.append('.')
 
-from tool_info import extract_tool_info
+from tool_info import extract_tool_info  # TO be removed with improvements.
 
 load_dotenv()
 
@@ -96,6 +96,8 @@ class GalaxyExecutor:
         try:
             tool = self.gi.tools.get(tool_id)
             self.logger.info(f"Executing tool: {tool.name}")
+
+            tool_input=self.gi_client.tools.build(tool_id=tool_id, inputs=inputs, history_id=history.id)
             
             job = tool.run(history=history, inputs=inputs)
             outputs = job[0].wait()
@@ -158,6 +160,10 @@ class GalaxyExecutor:
                                                                             tool_panel_section_id=None,             # or set to your desired panel section
                                                                             new_tool_panel_section_label= None
                                                                         )
+                    
+                    # Refreshing tool and its dependencies in the Galaxy instance before moving on
+                    self.gi.gi.tools.reload(steps['tool_id'])
+
                     for repo_info in install_result:
                         self.logger.info(f"  - Name: {repo_info.get('name')}, Owner: {repo_info.get('owner')}, Status: {repo_info.get('status')}, Error: {repo_info.get('error_message', 'None') if repo_info.get('status')!='installed' else 'None'}")
                     
@@ -209,7 +215,7 @@ class GalaxyExecutor:
                 if workflow is None:
                     workflow=self.gi.workflows.import_new(wf_read)
                     self.logger.info(f"workflow {workflow.name} imported")
-                self.logger.info(workflow.inputs)
+                # self.logger.info(workflow.inputs)
             else:
                 raise ValueError("Invalid workflow parameters")
             
@@ -223,7 +229,11 @@ class GalaxyExecutor:
                     self.logger.info(f"installing subworkflow step tools for step {steps['id']}")
                     for sub_steps in steps['subworkflow']['steps'].values():
                         self.tool_check_install(sub_steps)
-        
+
+            # Reloading the toolbox after tool installation if neccessary
+            # self.logger.info('Reloading the toolbox after tool installation')
+            # self.gi.gi.config.reload_toolbox()
+            print(workflow.inputs)
             if workflow.is_runnable:
                 self.logger.info(f"Invoking workflow: {workflow.name}")
                 # Attempting to combine the clients and the objects api to get optimal implementation.
@@ -232,46 +242,65 @@ class GalaxyExecutor:
                 invocation=self.gi.invocations.get(invoke['id'])
             else:
                 raise RuntimeError("Tools missing in instance, Workflow is not runnable")
-            
-            invocation_outputs=[]
+            invocation.wait()
+            invocation_outputs = []
+            previous_states: Dict[str, str] = {}
+            completed_steps = set()
+            error_occurred = False
+
+            # To keep track of the current state of the current running step in the workflow
+            # Also to get the output of that step if any when that state finshes running or is in 'ok'  state
             while True:
                 step_jobs = self.gi_client.invocations.get_invocation_step_jobs_summary(invocation_id=invocation.id)
                 all_ok = True
-                ## Tracking the workflow invocation and also getting the intermediate outputs when job state is ok.
-                previous_states = {}
-
-                step_no=1 # step number counter for logging
+                step_index=0
                 for step in step_jobs:
                     step_id = step['id']
                     states = step['states']
-                    current_state = 'ok' if states.get('ok') == 1 else 'error' if states.get('error') == 1 else str(states)
 
-                    # Check if state has changed
-                    if previous_states.get(step_id) != current_state:
-                        self.logger.info(f"Step: {step_no} ... job id: {step_id} ... state: {states}")
+                    # Simplified state
+                    if states.get('running') == 1:
+                        current_state = 'running'
+                    elif states.get('ok') == 1:
+                        current_state = 'ok'
+                    elif states.get('error') == 1:
+                        current_state = 'error'
+                    else:
+                        current_state = 'other'
+
+                    # Log only on transitions to running, ok, or error
+                    prev = previous_states.get(step_id)
+                    if current_state != prev and current_state in ('running', 'ok', 'error'):
+                        self.logger.info(f"Step {step_index} with id {step_id} transitioned to {current_state}")
                         previous_states[step_id] = current_state
 
-                    if current_state == 'ok':
+                    # Capture output exactly once when it first becomes ok
+                    if current_state == 'ok' and step_id not in completed_steps:
                         job = self.gi_client.jobs.show_job(step_id)
-                        # Adjusting output key handling if the name is uncertain
                         outputs = job.get('outputs', {})
                         if outputs:
-                            first_output = next(iter(outputs.values())) # since the name of the outputs keeps changing.
-                            step_output_id = first_output['id']
-                            output = self.gi.datasets.get(step_output_id)
-                            invocation_outputs.append(output)
-                    elif current_state != 'ok':
+                            first_output = next(iter(outputs.values()))
+                            invocation_outputs.append(self.gi.datasets.get(first_output['id']))
+                        completed_steps.add(step_id)
+
+                    # Handle errors by logging, cancelling, and breaking out
+                    if current_state == 'error':
+                        self.logger.error(f"Step {step_index} with id {step_id} failed; cancelling invocation")
+                        invocation.cancel()
+                        error_occurred = True
+                        break
+
+                    if current_state != 'ok':
                         all_ok = False
-                    step_no +=1
-                
+                    step_index +=1
+
+                if error_occurred:
+                    break
                 if all_ok:
-                    self.logger.info("All jobs are ok! Workflow invocation has completed successfully.")
+                    self.logger.info("All steps completed successfully.")
                     break
-                elif any(step['states'].get('error') == 1 for step in step_jobs):
-                    self.logger.info("One or more jobs failed. Workflow invocation has errors.")
-                    invocation.cancel()
-                    break
-                time.sleep(3)
+
+                time.sleep(2)  # polling interval 
 
             return self._prepare_result(history=history, outputs=invocation_outputs, start_time=start_time, created_history=created_history, keep_history=keep_history)
             
@@ -328,7 +357,7 @@ class GalaxyExecutor:
             "output_names": [ds.name for ds in outputs],
             "execution_time": elapsed_time,
             "history_preserved": keep_history or not created_history,
-            "outputs": outputs  # Include actual outputs for downloading
+            "outputs": outputs
         }
         self.logger.info(f"Operation completed in {result['execution_time']}s")
         return result
@@ -374,12 +403,25 @@ def Execute (
     created_history = history_id is None
     start_time = time.time()
 
+    # Handling diffrent types of inputs
     if input['type']=="file":
-        if not os.path.exists(input['file']):
-            raise FileNotFoundError(f"Input file not found: {input['file']}")
-        dataset = galaxy._upload_file(history, input['file'], file_type)
+        if isinstance(input['file'], str):
+            if not os.path.exists(input['file']):
+                raise FileNotFoundError(f"Input file not found: {input['file']}")
+            dataset=galaxy._upload_file(history, input['file'], file_type)
+        if isinstance(input['file'], list):
+            for input_path in input['file']:
+                if not os.path.exists(input_path):
+                    raise FileNotFoundError(f"Input file not found: {input['file']}")
+            i=0
+            dataset={}
+            for input_path in input['file']:
+                dataset[i] = galaxy._upload_file(history, input_path, file_type)
+                i+=1
     elif input['type']=="dataset":
         dataset=galaxy.gi.datasets.get(input['dataset_id'])
+    elif input['type']=='colection':
+        dataset=galaxy.gi.dataset_collections.get(input['collection_id'])
     elif input['type']=="other":
         # Handle other input types (e.g., URLs, text)
         other_input=input['other']
@@ -401,15 +443,35 @@ def Execute (
                 keep_history=True  # Keep history until final cleanup
             )
         elif workflow_params:
-            workflow_input={'0': {'id': dataset.id, 'src': dataset.SRC}}
-            # invoke worflows
+            collection_params=  {'collection_type': 'paired',
+                                'element_identifiers': [{'id': dataset[0].id,
+                                                        'name': 'forward',
+                                                        'src': 'hda'},
+                                                        {'id': dataset[1].id,
+                                                        'name': 'reverse',
+                                                        'src': 'hda'}],
+                                'name': 'My_pairedcollection'}
+            paired_collection=galaxy.gi.gi.histories.create_dataset_collection(history_id=history.id, collection_description=collection_params)
+           
+            workflow_input={'0': {'src': 'hdca', 'id': paired_collection['id']},
+                            '1': {'src': 'hda', 'id': dataset[2].id},
+                            '2': 'phiX174'}
+           
+             # workflow input for the collection
+             # invoke worflows
             result= galaxy.invoke_workflow(inputs=workflow_input, workflow_params=workflow_params, history_id=history.id)
                 
-        
         galaxy._download_outputs(result['outputs'], output_path, output_type)
         
         # Prepare the final result, considering keep_history
-        final_result = galaxy._prepare_result(history, result['outputs'], start_time, created_history, keep_history)
+        result = galaxy._prepare_result(history, result['outputs'], start_time, created_history, keep_history)
+
+        final_result = {
+                        "history_id": result["history_id"],
+                        "output_names": result["output_names"],
+                        "execution_time": result["execution_time"],
+                        "history_preserved": result["history_preserved"]
+                        }
         
         return final_result
         
@@ -425,12 +487,12 @@ if __name__=="__main__":
     galaxy = GalaxyExecutor()
     input= {
         'type': 'file',
-        'file': 'E:/Icog/Code/AI_Assistant_Rejuve/Galaxy/bioblend-tutorial-main/test-data/1.txt'
+        'file': ["C:/Users/Administrator/Desktop/paired files/input 1/forward.fastqsanger", "C:/Users/Administrator/Desktop/paired files/input 1/reverse.fastqsanger", "C:/Users/Administrator/Desktop/paired files/input 2/NC_001422.genbank"]
     }
     workflow_params = {
         'type': 'workflow_file',
         'file': 'E:/Icog/Code/AI_Assistant_Rejuve/Galaxy/Experiment_workflow/rnaseq-pe.ga',
-        'keep_workflow': False
+        'keep_workflow': True
     }
 
     result= Execute (
