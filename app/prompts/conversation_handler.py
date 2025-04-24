@@ -17,8 +17,7 @@ RESPONSE GUIDELINES:
 STRICT RESPONSE CRITERIA:
 
 1. USE "response:" ONLY FOR:
-   - Greetings (hello, hi, hey)
-   - Farewells (goodbye, bye, see you)
+   - Greetings,Farewells
    - Clarifying what capabilities the system has
    - Acknowledging user messages (thank you, I understand)
    - Polite redirections for irrelevant queries
