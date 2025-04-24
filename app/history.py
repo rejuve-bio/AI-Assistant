@@ -32,14 +32,15 @@ class History:
         }
         user_id_str = str(user_id)
         self.history = self._load_history()
-       
+        
         if user_id_str not in self.history:
             self.history[user_id_str] = []
-                
+        
         # Append new entry
         self.history[user_id_str].append(entry)
-        
+
         self.history[user_id_str].sort(key=lambda x: x["time"])
+        self.history[user_id_str] = self.history[user_id_str][-3:]
         self._save_history()
     
     def retrieve_user_history(self, user_id):
