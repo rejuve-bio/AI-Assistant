@@ -37,6 +37,10 @@ class Graph:
         Returns:
             dict: The JSON response from the knowledge graph service or an error message.
         """
+        if isinstance(json_query, str):
+            logger.info("passed json is a string changing it to a dicitionary")
+            json_query = json.loads(json_query)
+
         logger.info("Starting knowledge graph query...")
         source = "ai-assistant"
         limit = 100
@@ -67,8 +71,7 @@ class Graph:
                 logger.error(f"Response content: {e.response.text}")
             return {"error": f"Failed to query knowledge graph: {str(e)}"}
 
-    def generate_graph(self, query, token):
-        try:
+    def validated_json(self,query):
             logger.info(f"Starting annotation query processing for question: '{query}'")
 
             # Extract relevant information
@@ -82,15 +85,28 @@ class Graph:
             
             # If validation failed, return the intermediate steps
             if validation["validation_report"]["validation_status"] == "failed":
-                logger.error("Validation failed for the constructed json query")
-                return {"text": f"Unable to generate graph from the query: {query}"}
-            
+                logger.error("Validation is failing *****sending the intial json format")
+                return {
+                    "text": "Here is the structured JSON for your question. Please review and confirm if it's accurate.",
+                    "json_format": initial_json,
+                }
+
             # Use the updated JSON for subsequent steps
             validated_json = validation["updated_json"]
-            validated_json["question"] = query
-            # Query knowledge graph with validated JSON
-            graph = self.query_knowledge_graph(validated_json, token)
-        
+            # validated_json["question"] = query
+            '''
+            TODO
+            add query along with job id to specifiy to what query is the json requested is related to.
+            '''
+            return {
+                    "text": "Here is the structured JSON for your question. Please review and confirm if it's accurate.",
+                    "json_format": validated_json,
+                }
+
+    def generate_graph(self, query, validated_json, token):
+        try:        
+            graph = self.query_knowledge_graph(validated_json, token) 
+
             # Generate final answer using validated JSON
             # final_answer = self._provide_text_response(query, validated_json, graph)
             response = {
@@ -103,7 +119,7 @@ class Graph:
             
         except Exception as e:
             logger.error(f"An error occurred during graph generation: {e}")
-            return {"text": f"Unable to generate graph from the query: {query}"}
+            return {"text": f"I apologize, but I wasn't able to generate the graph you requested. Could you please rephrase your question or provide additional details so I can better understand what you're looking for?"}
 
     def _extract_relevant_information(self, query):
         try:
