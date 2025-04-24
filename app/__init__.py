@@ -102,7 +102,7 @@ def create_app():
     except:
         import traceback
         traceback.print_exc()
-        logger.warning("Qdrant Connection Failed!!! If you are running local enviroments(poetry) Please connect qdrant database on your computer by running docker run -d -p 6333:6333 -v qdrant_data:/qdrant/storage qdrant/qdrant  or if you are using dockerization make sure in your .env file qdrant is configured as QDRANT_CLIENT=http://qdrant:6333")
+        logger.warning("Qdrant Connection Failed!!! If you are running locally Please connect qdrant database by running docker run -d -p 6333:6333 -v qdrant_data:/qdrant/storage qdrant/qdrant")
 
     # Register routes
     app.register_blueprint(main_bp)
