@@ -17,18 +17,10 @@ from app.history import History
 import asyncio
 import traceback
 import json
-import os
 import autogen
 
 
 logger = logging.getLogger(__name__)
-
-
-log_dir = "/AI-Assistant/logfiles"
-log_file = os.path.join(log_dir, "Assistant.log")
-
-os.makedirs(log_dir, exist_ok=True)
-
 logger.setLevel(logging.DEBUG)
 loghandle = loghandlers.TimedRotatingFileHandler(
                 filename="logfiles/Assistant.log",
@@ -64,57 +56,30 @@ class AiAssistance:
 
     def agent(self,message,user_id, token):
         message = self.preprocess_message(message)
-
-        validate_agent = AssistantAgent(
-            name="validate a json format for a validation",
+        graph_agent = AssistantAgent(
+            name="gragh_generate",
             llm_config = {"config_list" : self.llm_config},
-            system_message=("""
-               You are responsible for handling all biological related questions or annotation-related user queries.
-                Your task is to analyze the user's question and convert it into a valid JSON format based on the expected structure used by the annotation system.
-                Once the JSON is generated, automatically send the formatted JSON to the graph_agent for execution using the appropriate tools.
-                You must not attempt to answer or execute the biological query yourself—only prepare the correct JSON structure..
-                """),
-                        )
-        
-        # graph_agent = AssistantAgent(
-        #     name="gragh_generate",
-        #     llm_config = {"config_list" : self.llm_config},
-        #     system_message=("""
-        #                     You are a knowledgeable assistant that executes biological queries in JSON format.
-        #                     You must not interpret or modify the JSON.
-        #                     When you receive a JSON query, use the `generate_graph` tool to process it and return the output.
-        #                     Do not respond with explanations or summaries—just run the tool and return its result.
-        #                     End your response with 'TERMINATE'.
-        #                 """))
+            system_message=(
+                "You are a knowledgeable assistant specializing in answering questions related to biological annotations, such as identifying genes, proteins, terms, SNPs, transcripts, and interactions."
+                " You have access to a bio knowledge graph to retrieve relevant data."
+                " You can only use the functions provided to you. When your task is complete, reply 'TERMINATE' when the task is done."
+            )
+        )
 
         rag_agent = AssistantAgent(
             name="rag_retrival",
             llm_config = {"config_list" : self.llm_config},
-           system_message=(
-                "You are a helpful assistant specializing in retrieving general information. "
-                "You have only access to general knowledge about the Rejuve platform, including its features and services. "
-                "You also have access to user-uploaded PDF documents for information extraction and reference. "
-                "You must only use the functions provided to you to retrieve or process this information. "
-                "Once your task is complete, respond with the results and conclude by replying 'TERMINATE'."
-            ))
- 
+            system_message=(
+                "You are a helpful assistant responsible for retrieving general informations"
+                "You can only use the functions provided to you. Reply 'TERMINATE' when the task is done."
+               ),)
+
         user_agent = UserProxyAgent(
             name="user",
             llm_config=False,
             code_execution_config=False,
             human_input_mode="NEVER",
             is_termination_msg=lambda x: x.get("content", "") and x.get("content", "").rstrip().endswith("TERMINATE"))
-
-        @user_agent.register_for_execution()
-        @validate_agent.register_for_llm(description="retrieve the json format provided from the tool")
-        def get_json_format() -> str:
-            try:
-                logger.info(f"Generating graph with arguments: {message}")  # Add this line to log the arguments
-                response = self.annotation_graph.validated_json(message)
-                return response
-            except Exception as e:
-                logger.error("Error in generating graph", exc_info=True)
-                return f"I couldn't generate a graph for the given question {message} please try again."
 
 
         @user_agent.register_for_execution()
@@ -127,19 +92,20 @@ class AiAssistance:
                 logger.error("Error in retrieving response", exc_info=True)
                 return "Error in retrieving response."
 
-        # @user_agent.register_for_execution()
-        # @graph_agent.register_for_llm(description="Generate and handle bio-knowledge graphs for annotation-related queries.")
-        # def generate_graph():
-        #     try:
-        #         logger.info(f"Generating graph with arguments: {message}")  # Add this line to log the arguments
-        #         response = self.annotation_graph.generate_graph("message",message,token)
-        #         return response
-        #     except Exception as e:
-        #         logger.error("Error in generating graph", exc_info=True)
-        #         return f"I couldn't generate a graph for the given question {message} please try again."
+        
+        @user_agent.register_for_execution()
+        @graph_agent.register_for_llm(description="Generate and handle bio-knowledge graphs for annotation-related queries.")
+        def generate_graph():
+            try:
+                logger.info(f"Generating graph with arguments: {message}")  # Add this line to log the arguments
+                response = self.annotation_graph.generate_graph(message, token)
+                return response
+            except Exception as e:
+                logger.error("Error in generating graph", exc_info=True)
+                return f"I couldn't generate a graph for the given question {message} please try again."
 
 
-        group_chat = GroupChat(agents=[user_agent, rag_agent,validate_agent], messages=[],max_round=3)
+        group_chat = GroupChat(agents=[user_agent, rag_agent, graph_agent], messages=[],max_round=3)
         group_manager = GroupChatManager(
             groupchat=group_chat,
             llm_config = {"config_list" : self.llm_config},
@@ -183,12 +149,12 @@ class AiAssistance:
         self.history.create_history(user_id, query, response)     
         return response 
 
-    def assistant_response(self,query,user_id,token,graph=None,graph_id=None,file=None,resource="annotation",json_query=None):
+    def assistant_response(self,query,user_id,token,graph=None,graph_id=None,file=None,resource="annotation"):
       
         try:
-            logger.info(f"passed parameters are query = {query}, user_id= {user_id}, graphid={graph_id}, graph = {graph}, resource = {resource}, json_query = {json_query}")
+            logger.info(f"passes parameters are query = {query}, user_id= {user_id}, graphid={graph_id}, graph = {graph}, resource = {resource}")
             if (file and query) or (file and graph):
-                raise ValueError({"text":"Invalid format please pass a file to be uploaded or a query with/without graph ids not both"})
+                return {"text":"please pass a file to be uploaded or a query with/without graph ids not both"}
 
             if file:
                 if file.filename.lower().endswith('.pdf'):
@@ -256,26 +222,15 @@ class AiAssistance:
                 response = asyncio.run(self.assistant(query, user_id, token))
                 return response 
 
-            if json_query:
-                logger.info(f"Executing a json query {json_query} to the annotation service")
-                try:
-                    logger.info(f"Generating graph with arguments: {json_query}")  # Add this line to log the arguments
-                    response = self.annotation_graph.generate_graph(f"json format accepted from the user is {json}",json,token)
-                    return response
-                except Exception as e:
-                    logger.error("Error in generating graph", exc_info=True)
-                    return f"I couldn't generate a graph for the given format would you please try again."
+            if query and graph:
+                summary = self.graph_summarizer.summary(user_query=query,graph=graph)
+                self.history.create_history(user_id, query, response)             
+                return summary
 
-
-        #     if query and graph:
-        #         summary = self.graph_summarizer.summary(user_query=query,graph=graph)
-        #         self.history.create_history(user_id, query, response)             
-        #         return summary
-
-        #     if graph:
-        #         summary = self.graph_summarizer.summary(user_query=query,graph=graph)
-        #         self.history.create_history(user_id, query, response)     
-        #         return summary
+            if graph:
+                summary = self.graph_summarizer.summary(user_query=query,graph=graph)
+                self.history.create_history(user_id, query, response)     
+                return summary
         except:
             traceback.print_exc()
 
