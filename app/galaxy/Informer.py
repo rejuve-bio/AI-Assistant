@@ -5,6 +5,9 @@ from rapidfuzz import process
 from bioblend.galaxy import GalaxyInstance
 from dotenv import load_dotenv
 import json
+import time
+from datetime import datetime, timedelta
+
 from sys import path
 path.append('app')
 
@@ -15,6 +18,7 @@ class GalaxyInformer:
     def __init__(self, entity_type):
         load_dotenv()
         self.entity_type = entity_type.lower()
+        self.timestamp_file = f'app/galaxy/cache_files/timestamps/{self.entity_type}_timestamp.txt'
         self.gi = GalaxyInstance(url=os.getenv("GALAXY_URL"), key=os.getenv("GALAXY_API"))
         self.llm = GeminiModel(api_key=os.getenv("GEMINI_API_KEY"), model_provider='gemini', model_name=os.getenv("ADVANCED_LLM_VERSION") )
         self._entity_config = {
@@ -89,12 +93,48 @@ class GalaxyInformer:
     def get_entities(self):
         """Get all entities based on configured type"""
         return self._entity_config[self.entity_type]['get_method']()
+    
+    # Save the current timestamp to a file
+    def save_timestamp(self):
+        with open(self.timestamp_file, "w") as f:
+            f.write(str(time.time()))
 
+    # Read the timestamp from file and compare with current time
+    def within_time(self):
+        try:
+            with open(self.timestamp_file, "r") as f:
+                saved_time = float(f.read().strip())
+        except FileNotFoundError:
+            return False  # If file doesn't exist, assume False
+        
+        saved_datetime = datetime.fromtimestamp(saved_time)
+        current_datetime = datetime.now()
+        
+        if current_datetime - saved_datetime > timedelta(hours=10):
+            return False
+        return True
+        
     def search_entities(self, query, threshold=85):
         """Unified fuzzy search with priority fields"""
-        entities = self.get_entities()
+        if self.timestamp_file:
+            if self.within_time():
+                    try:
+                        with open(f'app/galaxy/cache_files/{self.entity_type}.json', 'r') as f:
+                            entities = json.load(f)
+                    except FileNotFoundError:
+                        self.save_timestamp()
+                        entities=self.get_entities()
+                        with open(f'app/galaxy/cache_files/{self.entity_type}.json', 'w') as f:
+                            json.dump(entities, f, indent=4)
+            else:
+                self.save_timestamp()
+                entities = self.get_entities()
+                with open(f'app/galaxy/cache_files/{self.entity_type}.json', 'w') as f:
+                    json.dump(entities, f, indent=4)
+
         config = self._entity_config[self.entity_type]
         matches = []
+
 
         # Priority search on configured fields
         for entity in entities:
@@ -122,6 +162,11 @@ class GalaxyInformer:
 
     def get_entity_info(self, search_query, entity_id=None):
         """Unified info retrieval with LLM summary"""
+        
+        if not os.path.exists(f'app/galaxy/cache_files'):
+             os.makedirs('app/galaxy/cache_files')
+        if not os.path.exists('app/galaxy/cache_files/timestamps'):
+             os.makedirs('app/galaxy/cache_files/timestamps')
         if entity_id:
             entity = next((e for e in self.get_entities() if e['id'] == entity_id), None)
         else:
@@ -151,20 +196,3 @@ class GalaxyInformer:
                 except:
                     return response
         return response 
-    
-
-# Usage Examples
-if __name__ == "__main__":
-    # Dataset example
-    dataset_manager = GalaxyInformer('dataset')
-    pprint(dataset_manager.get_entity_info("1.bed"))
-    print('\n\n\n') 
-    
-    # Tool example
-    tool_manager = GalaxyInformer('tool')
-    pprint(tool_manager.get_entity_info('genbank to gff3'))
-    print('\n\n\n')
-    
-    # Workflow example    
-    workflow_manager = GalaxyInformer('workflow')
-    pprint(workflow_manager.get_entity_info("Annotation"))
