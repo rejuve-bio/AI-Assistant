@@ -10,7 +10,7 @@ from autogen import AssistantAgent, UserProxyAgent, GroupChat, GroupChatManager,
 from typing import Annotated
 from app.storage.qdrant import Qdrant
 from app.prompts.conversation_handler import conversation_prompt, conversation_prompt_answer
-from app.prompts.classifier_prompt import classifier_prompt
+from app.prompts.classifier_prompt import classifier_prompt, classifier_agent_prompt
 from app.memory_layer import MemoryManager
 from app.summarizer import Graph_Summarizer
 from app.history import History
@@ -69,6 +69,16 @@ class AiAssistance:
             return message
         return message
 
+    def _extract_json_from_codeblock(self, content: str) -> str:
+        start = content.find("```json")
+        end = content.rfind("```")
+        if start != -1 and end != -1:
+            json_content = content[start + 7:end].strip()
+            return json_content
+        else:
+            return content
+
+
     def agent(self,message,user_id, token):
         message = self.preprocess_message(message)
 
@@ -77,16 +87,8 @@ class AiAssistance:
         classifier_agent = AssistantAgent(
             name="classifier",
             llm_config={"config_list": self.llm_config},
-            system_message=(
-                "You are a text classifier. Your task is to classify each user query into one of two categories: 'bio_annotation' or 'general_knowledge'. "
-                "A query should be classified as 'bio_annotation' only if it demonstrates an explicit intent to obtain detailed information or annotations "
-                "about specific biological entities, such as a gene, protein, enhancer, exon, pathway, promoter, snp, super_enhancer, or transcript. "
-                "For example, if the user is asking for specific knowledge, details, or annotations about one of these biological elements, then label the query as 'bio_annotation'. "
-                "If the mentioned terms appear only in a general or casual context without a clear intent to obtain detailed biological knowledge, classify the query as 'general_knowledge'. "
-                "Output only the classification label ('bio_annotation' or 'general_knowledge') without any additional text. "
-                "When you have completed all classifications, reply with 'TERMINATE'."
-            ),
-            description="Classifies input text into 'bio_annotation' for queries with explicit intent to obtain detailed biological information on entities like genes, proteins, enhancers, exons, pathways, promoters, snps, super_enhancers, or transcripts; otherwise classifies as 'general_knowledge'."
+            system_message= classifier_agent_prompt,
+            description="Analyzes and decomposes user queries into sequential, classifiable sub-tasks (bio_annotation or general_knowledge) with dependencies, outputting a JSON plan"
         )
         graph_agent = AssistantAgent(
             name="gragh_generate",
@@ -148,35 +150,55 @@ class AiAssistance:
                 logger.error("Error in generating graph", exc_info=True)
                 return f"I couldn't generate a graph for the given question {message} please try again."
 
-        print("agents created")
         # classify the users question
         classifiction_message=[{"role": "User","content":message}]
         classification= classifier_agent.generate_reply(classifiction_message)
-        print(f"classification of the users question is {classification['content'].strip()}")
-        if classification['content'].strip() == 'bio_annotation':
-           # response using imitiate chat because they are just two agents interacting
-           response = user_agent.initiate_chat(graph_agent,message=message, max_turns=3)
-           response= response.chat_history[3]['content']
-           
-        elif classification['content'].strip() == 'general_knowledge':  
-           response= user_agent.initiate_chat(rag_agent,message=message, max_turns=3)
-           response= response.chat_history[3]['content']
-        else:
-            print("Invalid classification, Defaulting to Groupchat with both agents")
-            group_chat = GroupChat(agents=[user_agent, graph_agent, rag_agent], messages=[],max_round=3)
-            group_manager = GroupChatManager(
-                groupchat=group_chat,
-                llm_config = {"config_list" : self.llm_config},
-                human_input_mode="NEVER")           
-            print("group manager created")
-            user_agent.initiate_chat(group_manager, message=message, clear_history=False)
-            # response is the 2nd message in the group chat
-            response = group_chat.messages[2]['content']
+        logger.info(f"classified tasks type {type(classification)}")
+        classification_json=self._extract_json_from_codeblock(classification['content'])
+        try:
+            classification = json.loads(classification_json) if isinstance(classification_json, str) else classification_json
+        except Exception as e:
+            logger.error(f"Classification failed: {e}")
+            return "Sorry, I couldn’t classify your request."
+        logger.info(f"Number of classified tasks {len(classification['tasks'])}")
+        logger.info(classification_json)
 
+        # collect the agent responses here.
+        agent_responses={}
+        agent_knowledge=[]
+        for task in classification['tasks']:
+            logger.info(f"responding for {task['type']} task: {task['task_id']} with query {task['subquery']}")
+            query= task['subquery']
+            if task['depends_on']:
+                for dependency in task['depends_on']:
+                    agent_knowledge.append(agent_responses[dependency])
+                logger.info(f"collecting previous knowledge")
+                query= "knowledge so far: \n" + str(agent_knowledge) + "\n  question: \n " +task['subquery']
 
-        if response:
-            return response
-        return group_chat.messages[1]['content']
+            if task['type'] == 'bio_annotation':
+                # response using imitiate chat because they are just two agents interacting
+                response = user_agent.initiate_chat(graph_agent,message=query, max_turns=3)
+                response= response.chat_history[3]['content']
+                
+            elif task['type'] == 'general_knowledge':  
+                response= user_agent.initiate_chat(rag_agent,message=query, max_turns=3)
+                response= response.chat_history[3]['content']
+            else:
+                print("Invalid classification, Defaulting to Groupchat with both agents")
+                group_chat = GroupChat(agents=[user_agent, graph_agent, rag_agent], messages=[],max_round=3)
+                group_manager = GroupChatManager(
+                    groupchat=group_chat,
+                    llm_config = {"config_list" : self.llm_config},
+                    human_input_mode="NEVER")           
+                print("group manager created")
+                user_agent.initiate_chat(group_manager, message=message, clear_history=False)
+                # response is the 2nd message in the group chat
+                response = group_chat.messages[2]['content']
+            agent_responses[task['task_id']]={"query": task['subquery'], "response": response}
+
+        logger.info("collecting responses and generating general response")
+        response= self.advanced_llm.generate(prompt= f"message:{message}\n agent_response: {agent_responses} \n\n Structure the agent_response as a response to the message.")
+        return response
 
 
     async def save_memory(self,query,user_id):
@@ -213,7 +235,7 @@ class AiAssistance:
 
         ### Adding rich context into the answers as well for an interactive commuication
         prompt_ans= conversation_prompt_answer.format(memory=context,history=history,query=query,raw_answer=response,user_context=user_context)
-        response= self.advanced_llm.generate(prompt_ans)['response']
+        response= self.advanced_llm.generate(prompt_ans)
         logger.info(f"file type: {response} \n {type(response)}")
         logging.info("Answer refactored based on context to be more interactive")
 
@@ -319,7 +341,3 @@ class AiAssistance:
                 return summary
         except:
             traceback.print_exc()#
-
-        
-
-
