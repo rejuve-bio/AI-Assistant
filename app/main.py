@@ -1,26 +1,36 @@
 
-import logging
-import logging.handlers as loghandlers
-from dotenv import load_dotenv
+
+import autogen
+from autogen import AssistantAgent, UserProxyAgent, GroupChat, GroupChatManager
+from .llm_handle.llm_models import LLMInterface,OpenAIModel,get_llm_model,openai_embedding_model
+from .annotation_graph.annotated_graph import Graph
 from app.annotation_graph.schema_handler import SchemaHandler
 from app.rag.rag import RAG
-from .annotation_graph.annotated_graph import Graph
-from .llm_handle.llm_models import LLMInterface,OpenAIModel,get_llm_model,openai_embedding_model
-from autogen import AssistantAgent, UserProxyAgent, GroupChat, GroupChatManager
-from typing import Annotated
 from app.storage.qdrant import Qdrant
 from app.prompts.conversation_handler import conversation_prompt
 from app.prompts.classifier_prompt import classifier_prompt
 from app.memory_layer import MemoryManager
 from app.summarizer import Graph_Summarizer
+from app.hypothesis_generation.hypothesis import Hypothesis_generation
 from app.history import History
-import asyncio
+import logging.handlers as loghandlers
+from dotenv import load_dotenv
+from typing import Annotated
 import traceback
+import logging
+import asyncio
 import json
-import autogen
+import os
 
 
 logger = logging.getLogger(__name__)
+
+
+log_dir = "/AI-Assistant/logfiles"
+log_file = os.path.join(log_dir, "Assistant.log")
+
+os.makedirs(log_dir, exist_ok=True)
+
 logger.setLevel(logging.DEBUG)
 loghandle = loghandlers.TimedRotatingFileHandler(
                 filename="logfiles/Assistant.log",
@@ -36,8 +46,10 @@ class AiAssistance:
     def __init__(self, advanced_llm:LLMInterface, basic_llm:LLMInterface, schema_handler:SchemaHandler) -> None:
         self.advanced_llm = advanced_llm     
         self.basic_llm = basic_llm
+        self.hypotheisis = Hypothesis_generation(self.advanced_llm)
         self.annotation_graph = Graph(advanced_llm, schema_handler)
         self.graph_summarizer = Graph_Summarizer(self.advanced_llm)
+        self.hypothesis_generation = Hypothesis_generation(self.advanced_llm)
         self.client = Qdrant()
         self.rag = RAG(client=self.client,llm=advanced_llm)
         self.history = History()
@@ -56,22 +68,97 @@ class AiAssistance:
 
     def agent(self,message,user_id, token):
         message = self.preprocess_message(message)
-        graph_agent = AssistantAgent(
-            name="gragh_generate",
-            llm_config = {"config_list" : self.llm_config},
-            system_message=(
-                "You are a knowledgeable assistant specializing in answering questions related to biological annotations, such as identifying genes, proteins, terms, SNPs, transcripts, and interactions."
-                " You have access to a bio knowledge graph to retrieve relevant data."
-                " You can only use the functions provided to you. When your task is complete, reply 'TERMINATE' when the task is done."
-            )
-        )
 
+        # graph_agent = AssistantAgent(
+        #     name="gragh_generate",
+        #     llm_config = {"config_list" : self.llm_config},
+        #     system_message=("""
+        #                     You are a knowledgeable assistant that executes biological queries in JSON format.
+        #                     You must not interpret or modify the JSON.
+        #                     When you receive a JSON query, use the `generate_graph` tool to process it and return the output.
+        #                     Do not respond with explanations or summaries—just run the tool and return its result.
+        #                     End your response with 'TERMINATE'.
+        #                 """))
+
+        annotation_validate_agent = AssistantAgent(
+            name="validate a json format for a validation",
+            llm_config = {"config_list" : self.llm_config},
+            system_message=("""
+                You are responsible for handling ONLY factual annotation-related user queries. 
+                YOUR PRIMARY ROLE:
+                - Process factual biological lookups and database queries
+                - Convert user questions into valid JSON format for Neo4j graph database execution
+                - Handle entity identification and relationship queries
+                
+                TYPES OF QUERIES YOU HANDLE:
+                - Gene ID lookups (e.g., "What is ENSG00000140718?")
+                - Protein information retrieval (e.g., "Show me information about TP53 protein")
+                - Known gene-gene interactions (e.g., "How does BRCA1 interact with BRCA2?")
+                - Any query asking for ESTABLISHED FACTS or DOCUMENTED RELATIONSHIPS
+                
+                QUERIES YOU MUST REJECT AND NOT PROCESS:
+                - Any query containing words like "might," "could," "possibly," "hypothesize," "explain how," "mechanism"
+                - Any query asking about potential impacts, effects, or contributions
+                - Any query that seeks speculative reasoning rather than documented facts
+                - Specifically, queries like "How might [variant] contribute to [condition]?" belong to the hypothesis agent
+                
+                If a user query contains speculative language or asks for causal mechanisms, immediately reject it and do not process it. Only process queries seeking documented, factual information.
+                
+                For queries you do handle, analyze the user's question and convert it into a valid JSON format for the annotation system.
+                Once the JSON is generated, automatically send the formatted JSON to the graph_agent for execution.
+                You must not attempt to answer or execute the biological query yourself—only prepare the correct JSON structure.
+                """),
+                )
+        
+        hypothesis_generation_agent = AssistantAgent(
+            name="hypothesis generations",
+            llm_config = {"config_list" : self.llm_config},
+            system_message=("""
+                You are responsible for identifying hypothesis-generation queries about biological mechanisms.
+                YOUR PRIMARY ROLE:
+                - Recognize when a user is asking for speculative biological reasoning
+                - Forward these hypothesis-type queries to the appropriate function
+                - Distinguish between factual lookups and mechanistic reasoning requests
+
+                QUERY IDENTIFICATION CRITERIA:
+                - The query asks about potential mechanisms or causal relationships
+                - The query uses speculative language (e.g., "how might," "could," "possibly")
+                - The query seeks explanations rather than established facts
+                - The user wants reasoning about biological processes or effects
+
+                KEY DETECTION PHRASES:
+                - "How might rs345 contribute to obesity?"
+                - "What mechanism could explain..."
+                - "Why would gene X affect condition Y?"
+                - "Hypothesize how..."
+                - "What's the potential impact of..."
+
+                IMPORTANT: Do NOT attempt to generate hypotheses yourself. Your job is only to recognize when a query requires hypothesis generation and route it to the appropriate function. The function will generate the actual hypothesis and explanation.
+
+                If a query asks for factual information or database retrieval (e.g., "What is gene X?" or "Show interactions for protein Y"), do NOT process it - this belongs to the annotation agent.
+                """
+                ),
+                )
+        
         rag_agent = AssistantAgent(
             name="rag_retrival",
             llm_config = {"config_list" : self.llm_config},
-            system_message=(
-                "You are a helpful assistant responsible for retrieving general informations"
-                "You can only use the functions provided to you. Reply 'TERMINATE' when the task is done."
+            system_message=("""
+                You are responsible for identifying general information queries that fall outside specific biological entity lookups or mechanisms.
+                YOUR PRIMARY ROLE:
+                - Recognize general information requests that aren't targeted biological lookups or hypothesis generation
+                - Route these general queries to the appropriate retrieval function
+                - Handle queries that don't fit the specific criteria of the other specialized agents
+
+                QUERY IDENTIFICATION CRITERIA:
+                - The query requests general scientific or contextual information
+                - The query doesn't focus on specific biological entity data retrieval
+                - The query doesn't ask for speculative biological mechanisms
+                KEY DETECTION PHRASES:
+                "what is rejuve"
+                "General information about this site?"
+                IMPORTANT: You only identify and route queries to the appropriate function. The function will retrieve and present the actual information. Reply 'TERMINATE' when the identification and routing is complete.
+               """
                ),)
 
         user_agent = UserProxyAgent(
@@ -80,6 +167,17 @@ class AiAssistance:
             code_execution_config=False,
             human_input_mode="NEVER",
             is_termination_msg=lambda x: x.get("content", "") and x.get("content", "").rstrip().endswith("TERMINATE"))
+
+        @user_agent.register_for_execution()
+        @annotation_validate_agent.register_for_llm(description="retrieve the json format provided from the tool")
+        def get_json_format() -> str:
+            try:
+                logger.info(f"Generating graph with arguments: {message}")  # Add this line to log the arguments
+                response = self.annotation_graph.validated_json(message)
+                return response
+            except Exception as e:
+                logger.error("Error in generating graph", exc_info=True)
+                return f"I couldn't generate a graph for the given question {message} please try again."
 
 
         @user_agent.register_for_execution()
@@ -92,20 +190,28 @@ class AiAssistance:
                 logger.error("Error in retrieving response", exc_info=True)
                 return "Error in retrieving response."
 
-        
         @user_agent.register_for_execution()
-        @graph_agent.register_for_llm(description="Generate and handle bio-knowledge graphs for annotation-related queries.")
-        def generate_graph():
+        @hypothesis_generation_agent.register_for_llm(description="generation of hypothesis")
+        def hypothesis_generation() -> str:
             try:
-                logger.info(f"Generating graph with arguments: {message}")  # Add this line to log the arguments
-                response = self.annotation_graph.generate_graph(message, token)
+                response = self.hypotheisis.generate_hypothesis(user_query=message)
                 return response
-            except Exception as e:
-                logger.error("Error in generating graph", exc_info=True)
-                return f"I couldn't generate a graph for the given question {message} please try again."
+            except:
+                traceback.print_exc()
+
+        # @user_agent.register_for_execution()
+        # @graph_agent.register_for_llm(description="Generate and handle bio-knowledge graphs for annotation-related queries.")
+        # def generate_graph():
+        #     try:
+        #         logger.info(f"Generating graph with arguments: {message}")  # Add this line to log the arguments
+        #         response = self.annotation_graph.generate_graph("message",message,token)
+        #         return response
+        #     except Exception as e:
+        #         logger.error("Error in generating graph", exc_info=True)
+        #         return f"I couldn't generate a graph for the given question {message} please try again."
 
 
-        group_chat = GroupChat(agents=[user_agent, rag_agent, graph_agent], messages=[],max_round=3)
+        group_chat = GroupChat(agents=[user_agent, rag_agent,annotation_validate_agent,hypothesis_generation_agent], messages=[],max_round=3)
         group_manager = GroupChatManager(
             groupchat=group_chat,
             llm_config = {"config_list" : self.llm_config},
@@ -117,7 +223,6 @@ class AiAssistance:
         if response:
             return response
         return group_chat.messages[1]['content']
-
     async def save_memory(self,query,user_id):
         # saving the new query of the user to a memorymanager
         memory_manager = MemoryManager(self.advanced_llm,client=self.client)
@@ -168,35 +273,55 @@ class AiAssistance:
                     return response, 400
                 
             if graph_id:  
-                logger.info("Explaining nodes")
+                logger.info("Graph id is passed")
 
                 # Case 1: Both graph_id and query are provided
                 if query:
                     logger.debug("Query provided with graph_id")
+                    '''
+                    TODO
+                    if resource is opposite to the requested question implement a mechanism to analyse the user question by differentiating the resources id.
+                    '''
                     if resource == "annotation":
                         # Process summary with query
                         summary = self.graph_summarizer.summary(token=token, graph_id=graph_id)
-                        prompt = classifier_prompt.format(query=query,graph_summary=summary)
+                        prompt = classifier_prompt.format(query=query, graph_summary=summary)
                         response = self.advanced_llm.generate(prompt)
-                        if "related" in response:
-                            logger.info("question is related with with the graph")
-                            query_response = self.graph_summarizer.summary(token=token, graph_id=graph_id,  user_query=query)
+                        
+                        if response.startswith("related:"):
+                            logger.info("question is related with the graph")
+                            query_response = response[len("related:"):].strip()
                             # creating users history
-                            self.history.create_history(user_id, query, query_response)    
-                            logger.info(f"user query is {query} response is {query_response}")  
-                            return query_response
-                        elif "not" in response:
-                            logger.info("question not related with the graph so sending the query {query} to agent")
+                            self.history.create_history(user_id, query, query_response)
+                            logger.info(f"user query is {query} response is {query_response}")
+                            return {"text":query_response}
+                        elif response.strip() == "not":
+                            logger.info(f"question not related with the graph so sending the query {query} to agent")
                             response = asyncio.run(self.assistant(query, user_id, token, user_context=summary))
-                            logger.info(f"user query is {query} response is {response}")  
-                            return response           
+                            logger.info(f"user query is {query} response is {response}")
+                            return response
                         else:
                             logger.warning(f"Unexpected classifier response: {response}. Defaulting to not related.")
-                            return response
+                            return {"text":response}
 
                     elif resource == "hypothesis":
-                        logger.info("Hypothesis resource with query")
-                        return {"text": "Explanation for hypothesis resource with query."}
+                        # summary = Hypothesis_generation().get_by_hypothesis_id(graph_id)
+                        prompt = classifier_prompt.format(query=query,graph_summary=summary)
+                        response = self.advanced_llm.generate(prompt)
+                        if response.startswith("related:"):
+                            logger.info("question is related with the graph")
+                            query_response = response[len("related:"):].strip()
+                            self.history.create_history(user_id, query, query_response)
+                            logger.info(f"user query is {query} response is {query_response}")
+                            return {"text":query_response}
+                        elif response.strip() == "not":
+                            logger.info(f"question not related with the graph so sending the query {query} to agent")
+                            response = asyncio.run(self.assistant(query, user_id, token, user_context=summary))
+                            logger.info(f"user query is {query} response is {response}")
+                            return response
+                        else:
+                            logger.warning(f"Unexpected classifier response: {response}. Defaulting to not related.")
+                            return {"text":response}
                     else:
                         logger.error(f"Unsupported resource type: '{resource}'")
                         return {"text": f"Unsupported resource type: '{resource}'"}

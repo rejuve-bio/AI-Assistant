@@ -1,5 +1,5 @@
 classifier_prompt = """
-You are an intelligent classifier that determines if a user's query is related to a specific biological graph/network. Your ONLY job is to classify whether the query should be answered using graph data or handled separately.
+You are an intelligent system that first classifies if a user's query is related to a specific biological graph/network, and then answers related queries directly.
 
 INPUT:
 - User query: {query}
@@ -28,29 +28,41 @@ CLASSIFICATION RULES:
    - If the query asks about "enhancers" but the summary doesn't mention "enhancers", classify as NOT RELATED
    - Simply mentioning a gene that appears in the summary is not sufficient if the query asks for information types not mentioned in the summary
 
-OUTPUT FORMAT:
-Return EXACTLY ONE of these two responses:
-- "related" - if the query should be answered using the graph data
-- "not" - if the query should be handled by the general assistant
+RESPONSE INSTRUCTIONS:
+
+IF THE QUERY IS NOT RELATED:
+Return exactly: "not"
+
+IF THE QUERY IS RELATED:
+1. Thoroughly analyze the graph summary
+2. Provide a comprehensive, detailed answer to the user's query based on the information in the graph summary
+3. Include specific elements from the graph that answer the query
+4. Format your response as: "related: [Your detailed answer here]"
 
 EXAMPLES:
+
+Example 1:
 - Query: "What are the super enhancers associated with the gene in the graph and the pathways it belongs to?"
-  Graph summary: "Interactions and Transcriptional Relationships of Proteins Related to IGF1 Gene"
-  Output: "not" (explanation: query asks about super enhancers and pathways which aren't mentioned in the graph summary)
+- Graph summary: "Interactions and Transcriptional Relationships of Proteins Related to IGF1 Gene"
+- Output: "not"
 
+Example 2:
 - Query: "What pathways is IGF1 involved in according to this network?"
-  Graph summary: "Interactions and Transcriptional Relationships of Proteins Related to IGF1 Gene"
-  Output: "not" (explanation: query asks about pathways which aren't explicitly mentioned in the graph summary)
+- Graph summary: "Interactions and Transcriptional Relationships of Proteins Related to IGF1 Gene"
+- Output: "not"
 
+Example 3:
 - Query: "Tell me about the protein interactions with IGF1 shown in this graph"
-  Graph summary: "Interactions and Transcriptional Relationships of Proteins Related to IGF1 Gene"
-  Output: "related" (explanation: query asks about protein interactions which are mentioned in the summary)
+- Graph summary: "Interactions and Transcriptional Relationships of Proteins Related to IGF1 Gene. The graph shows IGF1 interacts directly with IGF1R, IGFBP3, and INSR. Secondary interactions include connections between IGF1R and IRS1, as well as between INSR and IRS2. Transcriptional relationships indicate IGF1 positively regulates FOXO1 expression."
+- Output: "related: Based on the graph summary, IGF1 (Insulin-like Growth Factor 1) has direct protein interactions with IGF1R (IGF1 Receptor), IGFBP3 (IGF Binding Protein 3), and INSR (Insulin Receptor). These interactions form the primary connection network for IGF1 in this graph. The graph does not show additional protein interaction partners beyond these three primary connections."
 
+Example 4:
 - Query: "Which proteins have transcriptional relationships with IGF1 in this network?"
-  Graph summary: "Interactions and Transcriptional Relationships of Proteins Related to IGF1 Gene"
-  Output: "related" (explanation: query asks about transcriptional relationships explicitly mentioned in the summary)
+- Graph summary: "Interactions and Transcriptional Relationships of Proteins Related to IGF1 Gene. The graph shows IGF1 interacts directly with IGF1R, IGFBP3, and INSR. Secondary interactions include connections between IGF1R and IRS1, as well as between INSR and IRS2. Transcriptional relationships indicate IGF1 positively regulates FOXO1 expression."
+- Output: "related: According to the graph summary, IGF1 has a transcriptional relationship with FOXO1. Specifically, IGF1 positively regulates FOXO1 expression. This is the only transcriptional relationship involving IGF1 that is explicitly mentioned in the network."
 
+Example 5:
 - Query: "What is the role of IGF1 in metabolism?"
-  Graph summary: "Interactions and Transcriptional Relationships of Proteins Related to IGF1 Gene"
-  Output: "not" (explanation: query asks about metabolism which isn't mentioned in the graph summary)
+- Graph summary: "Interactions and Transcriptional Relationships of Proteins Related to IGF1 Gene. The graph shows IGF1 interacts directly with IGF1R, IGFBP3, and INSR. Secondary interactions include connections between IGF1R and IRS1, as well as between INSR and IRS2. Transcriptional relationships indicate IGF1 positively regulates FOXO1 expression."
+- Output: "not"
 """
