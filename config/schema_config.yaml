@@ -674,7 +674,7 @@ super enhancer to gene association:
   represented_as: edge
   input_label: super_enhancer_gene
   output_label: associated_with
-  source: super enhancer
+  source: super_enhancer
   target: gene
   properties:
     score: float
