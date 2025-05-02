@@ -94,7 +94,7 @@ class Qdrant:
                     traceback.print_exc()
                     print("Error saving:", e)
             
-    def retrieve_data(self,collection, query,user_id,filter=None):
+    def retrieve_data(self,collection, query,user_id, filter=None, galaxy=None):
         try:
             if filter:
                 result = self.client.search(
@@ -120,14 +120,52 @@ class Qdrant:
                     score_threshold=0.3,
                     limit=10)
             response = {}
-            for i, point in enumerate(result):
-                response[i] = {
-                    "id": point.id,
-                    "score": point.score,
-                    "authors": point.payload.get('authors', 'Unknown'),
-                    "content": point.payload.get('content', 'No content available'),
-                    "filename": point.payload.get('filename')
-                }
+
+            if galaxy is None:
+                for i, point in enumerate(result):
+                    response[i] = {
+                        "id": point.id,
+                        "score": point.score,
+                        "authors": point.payload.get('authors', 'Unknown'),
+                        "content": point.payload.get('content', 'No content available'),
+                        "filename": point.payload.get('filename')
+                    }
+
+            # Handle and retrive galaxy information
+            elif galaxy is not None:
+                if galaxy == "tool":
+
+                    for i,point in enumerate(result):
+                        response[i]={
+                            "id": point.id,
+                            "score": point.score,
+                            "description": point.payload.get('description', 'description not available'),
+                            "tool_id": point.payload.get('tool_id'),
+                            "name": point.payload.get('name')
+
+                     }
+                elif galaxy == "workflow":
+                    for i,point in enumerate(result):
+                        response[i]={
+                            "id": point.id,
+                            "score": point.score,
+                            "model_class": point.payload.get('model_class', 'unknown'),
+                            'description': point.payload.get('description', 'unkown'),
+                            "owner": point.payload.get('owner', 'unknown'),
+                            "workflow_id": point.payload.get('workflow_id'),
+                            "name": point.payload.get('name')
+                     }
+                elif galaxy == 'dataset':
+                    for i, point in enumerate(result):
+                        response[i]={
+                            'id': point.id,
+                            'score': point.score,
+                            "dataset_id": point.payload.get('dataset_id'),
+                            "name": point.payload.get('name'),
+                            "full_path": point.payload.get('full_path', 'unknown'),
+                            "type": point.payload.get('type', 'unknown'),
+                            "source": point.payload.get('source')
+                        }
             return response
         except:
             return {"error":"not found"}
@@ -330,3 +368,13 @@ class Qdrant:
                     ),
                 )
             return selected_file, file_id
+        
+    def delete_collection(self, collection_name):
+        """ Adding colelction deleting function to delete a collection if it exists"""
+        try:
+            collections = self.client.get_collections().collections
+            collection_names = [col.name for col in collections]
+            if collection_name in collection_names:
+                self.client.delete_collection(collection_name)
+        except Exception as e:
+            logger.error(f"Error deleting collection {collection_name}: {str(e)}")
