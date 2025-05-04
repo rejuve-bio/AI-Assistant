@@ -1,6 +1,7 @@
 import os
 import re
-from rapidfuzz import process # Rapid fuzz for some reason is not wworking properly?????
+import ast
+from rapidfuzz import process, fuzz 
 from bioblend.galaxy import GalaxyInstance
 from dotenv import load_dotenv
 import json
@@ -15,7 +16,7 @@ path.append('.')
 from app.storage.qdrant import Qdrant
 from app.rag.rag import RAG
 from app.llm_handle.llm_models import GeminiModel, gemini_embedding_model
-from app.galaxy.galaxy_prompts import TOOL_PROMPT, WORKFLOW_PROMPT, DATASET_PROMPT, SELECTION_PROMPT
+from app.prompts.galaxy_prompts import TOOL_PROMPT, WORKFLOW_PROMPT, DATASET_PROMPT, SELECTION_PROMPT
 from app.prompts.rag_prompts import RETRIEVE_PROMPT
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -143,33 +144,97 @@ class GalaxyInformer:
         # 768 is the embedding size of a gemini model and for this case we are using a gemini model to do so
         results = self.client.retrieve_data(query=query, collection=collection, user_id=user_id, galaxy=self.entity_type)
         
-        return {k: results[k] for k in sorted(results.keys())[:5]}
+        return {k: results[k] for k in sorted(results.keys())[:10]}
     
-    def fuzzy_search(self, query, entities, config, threshold, matches):
-        """"Fuzzy search with priority fields"""
-        # Priority search on configured fields
-        logger.info('Fuzzy search for the query by name')
+    def parse_list(self, list_str):
+        """Extract and safely parse a Python list from a string that may include markdown code block markers."""
+        try:
+            # Remove markdown code block markers (``` or ```python)
+            cleaned_str = re.sub(r"^```(?:python)?\s*|\s*```$", "", list_str.strip(), flags=re.IGNORECASE | re.MULTILINE)
+            parsed = ast.literal_eval(cleaned_str.strip())
+            if isinstance(parsed, list):
+                return parsed
+            else:
+                raise ValueError("Parsed object is not a list")
+        except (ValueError, SyntaxError) as e:
+            print(f"Error parsing list: {e}")
+            return []
+
+    def extract_search_query(self, query):
+        prompt = f"""
+        Extract the main keywords from the following query for a fuzzy search in a Galaxy platform(tool/workflow/dataset/invocation) database. 
+        Return a Python list of a combination of keywords that can potentially be used to get search results for to the inputed query.
+        
+        Input query: "{query}"
+        
+        Output (Python list of keywords): []
+        """
+        keywords = self.llm.generate(prompt=prompt)
+        logger.info("Extracting keywords from input query for fuzzy search")
+        
+        try:
+            if isinstance(keywords, list):
+                return keywords
+            elif isinstance(keywords, str):
+                keywords=self.parse_list(list_str=keywords)
+                return keywords
+        except Exception as e:
+            logger.error(f"Failed to parse keywords list: {e}")
+
+    def fuzzy_search(self, query, entities, config, threshold):
+        """Fuzzy search with priority fields, improved for efficiency and clarity."""
+
+        logger.info('Fuzzy search for the query by priority fields')
+        
+        # Prepare priority candidates
+        priority_candidates = []
+        entity_map = {}  # Map: field string -> entity
+        
         for entity in entities:
             for field in config['search_fields']:
                 if field in entity and isinstance(entity[field], str):
-                    score = process.extractOne(query, [entity[field]])
-                    if score and score[1] >= threshold:
-                        matches.append((entity, score[1]))
-                        break  # Only match once per entity
-
-        if matches:
-            return sorted(matches, key=lambda x: x[1], reverse=True)[:5]
-
-        # Fallback search across all fields
-        logger.info('No matches found in the priority fields, searching in all fields as a fallback')
+                    field_value = entity[field]
+                    priority_candidates.append(field_value)
+                    entity_map[field_value] = entity
+        
+        # Run fuzzy match across all priority fields at once
+        results = process.extract(query, priority_candidates, scorer=fuzz.WRatio, limit=10)
+        
+        # Filter by threshold and collect matches
+        priority_matches = []
+        for match_str, score, _ in results:
+            if score >= threshold:
+                priority_matches.append((entity_map[match_str], score))
+        
+        if priority_matches:
+            logger.info(f'Found {len(priority_matches)} matches in priority fields for search query: {query}')
+            return sorted(priority_matches, key=lambda x: x[1], reverse=True)[:5]
+        
+        # No good priority matches found → fallback to all other fields
+        logger.info(f'No matches found in the priority fields for search query: {query}, searching in all fields as a fallback')
+        
+        fallback_candidates = []
+        fallback_map = {}
+        
         for entity in entities:
             for key, value in entity.items():
                 if key not in config['search_fields'] and isinstance(value, str):
-                    score = process.extractOne(query, [value])
-                    if score and score[1] >= threshold:
-                        matches.append((entity, score[1]))
-
-        return sorted(matches, key=lambda x: x[1], reverse=True)[:5] if matches else None
+                    fallback_candidates.append(value)
+                    fallback_map[value] = entity
+        
+        results = process.extract(query, fallback_candidates, scorer=fuzz.WRatio, limit=10)
+        
+        fallback_matches = []
+        for match_str, score, _ in results:
+            if score >= threshold:
+                fallback_matches.append((fallback_map[match_str], score))
+        
+        if fallback_matches:
+            logger.info(f'Found {len(fallback_matches)} matches in fallback fields for search query: {query}')
+            return sorted(fallback_matches, key=lambda x: x[1], reverse=True)[:5]
+        
+        logger.info(f'No matches found in either priority or fallback fields for search query: {query}')
+        return []  # Always return a list, even if empty
     
     def retrive_informer_data(self):
         if self.timestamp_file:
@@ -198,14 +263,30 @@ class GalaxyInformer:
                     
             return entities
     
-    def search_entities(self, query, threshold=85):
-        """Unified fuzzy search with priority fields"""
+    def search_entities(self, query, user_id, threshold=85):
+        """Unified fuzzy and semantic search"""
         entities=self.retrive_informer_data()
-        fuzzy_result= self.fuzzy_search(query=query, entities=entities, threshold=threshold, config=self._entity_config[self.entity_type], matches=[])
-        semantic_result= self.semantic_search(query=query, collection=f'Galaxy_{self.entity_type}', user_id='1234')
-        prompt = SELECTION_PROMPT.format(input = query, tuple_items = fuzzy_result , dict_items= semantic_result)
+        fuzzy_inputs=self.extract_search_query(query=query)
+        fuzzy_results=[]
+        # Fuzzy search using key words
+        if isinstance(fuzzy_inputs, list):
+            logger.info(f"queries for fuzzy search: {fuzzy_inputs}")
+            
+            for fuzzy_query in fuzzy_inputs:
+                fuzzy_result= self.fuzzy_search(query=fuzzy_query, entities=entities, threshold=threshold, config=self._entity_config[self.entity_type])
+                fuzzy_results.extend(fuzzy_result)
+        else:
+            logger.info(f"queries for fuzzy search: {query}")
+            fuzzy_results= self.fuzzy_search(query=query, entities=entities, threshold=threshold, config=self._entity_config[self.entity_type])
+
+        # semantic search on the qdrant db
+        semantic_result= self.semantic_search(query=query, collection=f'Galaxy_{self.entity_type}', user_id=user_id)
+        
+        # reranking and structuring the search result found and retrieving the top 3 findings
+        prompt = SELECTION_PROMPT.format(input = query, tuple_items = fuzzy_results , dict_items= semantic_result)
         result= self.llm.generate(prompt = prompt)
         logger.info('Retrieving search results')
+
         return result
 
     def invocation_check(self,search_query):
@@ -217,46 +298,64 @@ class GalaxyInformer:
          **Note**: Respond with only one of these options: 'general' , 'specific' or 'not_invocation' and nothing else. 
          **Input query**: {input}
         """
-        response= self.llm.generate(prompt=prompt.format(input=search_query))
-        logger.info(f'Checked invocation, state: {response}')
+        response= self.llm.generate(prompt=prompt.format(input=search_query)).strip().lower()
+        logger.info(f'Checked invocation, state: {repr(response)}')
         if response in ['general', 'specific', 'not_invocation']:
             return response
+        else:
+            logger.info('failed to identify invocation')
 
-    def get_entity_info(self, search_query, entity_id=None):
+    def get_entity_info(self, search_query, user_id, entity_id=None):
         """Unified info retrieval with LLM summary"""
-        
+        # Checking on cached files
         if not os.path.exists(f'app/galaxy/cache_files'):
              os.makedirs('app/galaxy/cache_files')
         if not os.path.exists('app/galaxy/cache_files/timestamps'):
              os.makedirs('app/galaxy/cache_files/timestamps')
+        # Setting a default value for searching option based on input
+        search_bool = False
 
         if entity_id:
             logger.info(f'Direct ID inputted, Retrieving information')
-            entity = next((e for e in self.get_entities() if e['id'] == entity_id), None)
-        else:
-            entity = self.search_entities(search_query)
+            retrived_entity = next((e for e in self.get_entities() if e['id'] == entity_id), None)
+            if retrived_entity != None:
+                # Result found
+                search_bool=True
+                # structuring for further information retrieval.
+                entity={'0': {'name': retrived_entity['name'], f'{self.entity_type}_id' : retrived_entity['id'] }}
+                logger.info(f'direct id retrival result {entity}')
+            else: 
+                logger.info(f'{self.entity_type} with id {entity_id} not found, searching for similar data')
+                
+        if entity_id is None or search_bool is False:
+            entity = self.search_entities(query = search_query, user_id = user_id)
             logger.info(f'Search results: {entity}')
            
         invocation_info={}
         if self.entity_type == 'workflow' :
+            # Retriving more information about workflow
             invocation_check = self.invocation_check(search_query)
             if invocation_check != 'not_invocation':
                 logger.info('gathering invocation information')
                 for i, (key, item) in enumerate(entity.items()):
-                    print(item['workflow_id'])
+                    # Get results for the workflows found and choosen
                     invocations = self.gi.invocations.get_invocations(workflow_id=item['workflow_id'])
-                    print(f'general invocation: {invocations}')
                     if invocations:
-                        print('yes invocation found')
+                        logger.info('invocations found, retriving information')
                         
                         if str(invocation_check) == 'specific':
                             specific_invocations=[]
                             for invocation in invocations:
-                                invocation=self.gi.invocations.show_invocation(invocation('id'))
-                                invocation_steps=self.gi.invocations.get_invocation_step_jobs_summary(invocation['id']) # ?? wy is you not working
-                                print(f'invocation steps: {invocation_steps if invocation_steps else "No steps found"}')
-                                specific_invocations.append(invocation)
-                            invocation_info[str(i)] = {'invocation' : specific_invocations, 'steps': invocation_steps}
+                                # show invocation details with the invocation id
+                                invocation=self.gi.invocations.show_invocation(invocation['id'])
+                                # show invocation steps summary from the galaxy instance with the invocation id
+                                invocation_steps=self.gi.invocations.get_invocation_step_jobs_summary(invocation['id'])
+                                # Get invocation report from the galaxy instance with the invocation id
+                                invocation_report=self.gi.invocations.get_invocation_report(invocation['id'])                          
+                                # Collect results
+                                specific_invocations.append({'invocation' : invocation, 'report': invocation_report,'steps': invocation_steps})
+                            invocation_info[str(i)] = specific_invocations
+                            
                         elif str(invocation_check) == 'general':
                             invocation_info[str(i)] = invocations
                         else:
@@ -270,10 +369,7 @@ class GalaxyInformer:
         }
 
         response_dict = {}
-        print(invocation_info)
-        if invocation_info:
-            from pprint import pprint
-            
+        if invocation_info:            
             response_dict['invocation_info'] = invocation_info
 
         logger.info('Structuring the repsonse')
@@ -301,6 +397,8 @@ class GalaxyInformer:
         return response 
 
 if __name__ == "__main__":
+    # Testing with as simple query    
     informer= GalaxyInformer('tool')
-    information=informer.get_entity_info('what tools are there in my instance tha convert bed files to gff files. can you tell me in detail')
-    print(information)
+    input_query= 'What tools are there that can convert bed files into gff format, and how can I use them?'
+    information=informer.get_entity_info(search_query = input_query, user_id = '1234')
+    print(information['response'])
