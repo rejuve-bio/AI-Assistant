@@ -14,6 +14,7 @@ from app.prompts.classifier_prompt import classifier_prompt, classifier_agent_pr
 from app.memory_layer import MemoryManager
 from app.summarizer import Graph_Summarizer
 from app.history import History
+from app.galaxy.Informer import GalaxyInformer
 import asyncio
 import traceback
 import json
@@ -101,6 +102,16 @@ class AiAssistance:
                )
         )
 
+        galaxy_agent = AssistantAgent(
+            name="galaxy_agent",
+            llm_config = {"config_list" : self.llm_config},
+            system_message=(
+                "You are a senior Galaxy platform specialist and automation information expert in Galaxy tools, workflows, and datasets."
+                "You can only use the functions provided to you. Reply 'TERMINATE' when the task is done."
+                ),
+                )
+    
+
         rag_agent = AssistantAgent(
             name="rag_retrival",
             llm_config = {"config_list" : self.llm_config},
@@ -150,6 +161,30 @@ class AiAssistance:
                 logger.error("Error in generating graph", exc_info=True)
                 return f"I couldn't generate a graph for the given question {message} please try again."
 
+        @user_agent.register_for_execution()
+        @galaxy_agent.register_for_llm(description="Get any (general and specific) information about Galaxy tools, workflows, workflow invocations, and datasets based on the users query. Use this function/tool at all times no matter the query.")
+        def get_galaxy_information():
+            """
+            Fetch detailed information on Galaxy tools, workflows, datasets,
+            and invocations—including their usage, current state, 
+            and any related queries—handling all information requests about Galaxy entities.
+            """
+
+            prompt_galaxy=f"""
+            **Role**:
+            You are a senior bioinformatics specialist and automation expert in Galaxy tools, workflows, and datasets.
+            Classify the inputed query into one of the following catagories: 'dataset', 'tool', 'workflow'.
+            Classification should be based on the content and the intent of the query and not on the specific words used.
+            Respond with the classification only and nothiing else.
+            **input**: {message}
+            """
+            response= self.advanced_llm.generate(prompt=prompt_galaxy)
+            print(f"response from galaxy {response}")
+            response = response.strip().lower()
+            informer= GalaxyInformer(entity_type=response)
+            galaxy_response=informer.get_entity_info(search_query = message, user_id = user_id)
+            return galaxy_response
+
         # classify the users question
         classifiction_message=[{"role": "User","content":message}]
         classification= classifier_agent.generate_reply(classifiction_message)
@@ -178,11 +213,15 @@ class AiAssistance:
             if task['type'] == 'bio_annotation':
                 # response using imitiate chat because they are just two agents interacting
                 response = user_agent.initiate_chat(graph_agent,message=query, max_turns=3)
-                response= response.chat_history[3]['content']
+                response= response.chat_history[-1]['content']
                 
             elif task['type'] == 'general_knowledge':  
                 response= user_agent.initiate_chat(rag_agent,message=query, max_turns=3)
-                response= response.chat_history[3]['content']
+                response= response.chat_history[-1]['content']
+            elif task['type'] == 'galaxy' :
+                response= user_agent.initiate_chat(galaxy_agent,message=query, max_turns=3)
+                response= response.chat_history[-1]['content']
+
             else:
                 print("Invalid classification, Defaulting to Groupchat with both agents")
                 group_chat = GroupChat(agents=[user_agent, graph_agent, rag_agent], messages=[],max_round=3)
