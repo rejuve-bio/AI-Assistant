@@ -71,32 +71,83 @@ class RAG:
 
     def chunking_data(self, datas) -> pd.DataFrame:
         """
-        This function is a placeholder for data chunking implementation, 
-        which will handle dynamic chunking of various types of documents.
+        This function handles dynamic chunking of various types of documents using
+        a manual word-level splitter with configurable overlap and robust fallback.
 
-        :datas:A data to be chunked.
-        :return: DataFrame with chunked data 
+        Process documents to ensure each chunk has at most self.max_token.
+
+        :param datas: Data to be chunked (list of strings, single string, or list of dicts).
+        :return: DataFrame with chunked data.
         """
-        """Process documents to ensure each chunk has at most self.max_token."""
+        
         
         if isinstance(datas, list) and all(isinstance(d, dict) for d in datas):
             return pd.DataFrame(datas)
-        '''
-        todo:
-        add a token length counter for the models
-        add a chunking mechanism for the dict files 
-        '''
+
+        if isinstance(datas, str):
+            datas = [datas]
+        elif not isinstance(datas, list):
+            datas = list(datas)
+
         result = []
-        for doc in datas:
-            tokens = doc.split()
+        chunk_size = self.max_token
+        chunk_overlap = int(0.05 * self.max_token)
+    
+        separators = [
+                    "\n\n",         # paragraph break
+                    "\n",           # line break
+                    ".",           # sentence end
+                    "!", "?",     # other sentence enders
+                    ]
+        
+        min_chunk_size = max(2, chunk_size - chunk_overlap)  # Dynamic minimum size
+
+        def find_best_split_point(words, start, end):
+            # Look for highest priority separator first
+            for sep in separators:
+                for i in range(end-1, start-1, -1):
+                    if sep in words[i]:
+                        return i + 1
+            return end
+
+        def split_with_overlap(text):
+            # Preprocess text with space normalization
+            for sep in separators:
+                if sep != " ":
+                    text = text.replace(sep, f" {sep} ")
+            words = text.split()
             chunks = []
-            while len(tokens) > self.max_token:
-                chunks.append(" ".join(tokens[:self.max_token]))
-                tokens = tokens[self.max_token:]
-            if tokens:
-                chunks.append(" ".join(tokens))
-            result.extend(chunks)
-        df =pd.DataFrame({"content":result})
+            start = 0
+
+            while start < len(words):
+                end_idx = min(start + chunk_size, len(words))
+                
+                # First try to find ideal split point
+                split_at = find_best_split_point(words, start, end_idx)
+                
+                # Enforce minimum chunk size before creating tiny fragments
+                if (split_at - start) < min_chunk_size:
+                    split_at = min(start + chunk_size, len(words))
+                
+                chunk_text = " ".join(words[start:split_at]).strip()
+                if chunk_text:
+                    chunks.append(chunk_text)
+                
+                # Calculate next start with overlap protection
+                next_start = max(split_at - chunk_overlap, start + chunk_overlap)
+                if next_start <= start:  # Prevent infinite loops
+                    next_start = split_at
+                start = next_start
+
+            return chunks
+        
+        for doc in datas:
+            if isinstance(doc, str):
+                chunks = split_with_overlap(doc)
+                result.extend(chunks)
+        
+        df= pd.DataFrame({"content": result})
+
         return df
     
     def get_contents_embed(self, df) -> pd.DataFrame:
@@ -217,8 +268,16 @@ class RAG:
 
             result = self.client.retrieve_data(collection, query["dense"],user_id,filter)
             
+            # Update the payload information
             logger.info("updating the time of the recently accessed file")
-            self.client.update_payload_info(collection_name = collection, file_name= result["filename"])
+            try:  
+                for r in result:
+                    file_name = result[r]['filename']
+                    if file_name:  # Ensure filename is not None
+                        self.client.update_payload_info(collection_name=collection, file_name=file_name)
+            except:
+                logger.info('unable to update, skipping')
+
             logger.warning("results found for the query.")
             return result
         except Exception as e:
