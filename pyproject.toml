@@ -27,6 +27,9 @@ pypdf2 = "^3.0.1"
 pytest = "^8.3.4"
 autogen-agentchat = {version = ">=0.2,<1.0", extras = ["gemini", "llm"]}
 flask-cors = "^5.0.0"
+flask-socketio = "^5.5.1"
+eventlet = "^0.39.1"
+redis = "^6.0.0"
 
 
 [build-system]

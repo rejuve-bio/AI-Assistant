@@ -20,6 +20,14 @@ import json
 import autogen
 
 
+from app.socket_manager import (
+    emit_json_formatting, 
+    emit_analysis_update, 
+    emit_rag_update, 
+    emit_hypothesis_update, 
+    emit_error
+)
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 loghandle = loghandlers.TimedRotatingFileHandler(
@@ -86,9 +94,15 @@ class AiAssistance:
         @rag_agent.register_for_llm(description="Retrieve information for general knowledge queries.")
         def get_general_response() -> str:
             try:
+                emit_rag_update(user_id=user_id, status='started')
+                emit_rag_update(user_id=user_id, status='in_progress', 
+                             details={'message': 'Analysing our RAG agent.'})
+
                 response = self.rag.get_result_from_rag(message, user_id)
                 return response
             except Exception as e:
+                emit_error(user_id=user_id, error_type='rag retrieval', 
+                   message=f"Error retrieving information: {str(e)}")
                 logger.error("Error in retrieving response", exc_info=True)
                 return "Error in retrieving response."
 

@@ -9,6 +9,7 @@ from app.llm_handle.llm_models import get_llm_model
 from app.storage.qdrant import Qdrant
 from app.main import AiAssistance
 from app.rag.rag import RAG
+from app.socket_manager import init_socketio  # Import the socket manager
 from .routes import main_bp
 import os
 import yaml
@@ -85,30 +86,52 @@ def create_app():
     app.config['ai_assistant'] = ai_assistant
     logger.info('App config populated with models and assistants')
 
-    # intialize qdrant connection
-    # uploading data first time
+    # Initialize SocketIO
+    socketio = init_socketio(app)
+    app.config['socketio'] = socketio
+    logger.info('SocketIO initialized and stored in app config')
+
+    # Initialize Qdrant connection
+    # Uploading data first time
     try:
         client = Qdrant()
 
         collections = client.client.get_collections()
         if collections and collections.collections:
-            logger.info("collections on the qdrant database already exist skipping population data")
+            logger.info("Collections on the qdrant database already exist skipping population data")
         else:
-            logger.info('uploading sample web data to qdrant db')
+            logger.info('Uploading sample web data to qdrant db')
             with open('sample_data.json') as data:
                 data = json.load(data)
-            rag = RAG(client,advanced_llm)
+            rag = RAG(client, advanced_llm)
             rag.save_doc_to_rag(data=data)
-    except:
-        import traceback
-        traceback.print_exc()
-        logger.warning("Qdrant Connection Failed!!! If you are running locally Please connect qdrant database by running docker run -d -p 6333:6333 -v qdrant_data:/qdrant/storage qdrant/qdrant")
+    except Exception as e:
+        logger.warning(f"Qdrant Connection Failed: {e}")
+        logger.warning("If you are running locally, please connect qdrant database by running docker run -d -p 6333:6333 -v qdrant_data:/qdrant/storage qdrant/qdrant")
+
+    # Check for Redis connection
+    try:
+        redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+        redis_enabled = os.getenv('ENABLE_REDIS', 'true').lower() == 'true'
+        
+        if redis_enabled:
+            import redis
+            redis_client = redis.from_url(redis_url)
+            ping = redis_client.ping()
+            if ping:
+                logger.info(f"Successfully connected to Redis at {redis_url}")
+                app.config['redis_client'] = redis_client
+            else:
+                logger.warning(f"Failed to ping Redis at {redis_url}")
+    except Exception as e:
+        logger.warning(f"Redis Connection Failed: {e}")
+        logger.warning("If Redis is required, please run: docker run -d -p 6379:6379 redis:alpine")
 
     # Register routes
     app.register_blueprint(main_bp)
     logger.info('Blueprint "main_bp" registered')
 
     logger.info('Flask app created successfully')
-    return app
+    return app, socketio  # Return both app and socketio
 
 from app import routes
