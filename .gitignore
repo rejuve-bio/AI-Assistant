@@ -8,3 +8,4 @@ biocypher-log
 user_pdf.json
 history.json
 logfiles
+docker-compose.local.yaml

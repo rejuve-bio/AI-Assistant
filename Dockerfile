@@ -12,8 +12,8 @@ RUN pip install poetry
 # Copy the application code
 COPY . /AI-Assistant
 
-# Install dependencies
-RUN poetry config virtualenvs.create false && poetry install --no-root
+# Install dependencies with fix for lock file
+RUN poetry config virtualenvs.create false && poetry lock && poetry install --no-root
 
 # Run the application
 CMD ["gunicorn", "-w", "4", "--bind", "0.0.0.0:$FLASK_PORT", "run:app"]
