@@ -33,12 +33,9 @@ STRICT RESPONSE CRITERIA:
    - ANY question about specific people, organizations, or concepts
 
 REFACTORING INSTRUCTIONS:
-- If the user's query references previous topics without explicitly naming them, refactor the question to include the specific entities or concepts
 - If the query uses pronouns (it, they, them) referring to previously discussed entities, replace them with the actual entities
-- If the query is ambiguous, refactor it to be more specific based on the context and history
-- Maintain all relevant biological terminology and parameters in the refactored question
 - make sure the refactored question is correct for what the user wanted to address
-
+- RULE: ONLY refactor the question if the user question is related.
 EXAMPLES:
 - If user asks "Hi there", respond with:
   response: "Hello! How can I help with your research today?"

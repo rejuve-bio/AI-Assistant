@@ -136,12 +136,12 @@ class HypothesisGeneration:
             if closest_matches:
                 match = closest_matches[0]
                 selected_go_term = next((go for go in go_terms if go["name"] == match), None)
-                logger.debug(f"Matched GO term '{go_term_name}' to '{match}'")
+                logger.info(f"Matched GO term '{go_term_name}' to '{match}'")
         
         # Default to first GO term if no match found
         if not selected_go_term and go_terms:
             selected_go_term = go_terms[0]
-            logger.debug(f"No matching GO term found, defaulting to: {selected_go_term['name']}")
+            logger.info(f"No matching GO term found, defaulting to: {selected_go_term['name']}")
         
         if not selected_go_term:
             logger.warning("No valid GO term found for hypothesis")
@@ -151,7 +151,7 @@ class HypothesisGeneration:
         extracted["GO"] = selected_go_term["name"]
         go_id = selected_go_term["id"]
         extracted["GO_id"] = go_id
-        
+
         # Get summary for the selected GO term
         logger.info(f"Fetching summary for enrich id {enrich_id} with GO ID {go_id}")
         summary_response = self._make_api_request(
@@ -161,9 +161,9 @@ class HypothesisGeneration:
             params={"id": enrich_id, 
                     "go": go_id}
             )
-        if "error" not in summary_response and summary_response.get("summary"):
+        if "error" not in summary_response:
             logger.info(f"Successfully retrieved graph and summary {summary_response}")
-            return summary_response["summary"]
+            return summary_response["graph"]
         else:
             logger.error("Failed to fetch graph and summary")
             return {"error": "Failed to fetch graph and summary"}
@@ -316,6 +316,7 @@ class HypothesisGeneration:
         
         # Generate final response
         logger.info("Generating final hypothesis response")
-        response = self.llm.generate(hypothesis_response)
-        
-        return enriched_data
+        prompt = hypothesis_response.format(response=enriched_data,user_query=user_query)
+        response = self.llm.generate(prompt)
+        return response
+        # return enriched_data

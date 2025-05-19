@@ -209,6 +209,7 @@ class AiAssistance:
         @hypothesis_generation_agent.register_for_llm(description="generation of hypothesis")
         def hypothesis_generation() -> str:
             try:
+                logger.info(f"Here is the user query passed to the agent {message}")
                 response = self.hypothesis_generation.generate_hypothesis(token=token,user_query=message)
                 return response
             except:
@@ -220,7 +221,7 @@ class AiAssistance:
             llm_config = {"config_list" : self.llm_config},
             human_input_mode="NEVER")
 
-        user_agent.initiate_chat(group_manager, message=message, clear_history=False)
+        user_agent.initiate_chat(group_manager, message=message, clear_history=True)
 
         response = group_chat.messages[2]['content']
         if response:
@@ -236,7 +237,7 @@ class AiAssistance:
         try:
             # context = self.client._retrieve_memory(user_id=user_id)
             context=None
-            history = self.history.retrieve_user_history(user_id)
+            history =self.history.retrieve_user_history(user_id)
             user_context = user_context
         except:
             context = {""}
@@ -244,14 +245,14 @@ class AiAssistance:
         prompt = conversation_prompt.format(memory=context,query=query,history=history,user_context=user_context)
         response = self.advanced_llm.generate(prompt)
 
-        if response:
-            if "response:" in response:
-                result = response.split("response:")[1].strip()
-                response = result.strip('"')
-                self.history.create_history(user_id, query, response)      
-                return {"text":response}
-            elif "question:" in response:
-                refactored_question = response.split("question:")[1].strip()
+        if "response:" in response:
+            result = response.split("response:")[1].strip()
+            response = result.strip('"')
+            self.history.create_history(user_id, query, response)      
+            return {"text":response}
+        elif "question:" in response:
+            refactored_question = response.split("question:")[1].strip()
+
         await self.save_memory(query,user_id)
         logger.info(f"agent calling for the given user query {query}")
         response = self.agent(refactored_question, user_id, token)
