@@ -41,7 +41,8 @@ class HypothesisGeneration:
                          url: str, 
                          token: str, 
                          params: Optional[Dict] = None, 
-                         headers: Optional[Dict] = None) -> Dict[str, Any]:
+                         headers: Optional[Dict] = None,
+                         data:Optional[Dict] = None) -> Dict[str, Any]:
         """
         Helper method to make API requests with proper error handling.
         
@@ -61,7 +62,8 @@ class HypothesisGeneration:
         }
         try:
             logger.debug(f"Making {method} request to {url}")
-            
+            if data:
+                response = requests.post(url, data=data, headers=headers)    
             if method.upper() == "GET":
                 response = requests.get(url, params=params, headers=headers)
             elif method.upper() == "POST":
@@ -163,7 +165,7 @@ class HypothesisGeneration:
             )
         if "error" not in summary_response:
             logger.info(f"Successfully retrieved graph and summary {summary_response}")
-            return summary_response["graph"]
+            return summary_response["summary"],summary_response["graph"]
         else:
             logger.error("Failed to fetch graph and summary")
             return {"error": "Failed to fetch graph and summary"}
@@ -183,12 +185,12 @@ class HypothesisGeneration:
         logger.info(f"Retrieving hypothesis by ID: {hypothesis_id}")
         
         response = self._make_api_request(
-            "GET",
-            HYPOTHESIS_MAIN_ENDPOINT,
+            "POST",
+            HYPOTHESIS_CHAT_ENDPOINT,
             token,
-            params={
+            data={
                 "query": query,
-                "hypothesisID": hypothesis_id
+                "hypothesis_id": hypothesis_id
             }
         )
         
@@ -308,7 +310,7 @@ class HypothesisGeneration:
         hypothesis_id, retrieved_keys = result
         
         # Get enriched data
-        enriched_data = self.get_enrich_id_genes_GO_terms(token, hypothesis_id, retrieved_keys)
+        enriched_data, graph = self.get_enrich_id_genes_GO_terms(token, hypothesis_id, retrieved_keys)
         
         if "error" in enriched_data:
             logger.error(f"Failed to enrich hypothesis data: {enriched_data['error']}")
@@ -316,7 +318,7 @@ class HypothesisGeneration:
         
         # Generate final response
         logger.info("Generating final hypothesis response")
-        prompt = hypothesis_response.format(response=enriched_data,user_query=user_query)
+        prompt = hypothesis_response.format(response=enriched_data,user_query=user_query, graph=graph)
         response = self.llm.generate(prompt)
-        return response
+        return {"text":response}
         # return enriched_data
