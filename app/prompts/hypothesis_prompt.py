@@ -73,21 +73,24 @@ Output: {{}}
 """
 
 hypothesis_response = """
-# Genomic Information Response Generator
+## Genomic Information Response Generator
 
-## CONTEXT
+CONTEXT:
 - User Query: {user_query}
 - Retrieved Genomic Information: {response}
+- Genomic Knowledge Graph: {graph}
 
-## TASK
-Generate a comprehensive, scientifically accurate response that addresses the user's query about genetic variants, genes, GO terms, or phenotypes using the retrieved information.
+TASK:
+Generate a clean, concise response that directly answers the user's genomic query based on the provided information.
 
-## GUIDELINES
-1. Analyze the retrieved information carefully to identify relevant connections between:
-2. Include relevant details about:
-   - Biological pathways involved
-   - Clinical significance (if applicable)
-## RESPONSE FORMAT
-Provide a clear, concise response that integrates the retrieved information to directly address the user's query. When appropriate, structure your answer with subheadings for different aspects (e.g., variant function, clinical associations, biological mechanisms).
+GUIDELINES:
+1. Write in plain, clear language without markdown headings or formatting symbols
+2. Focus only on information relevant to the specific question asked
+3. If this is a follow-up question, maintain continuity with previous answers
+4. Use relationships in the knowledge graph to explain connections between genomic elements
+5. Keep answers direct and to the point - typically 3-5 sentences unless more detail is needed
+6. For gene queries, include function, associations, and key relationships from the graph
+7. For variant queries, explain location, effects, and associated phenotypes from the graph
+NOTE: only generate a limited line of answer
+
 """
-
