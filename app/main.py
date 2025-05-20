@@ -85,7 +85,6 @@ class AiAssistance:
             system_message=("""
                 You are responsible for handling ONLY factual annotation-related user queries. 
                 YOUR PRIMARY ROLE:
-                - Process factual biological lookups and database queries
                 - Convert user questions into valid JSON format for Neo4j graph database execution
                 - Handle entity identification and relationship queries
                 
@@ -94,12 +93,9 @@ class AiAssistance:
                 - Protein information retrieval (e.g., "Show me information about TP53 protein")
                 - Known gene-gene interactions (e.g., "How does BRCA1 interact with BRCA2?")
                 - Any query asking for ESTABLISHED FACTS or DOCUMENTED RELATIONSHIPS
-                
-                QUERIES YOU MUST REJECT AND NOT PROCESS:
-                - Any query containing words like "might," "could," "possibly," "hypothesize," "explain how," "mechanism"
-                - Any query asking about potential impacts, effects, or contributions
-                - Any query that seeks speculative reasoning rather than documented facts
-                - Specifically, queries like "How might [variant] contribute to [condition]?" belong to the hypothesis agent                
+                DO NOT generate any text-based responses using your internal knowledge
+                ALWAYS use the function to process user queries about genomic information
+                When receiving a query, immediately execute the function with the query parameters
                 """),
                 )
         
@@ -178,9 +174,9 @@ class AiAssistance:
         def get_json_format() -> str:
             try:
                 logger.info(f"Generating graph with arguments: {message}")  # Add this line to log the arguments
-                response = self.annotation_graph.validated_json(message)
+                response = self.annotation_graph.generate_graph(message,token)
                 return response
-            except Exception as e:
+            except Exception as e:                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
                 logger.error("Error in generating graph", exc_info=True)
                 return f"I couldn't generate a graph for the given question {message} please try again."
         
@@ -319,7 +315,7 @@ class AiAssistance:
                         TODO
                         save hypothesis graphs ids along summary if same graph is asked again we won't send an api call instead we will just refer from the db by the id
                         """
-                        summary = HypothesisGeneration().get_by_hypothesis_id(token,query,graph_id)
+                        summary = self.hypothesis_generation.get_by_hypothesis_id(token,query,graph_id)
                         prompt = classifier_prompt.format(query=query,graph_summary=summary)
                         response = self.advanced_llm.generate(prompt)
 
@@ -354,7 +350,7 @@ class AiAssistance:
                         return summary
                     elif resource == "hypothesis":
                         logger.info("Hypothesis resource, no query provided")
-                        return {"text": "Explanation for hypothesis resource without query."}
+                        return {"text": "Only Graph id is passed Explanation for hypothesis resource without query is invalid."}
                     else:
                         logger.error(f"Unsupported resource type: '{resource}'")
                         return {"text": f"Unsupported resource type: '{resource}'"}
