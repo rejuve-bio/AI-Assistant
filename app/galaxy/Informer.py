@@ -5,10 +5,9 @@ from rapidfuzz import process, fuzz
 from bioblend.galaxy import GalaxyInstance
 from dotenv import load_dotenv
 import json
-import time
-from datetime import datetime, timedelta
 import numpy as np
 import logging
+import redis
 
 from sys import path
 path.append('.')
@@ -27,11 +26,11 @@ class GalaxyInformer:
         logger.info(f'initializing the galaxy informer with {entity_type} type')
         load_dotenv()
         self.entity_type = entity_type.lower()
-        self.timestamp_file = f'app/galaxy/cache_files/timestamps/{self.entity_type}_timestamp.txt'
         self.gi = GalaxyInstance(url=os.getenv("GALAXY_URL"), key=os.getenv("GALAXY_API"))
-        self.llm = GeminiModel(api_key=os.getenv("GEMINI_API_KEY"), model_provider='gemini', model_name=os.getenv("ADVANCED_LLM_VERSION") )
+        self.llm = GeminiModel(api_key=os.getenv("GEMINI_API_KEY"), model_provider='gemini', model_name=os.getenv("ADVANCED_LLM_VERSION"))
         self.client = Qdrant()
-        self.rag = RAG(client=self.client, llm= self.llm)
+        self.rag = RAG(client=self.client, llm=self.llm)
+        self.redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)  # Initialize Redis client
         self._entity_config = {
             'dataset': {
                 'get_method': self._get_datasets,
@@ -110,31 +109,9 @@ class GalaxyInformer:
     def get_entities(self):
         """Get all entities based on configured type"""
         return self._entity_config[self.entity_type]['get_method']()
-    
-    # Save the current timestamp to a file
-    def save_timestamp(self):
-        logger.info('Saving current timestamp')
-        with open(self.timestamp_file, "w") as f:
-            f.write(str(time.time()))
 
-    # Read the timestamp from file and compare with current time
-    def within_time(self):
-        try:
-            with open(self.timestamp_file, "r") as f:
-                saved_time = float(f.read().strip())
-        except FileNotFoundError:
-            return False  # If file doesn't exist, assume False
-        logger.info('checking if the collected data has expired')
-        saved_datetime = datetime.fromtimestamp(saved_time)
-        current_datetime = datetime.now()
-        
-        if current_datetime - saved_datetime > timedelta(hours=10):
-            return False
-        return True
-    
     def semantic_search(self, query, collection, user_id):
         """Retrive data from the qdrant collection based on the search query"""
-
         logger.info('Semantic search for the query')
         if isinstance(query, str):
             query=[query]
@@ -145,7 +122,7 @@ class GalaxyInformer:
         results = self.client.retrieve_data(query=query, collection=collection, user_id=user_id, galaxy=self.entity_type)
         
         return {k: results[k] for k in sorted(results.keys())[:10]}
-    
+
     def parse_list(self, list_str):
         """Extract and safely parse a Python list from a string that may include markdown code block markers."""
         try:
@@ -183,7 +160,6 @@ class GalaxyInformer:
 
     def fuzzy_search(self, query, entities, config, threshold):
         """Fuzzy search with priority fields, improved for efficiency and clarity."""
-
         logger.info('Fuzzy search for the query by priority fields')
         
         # Prepare priority candidates
@@ -235,34 +211,35 @@ class GalaxyInformer:
         
         logger.info(f'No matches found in either priority or fallback fields for search query: {query}')
         return []  # Always return a list, even if empty
-    
+
     def retrive_informer_data(self):
-        if self.timestamp_file:
-            if self.within_time():
-                    try:
-                        with open(f'app/galaxy/cache_files/{self.entity_type}.json', 'r') as f:
-                            entities = json.load(f)
-                    except FileNotFoundError:
-                        logger.info('Cache file not found, fetching new data')
-                        self.save_timestamp()
-                        entities=self.get_entities()
-                        # save to qdrant for later retreival of the data based of semnantic search
-                        self.client.delete_collection(collection_name= f'Galaxy_{self.entity_type}')
-                        self.rag.save_doc_to_rag(data=entities, collection_name=f'Galaxy_{self.entity_type}')
-                        with open(f'app/galaxy/cache_files/{self.entity_type}.json', 'w') as f:
-                            json.dump(entities, f, indent=4)
-            else:
-                logger.info('Cache expired, fetching new data')
-                self.save_timestamp()
-                entities = self.get_entities()
-                # save to qdrant for later retreival of the data based of semnantic search
-                self.client.delete_collection(collection_name= f'Galaxy_{self.entity_type}')
-                self.rag.save_doc_to_rag(data=entities, collection_name=f'Galaxy_{self.entity_type}')
-                with open(f'app/galaxy/cache_files/{self.entity_type}.json', 'w') as f:
-                    json.dump(entities, f, indent=4)
-                    
-            return entities
-    
+        entities_str = self.redis_client.get(f"{self.entity_type}_entities")
+        if entities_str is not None:
+            try:
+                entities = json.loads(entities_str)
+                logger.info(f'Retrieved cached {self.entity_type} entities from Redis')
+                return entities
+            except json.JSONDecodeError:
+                logger.error(f'Failed to parse cached {self.entity_type} entities from Redis')
+
+        # Fetch new data
+        logger.info(f'No valid cache found for {self.entity_type}, fetching new data')
+        entities = self.get_entities()
+        # Save to Redis with TTL of 10 hours (36000 seconds)
+        try:
+            self.redis_client.setex(f"{self.entity_type}_entities", 36000, json.dumps(entities))
+            logger.info(f'Saved {self.entity_type} entities to Redis with 10-hour TTL')
+        except redis.RedisError as e:
+            logger.error(f'Failed to save {self.entity_type} entities to Redis: {e}')
+        # Save to Qdrant
+        try:
+            self.client.delete_collection(collection_name=f'Galaxy_{self.entity_type}')
+            self.rag.save_doc_to_rag(data=entities, collection_name=f'Galaxy_{self.entity_type}')
+            logger.info(f'Saved {self.entity_type} entities to Qdrant')
+        except Exception as e:
+            logger.error(f'Failed to save {self.entity_type} entities to Qdrant: {e}')
+        return entities
+
     def search_entities(self, query, user_id, threshold=85):
         """Unified fuzzy and semantic search"""
         entities=self.retrive_informer_data()
@@ -291,7 +268,6 @@ class GalaxyInformer:
 
     def invocation_check(self,search_query):
         """Check if the query is asking about invocations of a workflow"""
-
         prompt= """Determine if in the input the query is asking about information on invocations of a workflow?
           If so Determine how much of information is required from the query and catagorize it as 'general' or 'specific'.
           Finally if return  the classification 'general' or 'specific' if the user is indeed asking about invocation otherwise return 'not_invocation' if the user is not asking about invocations at all.
@@ -387,7 +363,7 @@ class GalaxyInformer:
             response_dict[str(i)] = responses_found
 
         logger.info(f'Generating response for the query')
-        response_text= self.llm.generate(prompt=RETRIEVE_PROMPT.format(query=search_query, retrieved_content=response_dict))
+        response_text= self.llm.generate(prompt=RETRIEVE_PROMPT.format(query=search_query, retrieved_content=response_dict) + "\n\n Give an information rich and detailed answer to the query based on the retrieved content.")
         response={
             'query': search_query,
             'retrieved_content': response_dict,
@@ -399,6 +375,6 @@ class GalaxyInformer:
 if __name__ == "__main__":
     # Testing with as simple query    
     informer= GalaxyInformer('tool')
-    input_query= 'What tools are there that can convert bed files into gff format, and how can I use them?'
+    input_query= 'Find me tools I can use to convert a fasta file into 2bit'
     information=informer.get_entity_info(search_query = input_query, user_id = '1234')
     print(information['response'])
