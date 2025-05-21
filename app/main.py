@@ -183,8 +183,9 @@ class AiAssistance:
             response = response.strip().lower()
             informer= GalaxyInformer(entity_type=response)
             galaxy_response=informer.get_entity_info(search_query = message, user_id = user_id)
-            return galaxy_response
-
+            return galaxy_response['response']
+        
+        # Initialize the classifier agent
         # classify the users question
         classifiction_message=[{"role": "User","content":message}]
         classification= classifier_agent.generate_reply(classifiction_message)
@@ -213,14 +214,32 @@ class AiAssistance:
             if task['type'] == 'bio_annotation':
                 # response using imitiate chat because they are just two agents interacting
                 response = user_agent.initiate_chat(graph_agent,message=query, max_turns=3)
-                response= response.chat_history[-1]['content']
+
+                # Safely extract tool response content
+                response = next(
+                            (tool['content'] for msg in response.chat_history 
+                            if 'tool_responses' in msg 
+                            for tool in msg['tool_responses']),
+                            None
+                        )
                 
             elif task['type'] == 'general_knowledge':  
                 response= user_agent.initiate_chat(rag_agent,message=query, max_turns=3)
-                response= response.chat_history[-1]['content']
+                response = next(
+                            (tool['content'] for msg in response.chat_history 
+                            if 'tool_responses' in msg 
+                            for tool in msg['tool_responses']),
+                            None
+                        )
+
             elif task['type'] == 'galaxy' :
                 response= user_agent.initiate_chat(galaxy_agent,message=query, max_turns=3)
-                response= response.chat_history[-1]['content']
+                response = next(
+                            (tool['content'] for msg in response.chat_history 
+                            if 'tool_responses' in msg 
+                            for tool in msg['tool_responses']),
+                            None
+                        )
 
             else:
                 print("Invalid classification, Defaulting to Groupchat with both agents")
@@ -231,12 +250,18 @@ class AiAssistance:
                     human_input_mode="NEVER")           
                 print("group manager created")
                 user_agent.initiate_chat(group_manager, message=message, clear_history=False)
-                # response is the 2nd message in the group chat
-                response = group_chat.messages[2]['content']
+                # response is the last message in the group chat
+                response = group_chat.messages[-1]['content']
             agent_responses[task['task_id']]={"query": task['subquery'], "response": response}
 
         logger.info("collecting responses and generating general response")
-        response= self.advanced_llm.generate(prompt= f"message:{message}\n agent_response: {agent_responses} \n\n Structure the agent_response as a response to the message.")
+        
+        # Structure sub task responses into one final response for the query.
+        response_prompt=f"""message:{message}\n 
+            agent_response: {str(agent_responses)} \n
+            Structure the agent_response as a direct response to the message. Respond only with the direct response alone.
+            """
+        response= self.advanced_llm.generate(prompt= response_prompt)
         return response
 
 
@@ -272,9 +297,9 @@ class AiAssistance:
         # Save both the both the users query and the Ai-assistants response
         response = self.agent(refactored_question, user_id, token)
 
-        ### Adding rich context into the answers as well for an interactive commuication
-        prompt_ans= conversation_prompt_answer.format(memory=context,history=history,query=query,raw_answer=response,user_context=user_context)
-        response= self.advanced_llm.generate(prompt_ans)
+        # ### Adding rich context into the answers as well for an interactive commuication
+        # prompt_ans= conversation_prompt_answer.format(memory=context,history=history,query=query,raw_answer=response,user_context=user_context)
+        response= self.advanced_llm.generate(response)
         logger.info(f"file type: {response} \n {type(response)}")
         logging.info("Answer refactored based on context to be more interactive")
 
