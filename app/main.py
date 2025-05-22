@@ -148,6 +148,8 @@ class AiAssistance:
             context = {""}
             history = {""}
         prompt = conversation_prompt.format(memory=context,query=query,history=history,user_context=user_context)
+        emit_analysis_update(user_id=user_id, status='in_progress', 
+                             details={'message': 'Analysing'})
         response = self.advanced_llm.generate(prompt)
 
         if response:

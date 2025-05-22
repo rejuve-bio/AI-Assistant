@@ -1,6 +1,6 @@
 import logging
 from flask import Flask
-from flask_socketio import SocketIO
+from flask_socketio import SocketIO,emit, send,disconnect,join_room
 import redis
 import json
 import os
@@ -58,18 +58,20 @@ def register_socket_events(socketio_instance):
     
     @socketio_instance.on('connect')
     def handle_connect():
-        logger.info(f"Client connected: {request.sid}")
+        logger.info(f"Client connected")
+        send('User is connected')
     
     @socketio_instance.on('disconnect')
     def handle_disconnect():
-        logger.info(f"Client disconnected: {request.sid}")
+        logger.info(f"Client disconnected")
+        send('disconnected')
+        disconnect()
     
     @socketio_instance.on('join_room')
     def handle_join_room(data):
         """Handle client joining a specific room (usually user-specific)"""
         user_id = data.get('user_id')
         if user_id:
-            from flask_socketio import join_room
             join_room(user_id)
             logger.info(f"User {user_id} joined room")
             emit('status', {'message': f'Joined room for user {user_id}'}, room=user_id)
