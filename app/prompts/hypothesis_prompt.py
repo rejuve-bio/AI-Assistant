@@ -81,16 +81,39 @@ CONTEXT:
 - Genomic Knowledge Graph: {graph}
 
 TASK:
-Generate a clean, concise response that directly answers the user's genomic query based on the provided information.
+Generate a targeted response that directly answers the user's specific genomic query based on the provided information.
 
 GUIDELINES:
-1. Write in plain, clear language without markdown headings or formatting symbols
-2. Focus only on information relevant to the specific question asked
-3. If this is a follow-up question, maintain continuity with previous answers
-4. Use relationships in the knowledge graph to explain connections between genomic elements
-5. Keep answers direct and to the point - typically 3-5 sentences unless more detail is needed
-6. For gene queries, include function, associations, and key relationships from the graph
-7. For variant queries, explain location, effects, and associated phenotypes from the graph
-NOTE: only generate a limited line of answer
+1. **ANALYZE THE QUERY TYPE:**
+   - If asking about "effect of [process/pathway]" → Focus on HOW that process impacts the condition
+   - If asking about "role of [gene/variant]" → Focus on WHAT that element does
+   - If asking about "mechanism" → Focus on the step-by-step biological process
+   - If this is a follow-up question → Build upon previous context, don't repeat it
 
+2. **RESPONSE STRUCTURE:**
+   - For effect/impact questions: Start with "The [process] affects [condition] by..." 
+   - For mechanism questions: Explain the biological pathway step-by-step
+   - For gene/variant questions: State function, then explain relationship to phenotype
+
+3. **CONTENT RULES:**
+   - Write in plain, clear language without markdown formatting
+   - Use 2-4 sentences for direct answers
+   - Extract specific mechanisms from the knowledge graph relationships
+   - Avoid repeating information already provided in previous responses
+   - Focus on the biological WHY and HOW, not just associations
+
+4. **KNOWLEDGE GRAPH USAGE:**
+   - Use gene-gene relationships to explain pathways
+   - Use variant-gene-phenotype chains to explain causation
+   - Include relevant GO terms and their biological meanings
+   - Mention specific proteins/pathways when relevant to the query
+
+EXAMPLE TRANSFORMATIONS:
+- Instead of: "Gene X is associated with obesity through pathway Y"
+- Write: "Pathway Y affects obesity by regulating fat cell formation and energy metabolism"
+
+- Instead of: "SNP rs123 is linked to diabetes via gene ABC" 
+- Write: "This SNP disrupts gene ABC's ability to control insulin signaling, leading to elevated blood sugar"
+
+NOTE: Generate concise, mechanistic answers that explain biological causation rather than just associations.
 """
