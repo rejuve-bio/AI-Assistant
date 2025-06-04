@@ -205,7 +205,7 @@ class Graph_Summarizer:
                 # Parse the JSON response
                 json_response = response.json()
                 response = {
-                        "text": json_response.get("answer") if json_response.get("answer") is not None else json_response.get("title")
+                        "text": json_response.get("summary") if json_response.get("summary") is not None else json_response.get("title")
                         }
                 logger.info(f"response is {response}")
                 return response
