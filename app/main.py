@@ -118,18 +118,30 @@ class AiAssistance:
             return response
         return group_chat.messages[1]['content']
 
-    async def save_memory(self,query,user_id):
-        # saving the new query of the user to a memorymanager
-        memory_manager = MemoryManager(self.advanced_llm,client=self.client)
-        memory_manager.add_memory(query, user_id)
-
-    async def assistant(self,query,user_id, token, user_context=None):
+    async def save_user_information(self,query,user_id,context=None):
+        try:
+            memory_manager = MemoryManager(self.advanced_llm,client=self.client)
+            memory = memory_manager.add_memory(query, user_id)
+            print("here is the memory",memory)
+            from app.storage.sqldb import DatabaseManager
+            user_info = DatabaseManager().create_user_information(
+                user_id=user_id,
+                user_question=query,
+                memory=memory if isinstance(memory, dict) else {"content": str(memory)},
+                context=context
+            )
+            print(f"Saved user information with question_id: {user_info.question_id}")
+            return user_info
+        except Exception as e:
+            print(f"Error saving user information: {e}")
+            return None
+    
+    async def assistant(self,query,user_id, token, user_context=None,context=None):
         # retrieving saved memories
         try:
             # context = self.client._retrieve_memory(user_id=user_id)
             context=None
-            history = self.history.retrieve_user_history(user_id)
-            user_context = user_context
+            history = None
         except:
             context = {""}
             history = {""}
@@ -144,7 +156,7 @@ class AiAssistance:
                 return {"text":response}
             elif "question:" in response:
                 refactored_question = response.split("question:")[1].strip()
-        await self.save_memory(query,user_id)
+        await self.save_memory(query,user_id,context)
         response = self.agent(refactored_question, user_id, token)
         self.history.create_history(user_id, query, response)     
         return response 
@@ -187,7 +199,7 @@ class AiAssistance:
                             return query_response
                         elif "not" in response:
                             logger.info("question not related with the graph so sending the query {query} to agent")
-                            response = asyncio.run(self.assistant(query, user_id, token, user_context=summary))
+                            response = asyncio.run(self.assistant(query, user_id, token, user_context=summary,context=resource))
                             logger.info(f"user query is {query} response is {response}")  
                             return response           
                         else:
