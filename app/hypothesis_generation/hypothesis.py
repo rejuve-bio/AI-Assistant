@@ -61,7 +61,7 @@ class HypothesisGeneration:
             "Authorization": f"Bearer {token}"
         }
         try:
-            logger.debug(f"Making {method} request to {url}")
+            logger.debug(f"Making {method} request to {url} with data {data} and params {params}")
             if data:
                 response = requests.post(url, data=data, headers=headers)    
             if method.upper() == "GET":
@@ -102,6 +102,7 @@ class HypothesisGeneration:
             token, 
             params={'id': hypothesis_id}
         )
+        logger.info(f"Response from {HYPOTHESIS_DATA_API} are {hypothesis_data}")
         
         if "error" in hypothesis_data:
             logger.error(f"Failed to retrieve hypothesis data: {hypothesis_data['error']}")
@@ -170,7 +171,7 @@ class HypothesisGeneration:
             logger.error("Failed to fetch graph and summary")
             return {"error": "Failed to fetch graph and summary"}
 
-    def get_by_hypothesis_id(self, token: str, query: str, hypothesis_id: str) -> Dict[str, Any]:
+    def get_by_hypothesis_id(self, token: str, hypothesis_id: str,query=None) -> Dict[str, Any]:
         """
         Retrieve hypothesis information by ID.
         
@@ -184,19 +185,42 @@ class HypothesisGeneration:
         """
         logger.info(f"Retrieving hypothesis by ID: {hypothesis_id}")
         
-        response = self._make_api_request(
-            "POST",
-            HYPOTHESIS_CHAT_ENDPOINT,
-            token,
-            data={
-                "query": query,
-                "hypothesis_id": hypothesis_id
-            }
-        )
-        
-        if "error" in response:
+        """
+        TODO: change this to get the summary only by the hypothesis id
+        """
+        try:   
+            if query: 
+                data = {
+                    "query": query,
+                    "hypothesis_id": hypothesis_id}
+                headers = {
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/x-www-form-urlencoded"
+                    }
+                response = requests.post(HYPOTHESIS_CHAT_ENDPOINT, data=data, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                return data
+            else:
+                data = {
+                    "hypothesis_id": hypothesis_id
+                }
+
+                headers = {
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/x-www-form-urlencoded"
+                }
+                try:
+                    response = requests.post(HYPOTHESIS_CHAT_ENDPOINT, data=data, headers=headers)
+                    response.raise_for_status()
+                    data = response.json()
+                    return data
+                except Exception as e:
+                    logger.info(f"The execption is {e}")
+                    return None
+        except requests.exceptions.RequestException as e:
             logger.error(f"Failed to retrieve hypothesis by ID: {response['error']}")
-            return {"text": "Sorry, couldn't answer the given question for the moment"}
+            return None
         
         return {"text": response}
 
@@ -257,7 +281,7 @@ class HypothesisGeneration:
                 else:
                     retrieved_keys[key] = value
                     
-            logger.info(f"Hypothesis request parameters: {payload}")
+            logger.info(f"Sending request to endpoint {HYPOTHESIS_MAIN_ENDPOINT} Hypothesis request parameters: {payload}")
             
             # Make request to generate hypothesis
             response = self._make_api_request(
@@ -267,6 +291,7 @@ class HypothesisGeneration:
                 params=payload
             )
             
+            logger.info(f"Response from {HYPOTHESIS_MAIN_ENDPOINT} endpoint are {response}")
             if "error" in response:
                 logger.error(f"Failed to generate hypothesis: {response['error']}")
                 return {"text": f"Sorry couldn't generate hypothesis for the given question {user_query}"}
@@ -306,7 +331,7 @@ class HypothesisGeneration:
         if isinstance(result, dict) and "text" in result:
             logger.warning(f"Failed to get hypothesis: {result['text']}")
             return result
-            
+
         hypothesis_id, retrieved_keys = result
         
         # Get enriched data
