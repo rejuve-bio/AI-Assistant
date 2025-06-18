@@ -8,12 +8,11 @@ from .annotation_graph.annotated_graph import Graph
 from .llm_handle.llm_models import LLMInterface,OpenAIModel,get_llm_model,openai_embedding_model
 from autogen import AssistantAgent, UserProxyAgent, GroupChat, GroupChatManager
 from typing import Annotated
-from app.storage.qdrant import Qdrant
 from app.prompts.conversation_handler import conversation_prompt
 from app.prompts.classifier_prompt import classifier_prompt
-from app.memory_layer import MemoryManager
 from app.summarizer import Graph_Summarizer
-from app.history import History
+from app.storage.history import History
+from app.storage.sql_redis_storage import DatabaseManager
 import asyncio
 import traceback
 import json
@@ -38,9 +37,9 @@ class AiAssistance:
         self.basic_llm = basic_llm
         self.annotation_graph = Graph(advanced_llm, schema_handler)
         self.graph_summarizer = Graph_Summarizer(self.advanced_llm)
-        self.client = Qdrant()
-        self.rag = RAG(client=self.client,llm=advanced_llm)
+        self.rag = RAG(llm=advanced_llm)
         self.history = History()
+        self.store = DatabaseManager()
         
         if self.advanced_llm.model_provider == 'gemini':
             self.llm_config = [{"model":"gemini-1.5-flash","api_key": self.advanced_llm.api_key}]
@@ -117,52 +116,46 @@ class AiAssistance:
         if response:
             return response
         return group_chat.messages[1]['content']
-
-    async def save_user_information(self,query,user_id,context=None):
-        try:
-            memory_manager = MemoryManager(self.advanced_llm,client=self.client)
-            memory = memory_manager.add_memory(query, user_id)
-            print("here is the memory",memory)
-            from app.storage.sqldb import DatabaseManager
-            user_info = DatabaseManager().create_user_information(
-                user_id=user_id,
-                user_question=query,
-                memory=memory if isinstance(memory, dict) else {"content": str(memory)},
-                context=context
-            )
-            print(f"Saved user information with question_id: {user_info.question_id}")
-            return user_info
-        except Exception as e:
-            print(f"Error saving user information: {e}")
-            return None
     
     async def assistant(self,query,user_id, token, user_context=None,context=None):
-        # retrieving saved memories
         try:
-            # context = self.client._retrieve_memory(user_id=user_id)
-            context=None
-            history = None
+            user_information = self.store.get_context_and_memory(user_id)
+            context=None 
+            memory=user_information['memories']
+            history = user_information['questions']
+            logger.info(f"here is the memory and history {memory} {history}")
         except:
             context = {""}
             history = {""}
-        prompt = conversation_prompt.format(memory=context,query=query,history=history,user_context=user_context)
+            memory = {""}
+        prompt = conversation_prompt.format(memory=memory,query=query,history=history,user_context=user_context)
         response = self.advanced_llm.generate(prompt)
 
         if response:
             if "response:" in response:
                 result = response.split("response:")[1].strip()
-                response = result.strip('"')
-                self.history.create_history(user_id, query, response)      
-                return {"text":response}
+                final_response = result.strip('"')
+                await self.store.save_user_information(self.advanced_llm,query, user_id, context)
+                self.history.create_history(user_id, query, final_response)
+                return {"text": final_response}
+                
             elif "question:" in response:
                 refactored_question = response.split("question:")[1].strip()
-        await self.save_memory(query,user_id,context)
-        response = self.agent(refactored_question, user_id, token)
-        self.history.create_history(user_id, query, response)     
-        return response 
+                await self.store.save_user_information(self.advanced_llm,query, user_id, context)
 
+                await self.store.save_user_information(self.advanced_llm,refactored_question, user_id, context)
+                return "agent_response"
+            else:
+                logger.warning(f"Unexpected response format: {response}")
+                await self.store.save_user_information(self.advanced_llm,query, user_id, context)
+                return {"text": response or "I'm sorry, I couldn't process your request properly."}
+        else:
+            logger.error("No response generated from LLM")
+            await self.store.save_user_information(self.advanced_llm,query, user_id, context)
+            return {"text": "I'm sorry, I couldn't generate a response at this time."}
+    
     def assistant_response(self,query,user_id,token,graph=None,graph_id=None,file=None,resource="annotation"):
-      
+        
         try:
             logger.info(f"passes parameters are query = {query}, user_id= {user_id}, graphid={graph_id}, graph = {graph}, resource = {resource}")
             if (file and query) or (file and graph):
@@ -186,25 +179,30 @@ class AiAssistance:
                 if query:
                     logger.debug("Query provided with graph_id")
                     if resource == "annotation":
-                        # Process summary with query
-                        summary = self.graph_summarizer.summary(token=token, graph_id=graph_id)
-                        prompt = classifier_prompt.format(query=query,graph_summary=summary)
-                        response = self.advanced_llm.generate(prompt)
-                        if "related" in response:
-                            logger.info("question is related with with the graph")
-                            query_response = self.graph_summarizer.summary(token=token, graph_id=graph_id,  user_query=query)
-                            # creating users history
-                            self.history.create_history(user_id, query, query_response)    
-                            logger.info(f"user query is {query} response is {query_response}")  
-                            return query_response
-                        elif "not" in response:
-                            logger.info("question not related with the graph so sending the query {query} to agent")
-                            response = asyncio.run(self.assistant(query, user_id, token, user_context=summary,context=resource))
-                            logger.info(f"user query is {query} response is {response}")  
-                            return response           
-                        else:
-                            logger.warning(f"Unexpected classifier response: {response}. Defaulting to not related.")
-                            return response
+                            """
+                            TODO
+                            """
+                            # Process summary with query
+                            summary = self.graph_summarizer.summary(token=token, graph_id=graph_id)
+                            prompt = classifier_prompt.format(query=query, graph_summary=summary)
+                            response = self.advanced_llm.generate(prompt)
+                            
+                            if response.startswith("related:"):
+                                logger.info("question is related with the graph")
+                                query_response = response[len("related:"):].strip()
+                                # creating users history
+                                self.history.create_history(user_id, query, query_response)
+                                logger.info(f"user query is {query} response is {query_response}")
+                                return {"text":query_response}
+
+                            elif "not" in response:
+                                logger.info("question not related with the graph so sending the query {query} to agent")
+                                response = asyncio.run(self.assistant(query, user_id, token, user_context=summary,context=resource))
+                                logger.info(f"user query is {query} response is {response}")  
+                                return response           
+                            else:
+                                logger.warning(f"Unexpected classifier response: {response}. Defaulting to not related.")
+                                return response
 
                     elif resource == "hypothesis":
                         logger.info("Hypothesis resource with query")
@@ -230,8 +228,8 @@ class AiAssistance:
                         return {"text": f"Unsupported resource type: '{resource}'"}
  
             if query:
-                logger.info("agent calling")
-                response = asyncio.run(self.assistant(query, user_id, token))
+                logger.info(f"agent being called for a given query {query} from resource {resource}")
+                response = asyncio.run(self.assistant(query=query, user_id=user_id, token=token,context=resource))
                 return response 
 
             if query and graph:

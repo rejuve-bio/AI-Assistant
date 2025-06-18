@@ -10,6 +10,7 @@ services:
     restart: always
     depends_on:
       - qdrant
+      - redis
     environment:
       - .env
 
@@ -20,6 +21,12 @@ services:
       - "6334:6334"
     volumes:
       - vectordata:/qdrant/storage
+
+  redis:
+    image: redis:6-alpine
+    restart: always
+    ports:
+      - "6378:6379"
 
 volumes:
   vectordata:

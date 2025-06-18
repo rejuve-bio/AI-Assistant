@@ -35,7 +35,7 @@ def load_config():
         logger.error(f'Error loading config file: {e}')
         raise
 
-from app.storage.sqldb import create_tables, db_manager
+from app.storage.sql_redis_storage import create_tables, db_manager
 import os
 
 def initialize_database():
@@ -48,13 +48,7 @@ def initialize_database():
         
         create_tables()
         print("Database tables created successfully!")
-        
-        stats = db_manager.get_database_stats()
-        print(f"Database statistics: {stats}")
-        
-        print("SQLite database initialization completed successfully!")
-        print(f"Database location: {stats['database_file']}")
-        
+               
     except Exception as e:
         print(f"Error initializing database: {str(e)}")
         import traceback

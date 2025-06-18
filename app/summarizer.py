@@ -9,7 +9,7 @@ import os
 import requests
 from dotenv import load_dotenv
 from app.prompts.summarizer_prompts import SUMMARY_PROMPT, SUMMARY_PROMPT_BASED_ON_USER_QUERY,SUMMARY_PROMPT_CHUNKING,SUMMARY_PROMPT_CHUNKING_USER_QUERY
-
+from app.storage.sql_redis_storage import RedisGraphManager
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ class Graph_Summarizer:
             self.max_token=100000     
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
         self.kg_service_url = os.getenv('ANNOTATION_SERVICE_URL')
+        self.redis_graph_manager = RedisGraphManager()
 
     def clean_and_format_response(self,desc):
         desc = desc.strip()
@@ -169,13 +170,14 @@ class Graph_Summarizer:
 
             return self.descriptions
 
-
-    def annotate_by_id(self, graph_id, token,query=None):
+    def annotate_by_id(self, graph_id, token, query=None):
         logger.info("querying annotation by graph id...")
-        
+
         try:
-            params =  {"source": "ai-assistant"}
+            params = {"source": "ai-assistant"}
+
             if query:
+                # Keep your original POST request flow as is
                 logger.debug(f"Sending request to {self.kg_service_url}")
                 json_payload = {"requests": {"question": query}}  
                 response = requests.post(
@@ -185,36 +187,42 @@ class Graph_Summarizer:
                     headers={"Authorization": f"Bearer {token}"}
                 )
                 json_response = response.json()
-                response = {
+                response_data = {
                     "text": json_response.get("answer") if json_response.get("answer") is not None else "Graph is too big, No summaries provided to answer your question"
                 }
-                logger.info(f"response is {response}")
-                logger.info(f"Quering annotation by id with user query is Done")
-                return response
+                logger.info(f"response is {response_data}")
+                logger.info(f"Querying annotation by id with user query is done")
+                return response_data
+
             else:
+                # First check Redis cache for summary
+                cached_graph = self.redis_graph_manager.get_graph_by_id(graph_id)
+                if cached_graph and cached_graph.get("graph_summary"):
+                    logger.info(f"Cache hit for graph_id={graph_id} {cached_graph}")
+                    return {"text": cached_graph["graph_summary"]}
+
+                # Cache miss, call external API
                 logger.debug(f"Sending request to {self.kg_service_url}")
                 response = requests.get(
                     self.kg_service_url + '/annotation/' + graph_id,
-                    # params=params, need title to be added form the annotation
                     headers={"Authorization": f"Bearer {token}"}
                 )
-                logger.info(f"Quering annotation by id is Done")
-                # Raise an exception if the request was unsuccessful
                 response.raise_for_status()
-
-                # Parse the JSON response
                 json_response = response.json()
-                response = {
-                        "text": json_response.get("answer") if json_response.get("answer") is not None else json_response.get("title")
-                        }
-                logger.info(f"response is {response}")
-                return response
+                summary_text = json_response.get("answer") or json_response.get("title") or ""
+
+                # Store summary in Redis cache for 24 hours
+                self.redis_graph_manager.create_graph(graph_id=graph_id, graph_summary=summary_text)
+
+                logger.info(f"response is {summary_text}")
+                logger.info(f"Querying annotation by id is done")
+                return {"text": summary_text}
 
         except Exception as e:
-            # Log the error and stack trace
             traceback.print_exc()
             logger.error("Error generating graph information from /annotation endpoint")
             return {"text": "Error generating graph information"}
+
 
 
     # def get_graph_info(self, graph_id, token):
