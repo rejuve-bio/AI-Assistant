@@ -216,13 +216,10 @@ class HypothesisGeneration:
                     data = response.json()
                     return data
                 except Exception as e:
-                    logger.info(f"The execption is {e}")
-                    return None
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to retrieve hypothesis by ID: {response['error']}")
+                    logger.error(f"Failed to retrieve hypothesis by ID: {response}")
+                    return "NO summaries provided"
+        except:
             return None
-        
-        return {"text": response}
 
     def format_user_query(self, query: str) -> Dict[str, Any]:
         """

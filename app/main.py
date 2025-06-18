@@ -316,11 +316,15 @@ class AiAssistance:
                         save hypothesis graphs ids along summary if same graph is asked again we won't send an api call instead we will just refer from the db by the id
                         """
                         summary = self.hypothesis_generation.get_by_hypothesis_id(token,graph_id,query)
+                        logger.info(f"Summaries of the graph id {graph_id} is {summary}")
                         if summary is None:
                             logger.info(f"question not related with the graph so sending the query {query} to agent")
-                            response = asyncio.run(self.assistant(query, user_id, token, user_context=summary))
-                            logger.info(f"user query is {query} response is {response}")
-                            return response
+                            try:
+                                response = asyncio.run(self.assistant(query, user_id, token, user_context=summary))
+                                logger.info(f"user query is {query} response is {response}")
+                                return response
+                            except:
+                                return {"text":"Sorry I coudnt understand your question"}
                             
                         prompt = classifier_prompt.format(query=query,graph_summary=summary)
                         response = self.advanced_llm.generate(prompt)
@@ -356,7 +360,8 @@ class AiAssistance:
                         return summary
                     elif resource == "hypothesis":
                         logger.info("Hypothesis resource, no query provided")
-                        return {"text": "Only Graph id is passed Explanation for hypothesis resource without query is invalid."}
+                        summary = self.hypothesis_generation.get_by_hypothesis_id(token,graph_id,query)
+                        return {"text": summary}
                     else:
                         logger.error(f"Unsupported resource type: '{resource}'")
                         return {"text": f"Unsupported resource type: '{resource}'"}
