@@ -315,7 +315,13 @@ class AiAssistance:
                         TODO
                         save hypothesis graphs ids along summary if same graph is asked again we won't send an api call instead we will just refer from the db by the id
                         """
-                        summary = self.hypothesis_generation.get_by_hypothesis_id(token,query,graph_id)
+                        summary = self.hypothesis_generation.get_by_hypothesis_id(token,graph_id,query)
+                        if summary is None:
+                            logger.info(f"question not related with the graph so sending the query {query} to agent")
+                            response = asyncio.run(self.assistant(query, user_id, token, user_context=summary))
+                            logger.info(f"user query is {query} response is {response}")
+                            return response
+                            
                         prompt = classifier_prompt.format(query=query,graph_summary=summary)
                         response = self.advanced_llm.generate(prompt)
 
