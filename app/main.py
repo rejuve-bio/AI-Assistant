@@ -57,13 +57,6 @@ class AiAssistance:
         else:
             self.llm_config = [{"model": self.advanced_llm.model_name, "api_key":self.advanced_llm.api_key}]
 
-
-    def preprocess_message(self,message):
-        if " and " in message:
-            message = message.replace(" and ", " ").strip()
-            return message
-        return message
-
     def agent(self,message,user_id, token):
         message = self.preprocess_message(message)
 
