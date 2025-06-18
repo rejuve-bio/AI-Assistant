@@ -28,7 +28,7 @@ def process_query(current_user_id, auth_token):
         query = data.get('query', None)
         context = json.loads(data.get('context', '{}'))  
         context_id = context.get('id', None)
-        resource = context.get('resource', None)
+        resource = context.get('resource', 'annotation')
         graph = data.get('graph', None)
         
         # Handle file upload

@@ -5,7 +5,8 @@ from app.llm_handle.llm_models import (
     openai_embedding_model,
     gemini_embedding_model,
 )
-from app.memory_layer import MemoryManager
+from app.storage.qdrant import Qdrant
+from app.storage.memory_layer import MemoryManager
 from PyPDF2 import PdfReader
 import traceback
 import os
@@ -26,7 +27,7 @@ USERS_PDF_COLLECTION = os.getenv("PDF_COLLECTION","PDF_COLLECTION")
 PDF_LIMIT=5
 class RAG:
 
-    def __init__(self, client, llm: LLMInterface) -> None:
+    def __init__(self, llm: LLMInterface,client=Qdrant()) -> None:
         """
         Initializes the RAG (Retrieval Augmented Generation) class.
         Sets up the Qdrant client and LLM interface for query handling.
