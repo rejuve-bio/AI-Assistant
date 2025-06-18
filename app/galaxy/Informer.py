@@ -283,11 +283,7 @@ class GalaxyInformer:
 
     def get_entity_info(self, search_query, user_id, entity_id=None):
         """Unified info retrieval with LLM summary"""
-        # Checking on cached files
-        if not os.path.exists(f'app/galaxy/cache_files'):
-             os.makedirs('app/galaxy/cache_files')
-        if not os.path.exists('app/galaxy/cache_files/timestamps'):
-             os.makedirs('app/galaxy/cache_files/timestamps')
+        
         # Setting a default value for searching option based on input
         search_bool = False
 
@@ -351,19 +347,19 @@ class GalaxyInformer:
         logger.info('Structuring the repsonse')
         for i, (key, item) in enumerate(entity.items()):
             details = detail_methods[self.entity_type](item[f'{self.entity_type}_id'])
-            prompt_text = self._entity_config[self.entity_type]['summary_prompt'].format(input=details)
-            responses_found = self.llm.generate(prompt=prompt_text)
+            # prompt_text = self._entity_config[self.entity_type]['summary_prompt'].format(input=details)
+            # responses_found = self.llm.generate(prompt=prompt_text)
 
-            if isinstance(responses_found, str):
-                try:
-                    responses_found = json.loads(responses_found)
-                except json.JSONDecodeError:
-                    raise ValueError(f"Invalid JSON returned: {responses_found}")
+            # if isinstance(responses_found, str):
+            #     try:
+            #         responses_found = json.loads(responses_found)
+            #     except json.JSONDecodeError:
+            #         raise ValueError(f"Invalid JSON returned: {responses_found}")
 
-            response_dict[str(i)] = responses_found
+            response_dict[str(i)] = details
 
         logger.info(f'Generating response for the query')
-        response_text= self.llm.generate(prompt=RETRIEVE_PROMPT.format(query=search_query, retrieved_content=response_dict) + "\n\n Give an information rich and detailed answer to the query based on the retrieved content.")
+        response_text= self.llm.generate(prompt=RETRIEVE_PROMPT.format(query=search_query, retrieved_content=response_dict) )
         response={
             'query': search_query,
             'retrieved_content': response_dict,
@@ -374,7 +370,7 @@ class GalaxyInformer:
 
 if __name__ == "__main__":
     # Testing with as simple query    
-    informer= GalaxyInformer('tool')
-    input_query= 'Find me tools I can use to convert a fasta file into 2bit'
+    informer= GalaxyInformer('workflow')
+    input_query= 'Tell me about the RNA-Seq Analysis workflow, tell me about its last recent invocation in detail'
     information=informer.get_entity_info(search_query = input_query, user_id = '1234')
     print(information['response'])
