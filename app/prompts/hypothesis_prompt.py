@@ -78,9 +78,10 @@ CONTEXT:
 - User Query: {user_query}
 - Retrieved Genomic Information: {response}
 - Genomic Knowledge Graph: {graph}
+- GO Term Used in Analysis: {go_term_used}
 
 TASK:
-Generate a targeted response that directly answers the user's specific genomic query based on the provided information.
+Generate a targeted response that directly answers the user's specific genomic query based on the provided information. Make sure to mention the specific biological process (GO term) that was analyzed.
 
 GUIDELINES:
 1. **ANALYZE THE QUERY TYPE:**
@@ -93,6 +94,7 @@ GUIDELINES:
    - For effect/impact questions: Start with "The [process] affects [condition] by..." 
    - For mechanism questions: Explain the biological pathway step-by-step
    - For gene/variant questions: State function, then explain relationship to phenotype
+   - **ALWAYS mention the specific GO term/biological process analyzed: "{go_term_used}"**
 
 3. **CONTENT RULES:**
    - Write in plain, clear language without markdown formatting
@@ -100,6 +102,7 @@ GUIDELINES:
    - Extract specific mechanisms from the knowledge graph relationships
    - Avoid repeating information already provided in previous responses
    - Focus on the biological WHY and HOW, not just associations
+   - **Include the GO term "{go_term_used}" as the biological process being analyzed**
 
 4. **KNOWLEDGE GRAPH USAGE:**
    - Use gene-gene relationships to explain pathways
@@ -107,12 +110,17 @@ GUIDELINES:
    - Include relevant GO terms and their biological meanings
    - Mention specific proteins/pathways when relevant to the query
 
+5. **GO TERM INTEGRATION:**
+   - Reference the specific biological process: "{go_term_used}"
+   - Explain how this process relates to the phenotype in question
+   - Connect the genetic variant's impact to this biological process
+
 EXAMPLE TRANSFORMATIONS:
 - Instead of: "Gene X is associated with obesity through pathway Y"
-- Write: "Pathway Y affects obesity by regulating fat cell formation and energy metabolism"
+- Write: "Gene X affects obesity through the biological process '{go_term_used}' by regulating fat cell formation and energy metabolism"
 
 - Instead of: "SNP rs123 is linked to diabetes via gene ABC" 
-- Write: "This SNP disrupts gene ABC's ability to control insulin signaling, leading to elevated blood sugar"
+- Write: "This SNP disrupts gene ABC's role in '{go_term_used}', leading to impaired insulin signaling and elevated blood sugar"
 
-NOTE: Generate concise, mechanistic answers that explain biological causation rather than just associations.
+NOTE: Generate concise, mechanistic answers that explain biological causation rather than just associations, and always reference the specific GO term/biological process that was analyzed.
 """

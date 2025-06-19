@@ -52,7 +52,7 @@ class HypothesisGeneration:
             token: Authentication token
             params: Query parameters
             headers: Request headers
-            json_data: JSON data for POST requests
+            data: Form data for POST requests
             
         Returns:
             Response as dictionary or error message
@@ -62,9 +62,9 @@ class HypothesisGeneration:
         }
         try:
             logger.debug(f"Making {method} request to {url} with data {data} and params {params}")
-            if data:
+            if data and method.upper() == "POST":
                 response = requests.post(url, data=data, headers=headers)    
-            if method.upper() == "GET":
+            elif method.upper() == "GET":
                 response = requests.get(url, params=params, headers=headers)
             elif method.upper() == "POST":
                 response = requests.post(url, params=params, headers=headers)
@@ -78,9 +78,7 @@ class HypothesisGeneration:
             logger.error(f"API request failed: {e}")
             return {"error": f"Request failed Please Try Again"}
 
-
-    
-    def get_enrich_id_genes_GO_terms(self, token: str, hypothesis_id: str, retrieved_keys: Dict[str, Any]) -> Dict[str, Any]:
+    def get_enrich_id_genes_GO_terms(self, token: str, hypothesis_id: str, retrieved_keys: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], str]:
         """
         Process the hypothesis_id to extract enrichment details using the retrieved_keys.
         Then query the appropriate endpoint to get graph/summary.
@@ -91,7 +89,7 @@ class HypothesisGeneration:
             retrieved_keys: Dictionary containing keys like "GO" or "Gene"
             
         Returns:
-            Dictionary of extracted results or error message
+            Tuple of (summary, graph, go_term_used) or error message
         """
         logger.info(f"Processing hypothesis ID {hypothesis_id} with retrieved keys: {retrieved_keys}")
         
@@ -106,7 +104,7 @@ class HypothesisGeneration:
         
         if "error" in hypothesis_data:
             logger.error(f"Failed to retrieve hypothesis data: {hypothesis_data['error']}")
-            return hypothesis_data
+            return hypothesis_data, {}, ""
         
         # Extract relevant information
         enrich_id = hypothesis_data.get("enrich_id")
@@ -148,12 +146,13 @@ class HypothesisGeneration:
         
         if not selected_go_term:
             logger.warning("No valid GO term found for hypothesis")
-            return {"error": "No valid GO term found."}
+            return {"error": "No valid GO term found."}, {}, ""
         
         # Store selected GO term information
         extracted["GO"] = selected_go_term["name"]
         go_id = selected_go_term["id"]
         extracted["GO_id"] = go_id
+        go_term_used = selected_go_term["name"]  # Store the GO term name for return
 
         # Get summary for the selected GO term
         logger.info(f"Fetching summary for enrich id {enrich_id} with GO ID {go_id}")
@@ -166,12 +165,12 @@ class HypothesisGeneration:
             )
         if "error" not in summary_response:
             logger.info(f"Successfully retrieved graph and summary {summary_response}")
-            return summary_response["summary"],summary_response["graph"]
+            return summary_response["summary"], summary_response["graph"], go_term_used
         else:
             logger.error("Failed to fetch graph and summary")
-            return {"error": "Failed to fetch graph and summary"}
+            return {"error": "Failed to fetch graph and summary"}, {}, ""
 
-    def get_by_hypothesis_id(self, token: str, hypothesis_id: str,query=None) -> Dict[str, Any]:
+    def get_by_hypothesis_id(self, token: str, hypothesis_id: str, query=None) -> Dict[str, Any]:
         """
         Retrieve hypothesis information by ID.
         
@@ -185,9 +184,6 @@ class HypothesisGeneration:
         """
         logger.info(f"Retrieving hypothesis by ID: {hypothesis_id}")
         
-        """
-        TODO: change this to get the summary only by the hypothesis id
-        """
         try:   
             if query: 
                 data = {
@@ -317,7 +313,7 @@ class HypothesisGeneration:
             user_query: User's query
             
         Returns:
-            Formatted hypothesis response
+            Formatted hypothesis response with resource information
         """
         logger.info(f"Processing complete hypothesis generation for: {user_query}")
         
@@ -332,7 +328,7 @@ class HypothesisGeneration:
         hypothesis_id, retrieved_keys = result
         
         # Get enriched data
-        enriched_data, graph = self.get_enrich_id_genes_GO_terms(token, hypothesis_id, retrieved_keys)
+        enriched_data, graph, go_term_used = self.get_enrich_id_genes_GO_terms(token, hypothesis_id, retrieved_keys)
         
         if "error" in enriched_data:
             logger.error(f"Failed to enrich hypothesis data: {enriched_data['error']}")
@@ -340,7 +336,22 @@ class HypothesisGeneration:
         
         # Generate final response
         logger.info("Generating final hypothesis response")
-        prompt = hypothesis_response.format(response=enriched_data,user_query=user_query, graph=graph)
-        response = self.llm.generate(prompt)
-        return {"text":response}
-        # return enriched_data
+        logger.info(f"Using GO term: {go_term_used}")
+        
+        # Updated prompt to include the GO term used
+        prompt = hypothesis_response.format(
+            response=enriched_data,
+            user_query=user_query, 
+            graph=graph,
+            go_term_used=go_term_used
+        )
+        response_text = self.llm.generate(prompt)
+        
+        # Return in the new format with resource information
+        return {
+            "text": response_text,
+            "resource": {
+                "id": hypothesis_id,
+                "type": "hypothesis"
+            }
+        }

@@ -306,9 +306,40 @@ class AiAssistance:
                                 return response
 
                     elif resource == "hypothesis":
-                        logger.info("Hypothesis resource with query")
-                        return {"text": "Explanation for hypothesis resource with query."}
+                        """
+                        TODO
+                        save hypothesis graphs ids along summary if same graph is asked again we won't send an api call instead we will just refer from the db by the id
+                        """
+                        summary = self.hypothesis_generation.get_by_hypothesis_id(token,graph_id,query)
+                        logger.info(f"Summaries of the graph id {graph_id} is {summary}")
+                        if summary is None:
+                            logger.info(f"question not related with the graph so sending the query {query} to agent")
+                            try:
+                                response = asyncio.run(self.assistant(query, user_id, token, user_context=summary))
+                                logger.info(f"user query is {query} response is {response}")
+                                return response
+                            except:
+                                return {"text":"Sorry I coudnt understand your question"}
+                            
+                        prompt = classifier_prompt.format(query=query,graph_summary=summary)
+                        response = self.advanced_llm.generate(prompt)
 
+                        if response.startswith("related:"):
+                            logger.info("question is related with the graph")
+                            query_response = response[len("related:"):].strip()
+                            self.history.create_history(user_id, query, query_response)
+                            logger.info(f"user query is {query} response is {query_response}")
+                            return {"text":query_response}
+                            
+                        elif response.strip() == "not":
+                            logger.info(f"question not related with the graph so sending the query {query} to agent")
+                            response = asyncio.run(self.assistant(query, user_id, token, user_context=summary))
+                            logger.info(f"user query is {query} response is {response}")
+                            return response
+
+                        else:
+                            logger.warning(f"Unexpected classifier response: {response}. Defaulting to not related.")
+                            return {"text":response}
                     else:
                         logger.error(f"Unsupported resource type: '{resource}'")
                         return {"text": f"Unsupported resource type: '{resource}'"}
