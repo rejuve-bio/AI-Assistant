@@ -23,13 +23,17 @@ def process_query(current_user_id, auth_token):
     
         if not request.form and 'file' not in request.files:
             return jsonify({"error": "Null request is invalid format."}), 400
+        if request.form.get('query') and request.form.get('json_query'):
+            return jsonify({"error": "Invalid format."}), 400
+
 
         data = request.form
         query = data.get('query', None)
         context = json.loads(data.get('context', '{}'))  
         context_id = context.get('id', None)
-        resource = context.get('resource', None)
+        resource = context.get('resource', 'annotation')
         graph = data.get('graph', None)
+        json_query = data.get('json_query',None)
         
         # Handle file upload
         file = None
@@ -57,7 +61,8 @@ def process_query(current_user_id, auth_token):
                 token=auth_token,
                 graph_id=context_id,
                 graph=graph,
-                resource=resource
+                resource=resource,
+                json_query=json_query
             )
 
         return jsonify(response)  # Always return a valid JSON response

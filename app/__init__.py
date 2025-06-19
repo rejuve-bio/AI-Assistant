@@ -35,6 +35,25 @@ def load_config():
         logger.error(f'Error loading config file: {e}')
         raise
 
+from app.storage.sql_redis_storage import create_tables, db_manager
+import os
+
+def initialize_database():
+    """Initialize the SQLite database with tables only - no sample data"""
+    try:
+        print("Initializing SQLite database...")
+        
+        data_dir = os.getenv('DATABASE_DIR', './data')
+        os.makedirs(data_dir, exist_ok=True)
+        
+        create_tables()
+        print("Database tables created successfully!")
+               
+    except Exception as e:
+        print(f"Error initializing database: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
 def create_app():
     """Creates and configures the Flask application."""
     logger.info('Creating Flask app')
@@ -104,6 +123,12 @@ def create_app():
         traceback.print_exc()
         logger.warning("Qdrant Connection Failed!!! If you are running locally Please connect qdrant database by running docker run -d -p 6333:6333 -v qdrant_data:/qdrant/storage qdrant/qdrant")
 
+    try:
+        initialize_database()
+        logger.info('Database initialized successfully')
+    except Exception as e:
+        logger.error(f"Error initializing database: {e}")
+        raise
     # Register routes
     app.register_blueprint(main_bp)
     logger.info('Blueprint "main_bp" registered')

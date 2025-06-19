@@ -6,10 +6,11 @@ services:
       - static:/static
     ports:
       - "${FLASK_PORT}:${FLASK_PORT}"
-    command: gunicorn -w 4 --bind 0.0.0.0:$FLASK_PORT --timeout 60 --log-level debug run:app
+    command: gunicorn -w 4 --bind 0.0.0.0:$FLASK_PORT --timeout 60 --log-level debug --reload run:app
     restart: always
     depends_on:
       - qdrant
+      - redis
     environment:
       - .env
 
@@ -20,6 +21,12 @@ services:
       - "6334:6334"
     volumes:
       - vectordata:/qdrant/storage
+
+  redis:
+    image: redis:6-alpine
+    restart: always
+    ports:
+      - "6378:6379"
 
 volumes:
   vectordata:
