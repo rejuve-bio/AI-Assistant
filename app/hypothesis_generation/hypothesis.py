@@ -1,6 +1,7 @@
 
 from typing import Dict, Any, Tuple, Optional, List, Union
 from app.prompts.hypothesis_prompt import hypothesis_format_prompt,hypothesis_response
+from app.storage.sql_redis_storage import RedisGraphManager
 import logging
 import os
 import difflib
@@ -34,6 +35,7 @@ class HypothesisGeneration:
             llm: Language model instance for generating formatted queries and responses
         """
         self.llm = llm
+        self.redis_graph_manager = RedisGraphManager()
         logger.info("HypothesisGeneration initialized with LLM")
 
     def _make_api_request(self, 
@@ -198,6 +200,11 @@ class HypothesisGeneration:
                 data = response.json()
                 return data
             else:
+                cached_graph = self.redis_graph_manager.get_graph_by_id(hypothesis_id)
+                if cached_graph and cached_graph.get("summary"):
+                    logger.info(f"Cache hit for graph_id={graph_id} {cached_graph}")
+                    return {"text": cached_graph["summary"]}
+
                 data = {
                     "hypothesis_id": hypothesis_id
                 }
@@ -210,6 +217,7 @@ class HypothesisGeneration:
                     response = requests.post(HYPOTHESIS_CHAT_ENDPOINT, data=data, headers=headers)
                     response.raise_for_status()
                     data = response.json()
+                    self.redis_graph_manager.create_graph(hypothesis_id=data['hypothesis_id'], graph_summary=data['summary'])
                     return data
                 except Exception as e:
                     logger.error(f"Failed to retrieve hypothesis by ID: {response}")
@@ -346,7 +354,9 @@ class HypothesisGeneration:
             go_term_used=go_term_used
         )
         response_text = self.llm.generate(prompt)
-        
+        # Store summary in Redis cache for 24 hours
+        self.redis_graph_manager.create_graph(hypothesis_id=hypothesis_id, graph_summary=response_text)
+
         # Return in the new format with resource information
         return {
             "text": response_text,
