@@ -99,8 +99,10 @@ class Graph:
             add query along with job id to specifiy to what query is the json requested is related to.
             '''
             return {
-                    "text": "Here is the structured JSON for your question. Please review and confirm if it's accurate.",
+                    "text": None,
                     "json_format": validated_json,
+                     "resource": {"id": None, 
+                             "type": "annotation"},
                 }
 
     def generate_graph(self, query, validated_json, token):

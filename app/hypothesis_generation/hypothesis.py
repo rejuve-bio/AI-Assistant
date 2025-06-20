@@ -217,7 +217,7 @@ class HypothesisGeneration:
                     response = requests.post(HYPOTHESIS_CHAT_ENDPOINT, data=data, headers=headers)
                     response.raise_for_status()
                     data = response.json()
-                    self.redis_graph_manager.create_graph(hypothesis_id=data['hypothesis_id'], graph_summary=data['summary'])
+                    self.redis_graph_manager.create_graph(graph_id=data['hypothesis_id'], graph_summary=data['summary'])
                     return data
                 except Exception as e:
                     logger.error(f"Failed to retrieve hypothesis by ID: {response}")
@@ -355,7 +355,7 @@ class HypothesisGeneration:
         )
         response_text = self.llm.generate(prompt)
         # Store summary in Redis cache for 24 hours
-        self.redis_graph_manager.create_graph(hypothesis_id=hypothesis_id, graph_summary=response_text)
+        self.redis_graph_manager.create_graph(graph_id=hypothesis_id, graph_summary=response_text)
 
         # Return in the new format with resource information
         return {

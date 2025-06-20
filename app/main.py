@@ -58,7 +58,7 @@ class AiAssistance:
             self.llm_config = [{"model": self.advanced_llm.model_name, "api_key":self.advanced_llm.api_key}]
 
     def agent(self,message,user_id, token):
-        message = self.preprocess_message(message)
+        # message = self.preprocess_message(message)
 
         # graph_agent = AssistantAgent(
         #     name="gragh_generate",
@@ -109,27 +109,6 @@ class AiAssistance:
                 - The query seeks explanations rather than established facts
                 - The user wants reasoning about biological processes or effects
                 - ANY query asking to explain variants (rs numbers) or phenotypes
-                
-                KEY DETECTION PHRASES:
-                - "How might rs345 contribute to obesity?"
-                - "What mechanism could explain..."
-                - "Why would gene X affect condition Y?"
-                - "Hypothesize how..."
-                - "What's the potential impact of..."
-                - "Explain variant rs1421085"
-                - "Can you explain the variant rs1421085?"
-                
-                IMPORTANT INSTRUCTIONS:
-                1. Do NOT attempt to answer the biological query yourself
-                2. ALWAYS use the hypothesis_generation function
-                3. NEVER respond with your own explanation of variants or biological mechanisms
-                4. Simply identify that the query matches your criteria and use the function
-                5. After calling the function, respond with TERMINATE
-                
-                Example:
-                User: "Can you explain the variant rs1421085?"
-                Your action: Call the hypothesis_generation function
-                Your response: Return ONLY the function's output + "TERMINATE"
                 """),
             )
         
@@ -166,7 +145,7 @@ class AiAssistance:
         def get_json_format() -> str:
             try:
                 logger.info(f"Generating graph with arguments: {message}")  # Add this line to log the arguments
-                response = self.annotation_graph.generate_graph(message,token)
+                response = self.annotation_graph.validated_json(message)
                 return response
             except Exception as e:                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
                 logger.error("Error in generating graph", exc_info=True)
