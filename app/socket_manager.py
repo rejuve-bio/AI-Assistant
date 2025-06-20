@@ -16,6 +16,12 @@ load_dotenv()
 socketio = None
 redis_client = None
 
+def socket_io_responses(responses,user_id):
+            emit('query_response', {
+                'response': responses,
+                'user_id': user_id
+            }, room=user_id)
+
 def init_socketio(app):
     """Initialize the SocketIO instance with Redis message queue for scaling."""
     global socketio, redis_client
@@ -71,10 +77,55 @@ def register_socket_events(socketio_instance):
     def handle_join_room(data):
         """Handle client joining a specific room (usually user-specific)"""
         user_id = data.get('user_id')
+        query = data.get('query')
+        auth_token = ""
+        file = ""
         if user_id:
             join_room(user_id)
             logger.info(f"User {user_id} joined room")
-            emit('status', {'message': f'Joined room for user {user_id}'}, room=user_id)
+            from flask import current_app
+            ai_assistant = current_app.config['ai_assistant']
+            
+            query = data.get('query', None)
+            context = json.loads(data.get('context', '{}'))  
+            context_id = context.get('id', None)
+            resource = context.get('resource', None)
+            graph = data.get('graph', None)
+        
+            # Handle file upload
+            file = None
+            emit('status', {'message': f"joined room for user {user_id}"})
+            # Ensure query exists before processing
+            if query:
+                response = ai_assistant.assistant_response(
+                    query=query,
+                    file=file,
+                    user_id=user_id,
+                    token=auth_token,
+                    graph_id=context_id,
+                    graph=graph,
+                    resource=resource
+                )
+            else:
+                # Handle case when only context is provided
+                print("no query provided")
+                response = ai_assistant.assistant_response(
+                    query=None,
+                    file=file,
+                    user_id=user_id,
+                    token=auth_token,
+                    graph_id=context_id,
+                    graph=graph,
+                    resource=resource
+                )
+
+                ai_assistant = current_app.config['ai_assistant']            
+                # This is where you'd modify assistant_response to support websocket callbacks
+                response = ai_assistant.assistant_response(
+                    query=query,
+                    user_id=user_id,
+                    token="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoic29tZV9pZCJ9.OsNu9bC4NNOVA6PQwRSZG9bG_-SCbDSsp3PUdPViZR8",
+                )
 
 def emit_processing_update(user_id, event_type, data):
     """

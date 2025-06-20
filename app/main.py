@@ -18,15 +18,8 @@ import asyncio
 import traceback
 import json
 import autogen
-
-
-from app.socket_manager import (
-    emit_json_formatting, 
-    emit_analysis_update, 
-    emit_rag_update, 
-    emit_hypothesis_update, 
-    emit_error
-)
+import flask_socketio
+from app.socket_manager import socket_io_responses
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -49,7 +42,6 @@ class AiAssistance:
         self.client = Qdrant()
         self.rag = RAG(client=self.client,llm=advanced_llm)
         self.history = History()
-        
         if self.advanced_llm.model_provider == 'gemini':
             self.llm_config = [{"model":"gemini-1.5-flash","api_key": self.advanced_llm.api_key}]
         else:
@@ -94,15 +86,11 @@ class AiAssistance:
         @rag_agent.register_for_llm(description="Retrieve information for general knowledge queries.")
         def get_general_response() -> str:
             try:
-                emit_rag_update(user_id=user_id, status='started')
-                emit_rag_update(user_id=user_id, status='in_progress', 
-                             details={'message': 'Analysing our RAG agent.'})
-
+                socket_io_responses("Finidng similiar contents",user_id)
                 response = self.rag.get_result_from_rag(message, user_id)
+                socket_io_responses(response,user_id)
                 return response
             except Exception as e:
-                emit_error(user_id=user_id, error_type='rag retrieval', 
-                   message=f"Error retrieving information: {str(e)}")
                 logger.error("Error in retrieving response", exc_info=True)
                 return "Error in retrieving response."
 
@@ -112,7 +100,8 @@ class AiAssistance:
         def generate_graph():
             try:
                 logger.info(f"Generating graph with arguments: {message}")  # Add this line to log the arguments
-                response = self.annotation_graph.generate_graph(message, token)
+                socket_io_responses("Creating Annotation query builder",user_id)
+                response = self.annotation_graph.generate_graph(message, token,user_id)
                 return response
             except Exception as e:
                 logger.error("Error in generating graph", exc_info=True)
@@ -148,19 +137,18 @@ class AiAssistance:
             context = {""}
             history = {""}
         prompt = conversation_prompt.format(memory=context,query=query,history=history,user_context=user_context)
-        emit_analysis_update(user_id=user_id, status='in_progress', 
-                             details={'message': 'Analysing'})
         response = self.advanced_llm.generate(prompt)
-
         if response:
             if "response:" in response:
                 result = response.split("response:")[1].strip()
                 response = result.strip('"')
-                self.history.create_history(user_id, query, response)      
+                self.history.create_history(user_id, query, response)  
+                socket_io_responses(response,user_id)    
                 return {"text":response}
             elif "question:" in response:
                 refactored_question = response.split("question:")[1].strip()
         await self.save_memory(query,user_id)
+        socket_io_responses("Analying Agents",user_id)
         response = self.agent(refactored_question, user_id, token)
         self.history.create_history(user_id, query, response)     
         return response 

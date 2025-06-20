@@ -10,7 +10,7 @@ from app.annotation_graph.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import LLMInterface
 from app.prompts.annotation_prompts import EXTRACT_RELEVANT_INFORMATION_PROMPT, JSON_CONVERSION_PROMPT, SELECT_PROPERTY_VALUE_PROMPT
 from .dfs_handler import *
-
+from app.socket_manager import socket_io_responses
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ class Graph:
                 logger.error(f"Response content: {e.response.text}")
             return {"error": f"Failed to query knowledge graph: {str(e)}"}
 
-    def generate_graph(self, query, token):
+    def generate_graph(self, query, token,user_id):
         try:
             logger.info(f"Starting annotation query processing for question: '{query}'")
 
@@ -80,6 +80,8 @@ class Graph:
             # Validate and update
             validation = self._validate_and_update(initial_json)
             
+            socket_io_responses("Validating Constructed Query Builder Structure",user_id)
+
             # If validation failed, return the intermediate steps
             if validation["validation_report"]["validation_status"] == "failed":
                 logger.error("Validation failed for the constructed json query")
@@ -88,18 +90,19 @@ class Graph:
             # Use the updated JSON for subsequent steps
             validated_json = validation["updated_json"]
             validated_json["question"] = query
+            socket_io_responses(validated_json,user_id)
             # Query knowledge graph with validated JSON
-            graph = self.query_knowledge_graph(validated_json, token)
+            # graph = self.query_knowledge_graph(validated_json, token)
         
-            # Generate final answer using validated JSON
-            # final_answer = self._provide_text_response(query, validated_json, graph)
-            response = {
-                "text": graph["answer"],
-                "resource": {"id": graph["annotation_id"], 
-                             "type": "annotation"},
-            }
-            logger.info("Completed query processing.")
-            return response
+            # # Generate final answer using validated JSON
+            # # final_answer = self._provide_text_response(query, validated_json, graph)
+            # response = {
+            #     "text": graph["answer"],
+            #     "resource": {"id": graph["annotation_id"], 
+            #                  "type": "annotation"},
+            # }
+            # logger.info("Completed query processing.")
+            # return response
             
         except Exception as e:
             logger.error(f"An error occurred during graph generation: {e}")
