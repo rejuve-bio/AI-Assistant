@@ -27,7 +27,12 @@ pypdf2 = "^3.0.1"
 pytest = "^8.3.4"
 autogen-agentchat = {version = ">=0.2,<1.0", extras = ["gemini", "llm"]}
 flask-cors = "^5.0.0"
+pyautogen = {extras = ["gemini"], version = "^0.7.3"}
+bioblend = "^1.5.0"
 
+
+[tool.poetry.group.dev.dependencies]
+autogen-tools = "^0.0.0"
 
 [build-system]
 requires = ["poetry-core"]

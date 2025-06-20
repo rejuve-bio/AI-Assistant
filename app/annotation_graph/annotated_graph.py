@@ -2,6 +2,7 @@ import copy
 import json
 import logging
 from flask import current_app
+import random
 import requests
 import os
 from dotenv import load_dotenv
@@ -10,6 +11,7 @@ from app.annotation_graph.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import LLMInterface
 from app.prompts.annotation_prompts import EXTRACT_RELEVANT_INFORMATION_PROMPT, JSON_CONVERSION_PROMPT, SELECT_PROPERTY_VALUE_PROMPT
 from .dfs_handler import *
+from app.summarizer import Graph_Summarizer
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -26,7 +28,115 @@ class Graph:
                                     username=os.getenv('NEO4J_USERNAME'), 
                                     password=os.getenv('NEO4J_PASSWORD'))
         self.kg_service_url = os.getenv('ANNOTATION_SERVICE_URL')
+        self.graph_summarizer = Graph_Summarizer(self.llm)
 
+
+################################################################################################################################################3
+    # Mock function to query the knowledge graph locally
+    def query_knowledge_graph_local(self, json_query, user_query=None, token=None):
+        # Initialize the Neo4j driver and prepare the graph container.
+        driver = self.neo4j.get_driver()
+        graph = {"nodes": [], "edges": []}
+        added_nodes = {}  # To avoid duplicate nodes keyed by node id
+
+        # Helper function to build property conditions and parameters.
+        def build_conditions_and_params(properties, prefix="src"):
+            conditions = []
+            params = {}
+            for key, value in properties.items():
+                param_key = f"{prefix}_{key}"
+                conditions.append(f"{prefix}.{key} = ${param_key}")
+                params[param_key] = value
+            return " AND ".join(conditions), params
+
+        try:
+            with driver.session() as session:
+                # Process each predicate in the json_query.
+                for predicate in json_query.get("predicates", []):
+                    source_key = predicate.get("source")
+                    target_key = predicate.get("target")
+                    relationship_type = predicate.get("type")
+                    
+                    # Look up the corresponding node definitions.
+                    source_node_def = next((node for node in json_query["nodes"] if node["node_id"] == source_key), None)
+                    target_node_def = next((node for node in json_query["nodes"] if node["node_id"] == target_key), None)
+                    
+                    # Skip this predicate if either node definition is missing.
+                    if not source_node_def or not target_node_def:
+                        continue
+
+                    source_label = source_node_def.get("type", "")
+                    target_label = target_node_def.get("type", "")
+                    source_props = source_node_def.get("properties", {})
+
+                    # Build the property condition and parameters for the source node.
+                    conditions, params = build_conditions_and_params(source_props, prefix="src")
+                    where_clause = f"WHERE {conditions}" if conditions else ""
+                    
+                    # Construct the dynamic Cypher query.
+                    query = f"""
+                        MATCH (src:{source_label})
+                        {where_clause}
+                        MATCH (src)-[r:{relationship_type}]->(tgt:{target_label})
+                        RETURN src, tgt
+                    """
+                    
+                    # Execute the query.
+                    result = session.run(query, **params)
+                    
+                    # Process the result records.
+                    for record in result:
+                        src_node = record["src"]
+                        tgt_node = record["tgt"]
+
+                        # Add the source node if not already added.
+                        if src_node.id not in added_nodes:
+                            node_data = {
+                                "id": str(src_node.id),
+                                "label": source_label,
+                                "properties": dict(src_node)
+                            }
+                            graph["nodes"].append(node_data)
+                            added_nodes[str(src_node.id)] = node_data
+
+                        # Add the target node similarly.
+                        if tgt_node.id not in added_nodes:
+                            node_data = {
+                                "id": str(tgt_node.id),
+                                "label": target_label,
+                                "properties": dict(tgt_node)
+                            }
+                            graph["nodes"].append(node_data)
+                            added_nodes[str(tgt_node.id)] = node_data
+
+                        # Add the edge for the relationship.
+                        edge_data = {
+                            "source": str(src_node.id),
+                            "target": str(tgt_node.id),
+                            "type": relationship_type
+                        }
+                        graph["edges"].append(edge_data)
+                        
+        finally:
+            driver.close()
+
+        # Reformat the graph so each node and edge is encapsulated within a "data" key.
+        formatted_graph = {
+            "nodes": [{"data": node} for node in graph["nodes"]],
+            "edges": [
+                {"data": {"source": edge["source"], "target": edge["target"], "label": edge["type"]}}
+                for edge in graph["edges"]
+            ]
+        }
+
+        response = {}
+        response["graph"] = formatted_graph
+        logger.info(f"Graph data: {formatted_graph}")
+        response["answer"] = self.graph_summarizer.summary(graph=formatted_graph, user_query=user_query)
+        response["annotation_id"] = random.randint(100000, 999999)
+        return response
+
+###################################################################################################################################
     def query_knowledge_graph(self, json_query, token):
         """
         Query the knowledge graph service.
@@ -47,8 +157,7 @@ class Graph:
             "limit": limit,  
             "properties": property
         }
-        payload = {"requests": json_query}
-        
+        payload = {"requests": json_query}     
         try:
             logger.debug(f"Sending request to {self.kg_service_url} with payload: {payload}")
             response = requests.post(
@@ -59,8 +168,10 @@ class Graph:
             )
             response.raise_for_status()
             json_response = response.json()
-            # logger.info(f"Successfully queried the knowledge graph. 'nodes count': {len(json_response.get('nodes'))} 'edges count': {len(json_response.get('edges', []))}")
+            #logger.info(f"Successfully queried the knowledge graph. 'nodes count': {len(json_response.get('nodes'))} 'edges count': {len(json_response.get('edges', []))}")
+           
             return response.json()
+        
         except requests.RequestException as e:
             logger.error(f"Error querying knowledge graph: {e}")
             if e.response is not None:
@@ -89,10 +200,14 @@ class Graph:
             validated_json = validation["updated_json"]
             validated_json["question"] = query
             # Query knowledge graph with validated JSON
-            graph = self.query_knowledge_graph(validated_json, token)
+            #####################################################################
+            graph = self.query_knowledge_graph_local(json_query= validated_json, user_query= query, token=token)
+            #######################################################################
         
             # Generate final answer using validated JSON
             # final_answer = self._provide_text_response(query, validated_json, graph)
+
+            
             response = {
                 "text": graph["answer"],
                 "resource": {"id": graph["annotation_id"], 
@@ -108,8 +223,9 @@ class Graph:
     def _extract_relevant_information(self, query):
         try:
             logger.info("Extracting relevant information from the query.")
+            #print(f"enhanced_schema: {self.enhanced_schema}")
             prompt = EXTRACT_RELEVANT_INFORMATION_PROMPT.format(schema=self.enhanced_schema, query=query)
-            extracted_info =  self.llm.generate(prompt)
+            extracted_info =  self.llm.generate(prompt, system_prompt='Don\'t take the examples as information, they are just a guide on how to format it ont information. Don\'t return the examples as information Return only the extracted information from the query alone, never add any additional information.')
             logger.info(f"Extracted data: \n{extracted_info}")
             return extracted_info
         except Exception as e:
@@ -120,7 +236,7 @@ class Graph:
         try:
             logger.info("Converting relevant information to annotation JSON format.")
             prompt = JSON_CONVERSION_PROMPT.format(query=query, extracted_information=relevant_information, schema=self.enhanced_schema)
-            json_data = self.llm.generate(prompt)
+            json_data = self.llm.generate(prompt=prompt, system_prompt='Return only the JSON in the targeted format, from only the extracted information. Never add any other information')
             logger.info(f"Converted JSON:\n{json.dumps(json_data, indent=2)}")
             return json_data
         except Exception as e:
@@ -202,7 +318,7 @@ class Graph:
                 t = node_types.get(edge['target'])
                 rel = edge['type']
                 conn = f'{s}-{rel}-{t}'
-                
+                #print(f"processe schema {self.schema_handler.processed_schema}")
                 if conn not in self.schema_handler.processed_schema:
                     rev = f'{t}-{rel}-{s}'
                     if rev not in self.schema_handler.processed_schema:
@@ -239,7 +355,7 @@ class Graph:
     def _select_best_matching_property_value(self, user_input_value, possible_values):
         try:
             prompt = SELECT_PROPERTY_VALUE_PROMPT.format(search_query = user_input_value, possible_values=possible_values)
-            selected_value = self.llm.generate(prompt)
+            selected_value = self.llm.generate(prompt, system_prompt='Output should be as described and nothing more.')
             logger.info(f"Selected value: {selected_value}")
             return selected_value
         except Exception as e:

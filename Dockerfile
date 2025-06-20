@@ -15,5 +15,7 @@ COPY . /AI-Assistant
 # Install dependencies
 RUN poetry config virtualenvs.create false && poetry install --no-root
 
+RUN pip install gunicorn
+
 # Run the application
 CMD ["gunicorn", "-w", "4", "--bind", "0.0.0.0:$FLASK_PORT", "run:app"]

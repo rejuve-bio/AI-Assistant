@@ -13,13 +13,13 @@ class DFSHandler:
     def process_schema(self, schema):
         """Processes the schema input into a usable format."""
         """accepts only preprossed_schema.txt """
-        return [line.strip() for line in schema.split('\n') if line.strip()]
+        return [line.strip() for line in schema.split('\n') if line.strip()]# making easy to work with schema
 
     def intial_prompt(self,query):
         prompt = DFS_EXTRACT_NODES.format(schema=self.schema,query=query)
         extracted_info = self.llm.generate(prompt)
         logger.info(f"intial prompt for the given {query} is {extracted_info}")
-        return extracted_info
+        return extracted_info ## setting the scene
 
     def json_format(self,query):
         extracted_info = self.intial_prompt(query)
@@ -34,39 +34,74 @@ class DFSHandler:
             json_format = self.generate_json_from_schema_and_json_query(extracted_info, relations)
         else:
             json_format = self.generate_json_from_schema_and_json_query(extracted_info)
-        return json_format
+        return json_format 
+    # to make sure that the explorer can recored its findings
 
 
-    def extract_relations_between_nodes_dfs(self,current, target, path=None, relationships=None, visited=None):
+    # def extract_relations_between_nodes_dfs(self,current, target, path=None, relationships=None, visited=None):
+    #     from app import schema_handler
+    #     # read the file 
+    #     # return the graph
+    #     graph = schema_handler.schema_graph
+    #     if visited is None:
+    #         visited = set()
+    #     if path is None:
+    #         path = []
+    #     if relationships is None:
+    #         relationships = []
+
+    #     visited.add(current)
+    #     path.append(current)
+
+    #     if current == target:
+    #         # Combine the nodes and relationships into a single explanatory string
+    #         explanation = " -> ".join(f"{path[i]} -> {relationships[i]}" for i in range(len(relationships)))
+    #         explanation += f" -> {path[-1]}"
+    #         return explanation
+ 
+    #     for neighbor, rel in graph[current]:
+    #         if neighbor not in visited:
+    #             explanation = self.extract_relations_between_nodes_dfs(
+    #                 neighbor, target, path.copy(), relationships + [rel], visited.copy()
+    #             )
+    #             if explanation:
+    #                 return explanation
+    #     return None
+        ## the depth first search algorithm where we go through the graph, to make sure the query makes sense
+        ## maybe the breadth first search can be more effective
+            
+    
+
+    def extract_relations_between_nodes_bfs(self, start, target):
         from app import schema_handler
-        # read the file 
-        # return the graph
+        from collections import deque
         graph = schema_handler.schema_graph
-        if visited is None:
-            visited = set()
-        if path is None:
-            path = []
-        if relationships is None:
-            relationships = []
 
-        visited.add(current)
-        path.append(current)
+        visited = set()
+        queue = deque()
+        # Each queue element is a tuple: (current_node, path_taken, relationships_collected)
+        queue.append((start, [start], []))
+        visited.add(start)
 
-        if current == target:
-            # Combine the nodes and relationships into a single explanatory string
-            explanation = " -> ".join(f"{path[i]} -> {relationships[i]}" for i in range(len(relationships)))
-            explanation += f" -> {path[-1]}"
-            return explanation
+        while queue:
+            current_node, path, relationships = queue.popleft()
 
-        for neighbor, rel in graph[current]:
-            if neighbor not in visited:
-                explanation = self.extract_relations_between_nodes_dfs(
-                    neighbor, target, path.copy(), relationships + [rel], visited.copy()
-                )
-                if explanation:
-                    return explanation
-        return None
-        
+            if current_node == target:
+                # Construct the explanation string
+                explanation = " -> ".join(f"{path[i]} -> {relationships[i]}" for i in range(len(relationships)))
+                explanation += f" -> {path[-1]}"
+                return explanation
+
+            # Explore all neighbors of the current node
+            # Adjust the next line based on how your graph stores neighbors/relationships
+            for neighbor, rel in graph[current_node]:  # Assumes graph structure provides (neighbor, relationship)
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    new_path = path + [neighbor]
+                    new_rels = relationships + [rel]
+                    queue.append((neighbor, new_path, new_rels))
+
+        return None  # If no path exists
     
     def generate_json_from_schema_and_json_query(self,prompt_answer, traversal_data=None, schema=schema, nodes_template=nodes_template, predicates_template=predicates_template):
         # Extract node properties from the schema
@@ -125,7 +160,8 @@ class DFSHandler:
 
             # Store the node ID in the mapping using the type as the key
             node_id_map[node_type] = new_node['node_id']  # Map node type to node ID
-            return new_node
+            return new_node 
+        ## where the cypher query is built from the DFS search above
 
         def handle_node(node_data):
             """Handles the creation of a node based on the prompt answer and schema."""

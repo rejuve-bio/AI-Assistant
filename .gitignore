@@ -3,8 +3,6 @@ poetry.lock
 .env
 conversation_cache.json
 qdrant_storage
-biocypher-log
+biocypher-log/
 .cache
 user_pdf.json
-history.json
-logfiles

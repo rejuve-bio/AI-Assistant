@@ -7,7 +7,7 @@ load_dotenv()
 JWT_SECRET = os.getenv("JWT_SECRET")
 
 def access_token_generator():
-    token = jwt.encode({"user_id": "some_id"}, JWT_SECRET, algorithm="HS256")
+    token = jwt.encode({"user_id": "1234"}, JWT_SECRET, algorithm="HS256")
     return token
 
 if __name__ == '__main__':
