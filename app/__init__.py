@@ -1,14 +1,16 @@
+from app.annotation_graph.schema_handler import SchemaHandler
+from app.llm_handle.llm_models import get_llm_model
+from app.storage.qdrant import Qdrant
+from app.main import AiAssistance
+from app.rag.rag import RAG
+from app.socket_manager import init_socketio
+import redis
 import logging
 from flask import Flask
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 from flask_cors import CORS
-from app.annotation_graph.schema_handler import SchemaHandler
-from app.llm_handle.llm_models import get_llm_model
-from app.storage.qdrant import Qdrant
-from app.main import AiAssistance
-from app.rag.rag import RAG
 from .routes import main_bp
 import os
 import yaml
@@ -104,6 +106,11 @@ def create_app():
     app.config['ai_assistant'] = ai_assistant
     logger.info('App config populated with models and assistants')
 
+    # Initialize SocketIO
+    socketio = init_socketio(app)
+    app.config['socketio'] = socketio
+    logger.info('SocketIO initialized and stored in app config')
+
     # intialize qdrant connection
     # uploading data first time
     try:
@@ -134,6 +141,6 @@ def create_app():
     logger.info('Blueprint "main_bp" registered')
 
     logger.info('Flask app created successfully')
-    return app
+    return app, socketio
 
 from app import routes

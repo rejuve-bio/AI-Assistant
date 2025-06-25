@@ -29,6 +29,8 @@ autogen-agentchat = {version = ">=0.2,<1.0", extras = ["gemini", "llm"]}
 flask-cors = "^5.0.0"
 sqlalchemy = "^2.0.41"
 redis = "^6.2.0"
+flask-socketio = "^5.5.1"
+eventlet = "^0.40.1"
 
 
 [build-system]

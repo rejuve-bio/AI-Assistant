@@ -231,7 +231,7 @@ class AiAssistance:
             await self.store.save_user_information(self.advanced_llm,query, user_id, context)
             return {"text": "I'm sorry, I couldn't generate a response at this time."}
     
-    def assistant_response(self,query,user_id,token,graph=None,graph_id=None,file=None,resource="annotation"):  
+    def assistant_response(self,query,user_id,token,graph=None,graph_id=None,file=None,resource="annotation",json_query=None):  
         try:
             logger.info(f"passes parameters are query = {query}, user_id= {user_id}, graphid={graph_id}, graph = {graph}, resource = {resource}")
             if (file and query) or (file and graph):
