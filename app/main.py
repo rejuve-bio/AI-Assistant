@@ -22,6 +22,9 @@ import asyncio
 import json
 import autogen
 import os
+from flask_socketio import emit
+from app.socket_manager import get_socketio
+
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +32,7 @@ logger = logging.getLogger(__name__)
 log_dir = "/AI-Assistant/logfiles"
 log_file = os.path.join(log_dir, "Assistant.log")
 
-os.makedirs(log_dir, exist_ok=True)
+# os.makedirs(log_dir, exist_ok=True)
 
 logger.setLevel(logging.DEBUG)
 loghandle = loghandlers.TimedRotatingFileHandler(
@@ -51,6 +54,7 @@ class AiAssistance:
         self.history = History()
         self.store = DatabaseManager()
         self.hypothesis_generation = HypothesisGeneration(advanced_llm)
+        self.socketio = None  # Will be set by socketmanager
     
         if self.advanced_llm.model_provider == 'gemini':
             self.llm_config = [{"model":"gemini-1.5-flash","api_key": self.advanced_llm.api_key}]
@@ -70,7 +74,7 @@ class AiAssistance:
         #                     Do not respond with explanations or summaries—just run the tool and return its result.
         #                     End your response with 'TERMINATE'.
         #                 """))
-
+        
         annotation_validate_agent = AssistantAgent(
             name="validate a json format for a validation",
             llm_config = {"config_list" : self.llm_config},
@@ -144,8 +148,9 @@ class AiAssistance:
         @annotation_validate_agent.register_for_llm(description="retrieve the json format provided from the tool")
         def get_json_format() -> str:
             try:
+                emit('update', {'response': 'Constructing A valid query builder format'}, room=user_id)
                 logger.info(f"Generating graph with arguments: {message}")  # Add this line to log the arguments
-                response = self.annotation_graph.validated_json(message)
+                response = self.annotation_graph.validated_json(message,user_id)
                 return response
             except Exception as e:                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
                 logger.error("Error in generating graph", exc_info=True)
@@ -195,6 +200,16 @@ class AiAssistance:
             return response
         return group_chat.messages[1]['content']
     
+    def emit_to_user(self, message, user_id):
+        """Helper method to emit updates to user"""
+        try:
+            socketio_instance = get_socketio() or self.socketio
+            if socketio_instance:
+                socketio_instance.emit('update', {'response': message}, room=user_id)
+                logger.info(f"Emitted to user {user_id}: {message}")
+        except Exception as e:
+            logger.error(f"Error emitting to user {user_id}: {e}")
+
     async def assistant(self,query,user_id, token, user_context=None,context=None):
         try:
             user_information = self.store.get_context_and_memory(user_id)
@@ -208,6 +223,7 @@ class AiAssistance:
             memory = {""}
         prompt = conversation_prompt.format(memory=memory,query=query,history=history,user_context=user_context)
         response = self.advanced_llm.generate(prompt)
+        self.emit_to_user('Initializing assistant...', user_id)
 
         if response:
             if "response:" in response:
@@ -221,6 +237,7 @@ class AiAssistance:
                 refactored_question = response.split("question:")[1].strip()
                 await self.store.save_user_information(self.advanced_llm,query, user_id, context)
                 agent_response = self.agent(refactored_question, user_id, token)
+                self.emit_to_user('Analyzing your question...', user_id)
                 return agent_response
             else:
                 logger.warning(f"Unexpected response format: {response}")

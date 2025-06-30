@@ -31,6 +31,7 @@ sqlalchemy = "^2.0.41"
 redis = "^6.2.0"
 flask-socketio = "^5.5.1"
 eventlet = "^0.40.1"
+websocket-client = "^1.8.0"
 
 
 [build-system]
