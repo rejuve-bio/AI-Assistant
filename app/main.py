@@ -443,7 +443,7 @@ class AiAssistance:
                 logger.info(f"Executing a json query {json_query} to the annotation service")
                 try:
                     logger.info(f"Generating graph with arguments: {json_query}")  # Add this line to log the arguments
-                    response = self.annotation_graph.generate_graph(f"json format accepted from the user is {json}",json,token)
+                    response = self.annotation_graph.generate_graph(f"",json_query,token)
                     return response
                 except Exception as e:
                     logger.error("Error in generating graph", exc_info=True)
