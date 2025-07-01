@@ -99,8 +99,10 @@ class Graph:
             if validation["validation_report"]["validation_status"] == "failed":
                 logger.error("Validation is failing *****sending the intial json format")
                 return {
-                    "text": "Here is the structured JSON for your question. Please review and confirm if it's accurate.",
+                    "text": None,
                     "json_format": initial_json,
+                     "resource": {"id": None, 
+                             "type": "annotation"},
                 }
 
             # Use the updated JSON for subsequent steps
