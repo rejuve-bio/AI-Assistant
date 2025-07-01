@@ -131,7 +131,7 @@ class Graph:
                              "type": "annotation"},
             }
             # Store summary in Redis cache for 24 hours
-            self.redis_graph_manager.create_graph(graph_id=graph_id, graph_summary=summary_text)
+            # self.redis_graph_manager.create_graph(graph_id=graph_id, graph_summary=summary_text)
 
             logger.info("Completed query processing.")
             return response
