@@ -9,150 +9,36 @@ from app.summarizer import Graph_Summarizer
 from app.hypothesis_generation.hypothesis import HypothesisGeneration
 from app.storage.history import History
 from app.storage.sql_redis_storage import DatabaseManager
+from app.socket_manager import get_socketio
 import asyncio
 import logging.handlers as loghandlers
 from dotenv import load_dotenv
-from typing import Annotated
 import traceback
-import logging
-import asyncio
 import json
 import os
 from flask_socketio import emit
-from app.socket_manager import get_socketio
-
-
-logger = logging.getLogger(__name__)
-
-
-log_dir = "/AI-Assistant/logfiles"
-log_file = os.path.join(log_dir, "Assistant.log")
-
-# os.makedirs(log_dir, exist_ok=True)
-
-logger.setLevel(logging.DEBUG)
-loghandle = loghandlers.TimedRotatingFileHandler(
-                filename="logfiles/Assistant.log",
-                when='D', interval=1, backupCount=7,
-                encoding="utf-8")
-loghandle.setFormatter(
-    logging.Formatter("%(asctime)s %(message)s"))
-logger.addHandler(loghandle)
-load_dotenv()
-from typing import TypedDict, Literal, List, Optional, Any
-from langgraph.graph import StateGraph, END, START
-from langgraph.checkpoint.memory import MemorySaver
-import re
-import logging
-
-logger = logging.getLogger(__name__)
-
-from .llm_handle.llm_models import LLMInterface,OpenAIModel,get_llm_model,openai_embedding_model
-from .annotation_graph.annotated_graph import Graph
-from app.annotation_graph.schema_handler import SchemaHandler
-from app.rag.rag import RAG
-from app.prompts.conversation_handler import conversation_prompt
-from app.prompts.classifier_prompt import classifier_prompt
-from app.summarizer import Graph_Summarizer
-from app.hypothesis_generation.hypothesis import HypothesisGeneration
-from app.storage.history import History
-from app.storage.sql_redis_storage import DatabaseManager
-import asyncio
-import logging.handlers as loghandlers
-from dotenv import load_dotenv
-from typing import Annotated
-import traceback
-import logging
-import asyncio
-import json
-import os
-import uuid
-
-logger = logging.getLogger(__name__)
-
-
-log_dir = "/AI-Assistant/logfiles"
-log_file = os.path.join(log_dir, "Assistant.log")
-
-# os.makedirs(log_dir, exist_ok=True)
-
-logger.setLevel(logging.DEBUG)
-loghandle = loghandlers.TimedRotatingFileHandler(
-                filename="logfiles/Assistant.log",
-                when='D', interval=1, backupCount=7,
-                encoding="utf-8")
-loghandle.setFormatter(
-    logging.Formatter("%(asctime)s %(message)s"))
-logger.addHandler(loghandle)
-load_dotenv()
-from .llm_handle.llm_models import LLMInterface,OpenAIModel,get_llm_model,openai_embedding_model
-from .annotation_graph.annotated_graph import Graph
-from app.annotation_graph.schema_handler import SchemaHandler
-from app.rag.rag import RAG
-from app.prompts.conversation_handler import conversation_prompt
-from app.prompts.classifier_prompt import classifier_prompt
-from app.summarizer import Graph_Summarizer
-from app.hypothesis_generation.hypothesis import HypothesisGeneration
-from app.storage.history import History
-from app.storage.sql_redis_storage import DatabaseManager
-import asyncio
-import logging.handlers as loghandlers
-from dotenv import load_dotenv
-from typing import Annotated
-import traceback
-import logging
-import asyncio
-import json
-import os
-import uuid
-
-logger = logging.getLogger(__name__)
-
-
-log_dir = "/AI-Assistant/logfiles"
-log_file = os.path.join(log_dir, "Assistant.log")
-
-# os.makedirs(log_dir, exist_ok=True)
-
-logger.setLevel(logging.DEBUG)
-loghandle = loghandlers.TimedRotatingFileHandler(
-                filename="logfiles/Assistant.log",
-                when='D', interval=1, backupCount=7,
-                encoding="utf-8")
-loghandle.setFormatter(
-    logging.Formatter("%(asctime)s %(message)s"))
-logger.addHandler(loghandle)
-load_dotenv()
-from typing import TypedDict, Literal, List, Optional, Any
-from langgraph.graph import StateGraph, END, START
-from langgraph.checkpoint.memory import MemorySaver
-import re
-import logging
-
-logger = logging.getLogger(__name__)
-
-import re
-import uuid
-import logging
-from typing import TypedDict, Optional, List, Literal
-from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
-
-logger = logging.getLogger(__name__)
-
-from typing import TypedDict, Annotated, List, Dict, Any
+from typing import TypedDict, List, Annotated, Any,Dict
 from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_core.tools import tool
-from langchain_core.language_models import BaseLLM
 import operator
 import logging
-import traceback
 
 logger = logging.getLogger(__name__)
+log_dir = "/AI-Assistant/logfiles"
+log_file = os.path.join(log_dir, "Assistant.log")
+# os.makedirs(log_dir, exist_ok=True)
+logger.setLevel(logging.DEBUG)
+loghandle = loghandlers.TimedRotatingFileHandler(
+                filename="logfiles/Assistant.log",
+                when='D', interval=1, backupCount=7,
+                encoding="utf-8")
+loghandle.setFormatter(
+    logging.Formatter("%(asctime)s %(message)s"))
+logger.addHandler(loghandle)
+logger = logging.getLogger(__name__)
+load_dotenv()
 
-# Define the state schema
 class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], operator.add]
     user_query: str
@@ -173,14 +59,11 @@ class AiAssistance:
         self.history = History()
         self.store = DatabaseManager()
         self.hypothesis_generation = HypothesisGeneration(advanced_llm)
-        self.socketio = None  # Will be set by socketmanager
+        
+        # Initialize the LangGraph workflow
+        self.workflow = self._create_workflow()
+        self.app = self.workflow.compile()
     
-        if self.advanced_llm.model_provider == 'gemini':
-            self.llm_config = [{"model":"gemini-1.5-flash","api_key": self.advanced_llm.api_key}]
-        else:
-            self.llm_config = [{"model": self.advanced_llm.model_name, "api_key":self.advanced_llm.api_key}]
-
-   
     def emit_to_user(self, message, user_id):
         """Helper method to emit updates to user"""
         try:
@@ -191,271 +74,6 @@ class AiAssistance:
         except Exception as e:
             logger.error(f"Error emitting to user {user_id}: {e}")
 
-    async def assistant(self,query,user_id, token, user_context=None,context=None):
-        try:
-            user_information = self.store.get_context_and_memory(user_id)
-            context=None 
-            memory=user_information['memories']
-            history = user_information['questions']
-            logger.info(f"here is the memory and history {memory} {history}")
-        except:
-            context = {""}
-            history = {""}
-            memory = {""}
-        prompt = conversation_prompt.format(memory=memory,query=query,history=history,user_context=user_context)
-        response = self.advanced_llm.generate(prompt)
-        self.emit_to_user('Initializing assistant...', user_id)
-
-        if response:
-            if "response:" in response:
-                result = response.split("response:")[1].strip()
-                final_response = result.strip('"')
-                await self.store.save_user_information(self.advanced_llm,query, user_id, context)
-                self.history.create_history(user_id, query, final_response)
-                return {"text": final_response}
-                
-            elif "question:" in response:
-                refactored_question = response.split("question:")[1].strip()
-                await self.store.save_user_information(self.advanced_llm,query, user_id, context)
-                agent_response = self.agent(refactored_question, user_id, token)
-                self.emit_to_user('Analyzing your question...', user_id)
-                return agent_response
-            else:
-                logger.warning(f"Unexpected response format: {response}")
-                await self.store.save_user_information(self.advanced_llm,query, user_id, context)
-                return {"text": response or "I'm sorry, I couldn't process your request properly."}
-        
-        # Build the workflow graph
-        self.workflow = self._build_workflow()
-        self.app = self.workflow.compile(checkpointer=MemorySaver())
-
-    def _build_workflow(self):
-        workflow = StateGraph(AgentState)
-        
-        # Add nodes
-        workflow.add_node("router", self._route_query)
-        workflow.add_node("annotation_agent", self._annotation_agent)
-        workflow.add_node("hypothesis_agent", self._hypothesis_agent)
-        workflow.add_node("rag_agent", self._rag_agent)
-        workflow.add_node("graph_id_agent", self._graph_id_agent)
-        workflow.add_node("combiner", self._combine_responses)
-        
-        # Add edges
-        workflow.add_edge(START, "router")
-        workflow.add_conditional_edges(
-            "router",
-            self._route_decision,
-            {
-                "annotation": "annotation_agent",
-                "hypothesis": "hypothesis_agent", 
-                "rag": "rag_agent"
-            }
-        )
-        
-        # From each agent, check if graph_id agent is needed
-        workflow.add_conditional_edges(
-            "annotation_agent",
-            self._check_graph_id_needed,
-            {
-                "graph_id": "graph_id_agent",
-                "combiner": "combiner"
-            }
-        )
-        
-        workflow.add_conditional_edges(
-            "hypothesis_agent", 
-            self._check_graph_id_needed,
-            {
-                "graph_id": "graph_id_agent",
-                "combiner": "combiner"
-            }
-        )
-        
-        workflow.add_conditional_edges(
-            "rag_agent",
-            self._check_graph_id_needed, 
-            {
-                "graph_id": "graph_id_agent",
-                "combiner": "combiner"
-            }
-        )
-        
-        workflow.add_edge("graph_id_agent", "combiner")
-        workflow.add_edge("combiner", END)
-        
-        return workflow
-
-    def _parse_input_message(self, message_input) -> tuple[str, Optional[str]]:
-        """Parse input message which can be string or dictionary"""
-        if isinstance(message_input, dict):
-            question = message_input.get('question', '')
-            graph_id = message_input.get('graph_id', None)
-            return question, graph_id
-        else:
-            # Fallback to string parsing for backward compatibility
-            return message_input, self._extract_graph_id_from_string(message_input)
-    
-    def _extract_graph_id_from_string(self, message: str) -> Optional[str]:
-        """Extract graph ID from string message if present (fallback method)"""
-        patterns = [
-            r'graph[_\s]*id[:\s]*([a-zA-Z0-9_-]+)',
-            r'graph[:\s]*([a-zA-Z0-9_-]+)',
-            r'id[:\s]*([a-zA-Z0-9_-]+)'
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, message.lower())
-            if match:
-                return match.group(1)
-        return None
-
-    def _route_query(self, state: AgentState) -> AgentState:
-        """Route the query to appropriate agent and extract graph_id if present"""
-        # Parse the input message (dictionary or string)
-        message, graph_id = self._parse_input_message(state["input_dict"])
-        
-        # Update state with parsed values
-        state["message"] = message
-        state["graph_id"] = graph_id
-        state["needs_graph_id_agent"] = graph_id is not None
-        state["agents_completed"] = []
-        
-        # Determine primary agent based on message content
-        message_lower = message.lower()
-        if self._is_annotation_query(message_lower):
-            state["current_agent"] = "annotation"
-        elif self._is_hypothesis_query(message_lower):
-            state["current_agent"] = "hypothesis"
-        else:
-            state["current_agent"] = "rag"
-            
-        return state
-
-    def _is_annotation_query(self, message: str) -> bool:
-        """Detect annotation-related queries"""
-        annotation_keywords = [
-            "gene id", "ensg", "protein information", "tp53", "brca1", "brca2",
-            "gene-gene interactions", "documented relationships", "established facts"
-        ]
-        return any(keyword in message for keyword in annotation_keywords)
-
-    def _is_hypothesis_query(self, message: str) -> bool:
-        """Detect hypothesis generation queries"""
-        hypothesis_keywords = [
-            "how might", "could", "possibly", "potential mechanisms",
-            "causal relationships", "explain variants", "rs numbers",
-            "phenotypes", "biological processes"
-        ]
-        return any(keyword in message for keyword in hypothesis_keywords)
-
-    def _route_decision(self, state: AgentState) -> Literal["annotation", "hypothesis", "rag"]:
-        """Return the routing decision"""
-        return state["current_agent"]
-
-    def _annotation_agent(self, state: AgentState) -> AgentState:
-        """Handle annotation-related queries"""
-        try:
-            logger.info(f"Annotation agent processing: {state['message']}")
-            response = self.annotation_graph.validated_json(state["message"])
-            state["annotation_response"] = response
-            state["agents_completed"].append("annotation")
-        except Exception as e:
-            logger.error("Error in annotation agent", exc_info=True)
-            state["annotation_response"] = f"I couldn't generate a graph for the given question {state['message']} please try again."
-            state["agents_completed"].append("annotation")
-        
-        return state
-
-    def _hypothesis_agent(self, state: AgentState) -> AgentState:
-        """Handle hypothesis generation queries"""
-        try:
-            logger.info(f"Hypothesis agent processing: {state['message']}")
-            response = self.hypothesis_generation.generate_hypothesis(
-                token=state["token"],
-                user_query=state["message"]
-            )
-            state["hypothesis_response"] = response
-            state["agents_completed"].append("hypothesis")
-        except Exception as e:
-            logger.error("Error in hypothesis agent", exc_info=True)
-            state["hypothesis_response"] = "Error in generating hypothesis."
-            state["agents_completed"].append("hypothesis")
-        
-        return state
-
-    def _rag_agent(self, state: AgentState) -> AgentState:
-        """Handle general information queries"""
-        try:
-            logger.info(f"RAG agent processing: {state['message']}")
-            response = self.rag.get_result_from_rag(state["message"], state["user_id"])
-            state["rag_response"] = response
-            state["agents_completed"].append("rag")
-        except Exception as e:
-            logger.error("Error in RAG agent", exc_info=True)
-            state["rag_response"] = "Error in retrieving response."
-            state["agents_completed"].append("rag")
-        
-        return state
-
-    def _graph_id_agent(self, state: AgentState) -> AgentState:
-        """Handle graph ID specific queries"""
-        try:
-            logger.info(f"Graph ID agent processing graph_id: {state['graph_id']}")
-            # Replace this with your actual graph ID processing function
-            response = self._process_graph_id(state["graph_id"], state["token"])
-            state["graph_id_response"] = response
-            state["agents_completed"].append("graph_id")
-        except Exception as e:
-            logger.error("Error in graph ID agent", exc_info=True)
-            state["graph_id_response"] = f"Error processing graph ID: {state['graph_id']}"
-            state["agents_completed"].append("graph_id")
-        
-        return state
-
-    def _process_graph_id(self, graph_id: str, token: str) -> str:
-        """
-        Process the graph ID and return relevant information
-        Replace this with your actual graph ID processing logic
-        """
-        # This is a placeholder - implement your actual graph ID processing function
-        # For example: return self.graph_processor.process_graph_id(graph_id, token)
-        return f"Processed graph ID: {graph_id} with additional context"
-
-    def _check_graph_id_needed(self, state: AgentState) -> Literal["graph_id", "combiner"]:
-        """Check if graph ID agent is needed"""
-        if state["needs_graph_id_agent"] and "graph_id" not in state["agents_completed"]:
-            return "graph_id"
-        return "combiner"
-
-    def _combine_responses(self, state: AgentState) -> AgentState:
-        """Combine responses from multiple agents"""
-        responses = []
-        
-        # Add primary agent response
-        if state.get("annotation_response"):
-            responses.append(f"Annotation Analysis: {state['annotation_response']}")
-        elif state.get("hypothesis_response"):
-            responses.append(f"Hypothesis Generation: {state['hypothesis_response']}")
-        elif state.get("rag_response"):
-            responses.append(f"General Information: {state['rag_response']}")
-        
-        # Add graph ID response if available
-        if state.get("graph_id_response"):
-            responses.append(f"Graph ID Analysis: {state['graph_id_response']}")
-        
-        # Combine all responses
-        if len(responses) > 1:
-            state["final_response"] = "\n\n".join(responses)
-        elif len(responses) == 1:
-            state["final_response"] = responses[0]
-        else:
-            state["final_response"] = "I'm sorry, I couldn't process your request properly."
-        return state
-        
-        # Initialize the LangGraph workflow
-        self.workflow = self._create_workflow()
-        self.app = self.workflow.compile()
-    
     def _create_workflow(self) -> StateGraph:
         """Create the LangGraph workflow"""
         
@@ -544,7 +162,7 @@ class AiAssistance:
             "query_type": query_type,
             "messages": [HumanMessage(content=f"Query classified as: {query_type}")]
         }
-
+        
     def _route_query(self, state: AgentState) -> str:
         """Route query based on classification"""
         return state.get("query_type", "rag")
@@ -553,8 +171,7 @@ class AiAssistance:
         """Handle annotation-related queries"""
         try:
             # Use the annotation graph tool
-            logger.info("Making annotation query formats")
-            response = self.annotation_graph.validated_json(state["user_query"])
+            response = self.annotation_graph.validated_json(state["user_query"], user_id=state["user_id"])
             
             return {
                 "response": response,
@@ -571,7 +188,6 @@ class AiAssistance:
     def _hypothesis_agent(self, state: AgentState) -> Dict[str, Any]:
         """Handle hypothesis generation queries"""
         try:
-            logger.info("Analyzing hypothesis analysis")
             response = self.hypothesis_generation.generate_hypothesis(
                 token=state["token"], 
                 user_query=state["user_query"]
@@ -592,7 +208,6 @@ class AiAssistance:
     def _rag_agent(self, state: AgentState) -> Dict[str, Any]:
         """Handle general information queries"""
         try:
-            logger.info("Analyzing answers from RAG")
             response = self.rag.get_result_from_rag(state["user_query"], state["user_id"])
             
             return {
@@ -648,7 +263,6 @@ class AiAssistance:
         except Exception as e:
             logger.error("Error in agent processing", exc_info=True)
             return f"Error processing query: {str(e)}"
-          
 
     async def assistant(self, query, user_id: str, token: str, user_context=None, context=None):
 
