@@ -303,16 +303,8 @@ class AiAssistance:
             elif "question:" in response:
                 refactored_question = response.split("question:")[1].strip()
                 await self.store.save_user_information(self.advanced_llm, question_text, user_id, context)
-                
-                # For refactored questions, we need to handle the format properly
-                if isinstance(query, dict) and query.get('graph_id'):
-                    # Preserve graph_id in refactored query
-                    agent_input = {'question': refactored_question, 'graph_id': query['graph_id']}
-                else:
-                    agent_input = refactored_question
-                    
-                agent_response = self.agent(agent_input, user_id, token)
-                return {"text": agent_response}
+                agent_response = self.agent(refactored_question, user_id, token)
+                return agent_response
             else:
                 logger.warning(f"Unexpected response format: {response}")
                 await self.store.save_user_information(self.advanced_llm, question_text, user_id, context)
