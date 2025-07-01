@@ -92,7 +92,7 @@ class Graph:
             initial_json = self._convert_to_annotation_json(relevant_information, query)
             
             # Validate and update
-            self.emit_to_user('Validating Constructed Formats according to schema...', user_id)
+            self.emit_to_user('Validating Constructed Format...', user_id)
             validation = self._validate_and_update(initial_json)
             
             # If validation failed, return the intermediate steps

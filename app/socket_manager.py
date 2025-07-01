@@ -14,7 +14,7 @@ load_dotenv()
 # Initialize SocketIO with Redis integration for scaling
 socketio = None
 redis_client = None
-
+user = None
 def init_socketio(app):
     """Initialize the SocketIO instance with Redis message queue for scaling."""
     global socketio, redis_client
@@ -88,10 +88,9 @@ def register_socket_events(socketio_instance):
         if user_id and query:
             logger.info(f"Received question from {user_id}: {query}")
             
-            # Emit initial acknowledgment
-            emit('update', {'response': 'Processing your question...'}, room=user_id)
-            
             try:
+                global user
+                user_id = user_id
                 from flask import current_app
                 ai_assistant = current_app.config['ai_assistant']
                 
@@ -144,3 +143,14 @@ def register_socket_events(socketio_instance):
 # Make socketio instance available globally
 def get_socketio():
     return socketio
+
+def emit_to_user(self, message, user_id=user):
+    """Helper method to emit updates to user"""
+    try:
+        socketio_instance = get_socketio()
+        if socketio_instance:
+            socketio_instance.emit('update', {'response': message}, room=user_id)
+            logger.info(f"Emitted to user {user_id}: {message}")
+    except Exception as e:
+        logger.error(f"Error emitting to user {user_id}: {e}")
+        

@@ -9,7 +9,6 @@ from app.summarizer import Graph_Summarizer
 from app.hypothesis_generation.hypothesis import HypothesisGeneration
 from app.storage.history import History
 from app.storage.sql_redis_storage import DatabaseManager
-from app.socket_manager import get_socketio
 import asyncio
 import logging.handlers as loghandlers
 from dotenv import load_dotenv
@@ -63,16 +62,6 @@ class AiAssistance:
         # Initialize the LangGraph workflow
         self.workflow = self._create_workflow()
         self.app = self.workflow.compile()
-    
-    def emit_to_user(self, message, user_id):
-        """Helper method to emit updates to user"""
-        try:
-            socketio_instance = get_socketio() or self.socketio
-            if socketio_instance:
-                socketio_instance.emit('update', {'response': message}, room=user_id)
-                logger.info(f"Emitted to user {user_id}: {message}")
-        except Exception as e:
-            logger.error(f"Error emitting to user {user_id}: {e}")
 
     def _create_workflow(self) -> StateGraph:
         """Create the LangGraph workflow"""
@@ -170,6 +159,7 @@ class AiAssistance:
     def _annotation_agent(self, state: AgentState) -> Dict[str, Any]:
         """Handle annotation-related queries"""
         try:
+            self.emit_to_user("Creating Query Builder Format...")
             # Use the annotation graph tool
             response = self.annotation_graph.validated_json(state["user_query"], user_id=state["user_id"])
             
@@ -291,13 +281,14 @@ class AiAssistance:
             user_context=user_context
         )
         response = self.advanced_llm.generate(prompt)
-
+        self.emit_to_user("Analyzing...")
         if response:
             if "response:" in response:
                 result = response.split("response:")[1].strip()
                 final_response = result.strip('"')
                 await self.store.save_user_information(self.advanced_llm, question_text, user_id, context)
                 self.history.create_history(user_id, question_text, final_response)
+                self.emit_to_user(final_response)
                 return {"text": final_response}
                 
             elif "question:" in response:
