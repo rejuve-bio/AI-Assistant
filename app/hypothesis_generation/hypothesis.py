@@ -2,6 +2,7 @@
 from typing import Dict, Any, Tuple, Optional, List, Union
 from app.prompts.hypothesis_prompt import hypothesis_format_prompt,hypothesis_response
 from app.storage.sql_redis_storage import RedisGraphManager
+from socket_manager import emit_to_user
 import logging
 import os
 import difflib
@@ -148,6 +149,7 @@ class HypothesisGeneration:
         
         if not selected_go_term:
             logger.warning("No valid GO term found for hypothesis")
+            emit_to_user("No valid GO term found for the hypothesis.",status="completed")
             return {"error": "No valid GO term found."}, {}, ""
         
         # Store selected GO term information
@@ -170,6 +172,7 @@ class HypothesisGeneration:
             return summary_response["summary"], summary_response["graph"], go_term_used
         else:
             logger.error("Failed to fetch graph and summary")
+            emit_to_user("Failed to fetch graph",status="completed")
             return {"error": "Failed to fetch graph and summary"}, {}, ""
 
     def get_by_hypothesis_id(self, token: str, hypothesis_id: str, query=None) -> Dict[str, Any]:
@@ -326,6 +329,7 @@ class HypothesisGeneration:
         logger.info(f"Processing complete hypothesis generation for: {user_query}")
         
         # Get hypothesis ID and retrieved keys
+        emit_to_user("Generating hypothesis...",status="completed")
         result = self.get_hypothesis(token, user_query)
         
         # Check if we got an error instead of a tuple
@@ -335,12 +339,14 @@ class HypothesisGeneration:
 
         hypothesis_id, retrieved_keys = result
         
-        # Get enriched data
+        # Get enriched 
         enriched_data, graph, go_term_used = self.get_enrich_id_genes_GO_terms(token, hypothesis_id, retrieved_keys)
+        emit_to_user(f"Generating hypothesis using GO term {go_term_used}...")
         
         if "error" in enriched_data:
             logger.error(f"Failed to enrich hypothesis data: {enriched_data['error']}")
-            return {"text": f"No hypothesis is found: {enriched_data['error']}"}
+            emit_to_user(f"No hypothesis is")
+            return {"text": f"No hypothesis is found: {enriched_data['error']}",,status="completed"}
         
         # Generate final response
         logger.info("Generating final hypothesis response")
@@ -358,6 +364,11 @@ class HypothesisGeneration:
         self.redis_graph_manager.create_graph(graph_id=hypothesis_id, graph_summary=response_text)
 
         # Return in the new format with resource information
+        emit_to_user({"text": response_text,
+            "resource": {
+                "id": hypothesis_id,
+                "type": "hypothesis"}},status="completed")
+        
         return {
             "text": response_text,
             "resource": {

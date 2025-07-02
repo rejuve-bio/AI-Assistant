@@ -90,7 +90,7 @@ def register_socket_events(socketio_instance):
             
             try:
                 global user
-                user_id = user_id
+                user = user_id
                 from flask import current_app
                 ai_assistant = current_app.config['ai_assistant']
                 
@@ -144,12 +144,13 @@ def register_socket_events(socketio_instance):
 def get_socketio():
     return socketio
 
-def emit_to_user(self, message, user_id=user):
+def emit_to_user(message,status="update", user_id=user):
     """Helper method to emit updates to user"""
     try:
+        print(f"***************************{user_id}***************************")
         socketio_instance = get_socketio()
         if socketio_instance:
-            socketio_instance.emit('update', {'response': message}, room=user_id)
+            socketio_instance.emit(status, {'response': message}, room=user_id)
             logger.info(f"Emitted to user {user_id}: {message}")
     except Exception as e:
         logger.error(f"Error emitting to user {user_id}: {e}")

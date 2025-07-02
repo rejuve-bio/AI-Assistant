@@ -11,7 +11,7 @@ from app.llm_handle.llm_models import LLMInterface
 from app.prompts.annotation_prompts import EXTRACT_RELEVANT_INFORMATION_PROMPT, JSON_CONVERSION_PROMPT, SELECT_PROPERTY_VALUE_PROMPT
 from .dfs_handler import *
 from app.storage.sql_redis_storage import RedisGraphManager
-from app.socket_manager import get_socketio
+from app.socket_manager import emit_to_user
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -28,16 +28,6 @@ class Graph:
                                     password=os.getenv('NEO4J_PASSWORD'))
         self.kg_service_url = os.getenv('ANNOTATION_SERVICE_URL')
         self.redis_graph_manager = RedisGraphManager()
-
-    def emit_to_user(self, message, user_id):
-        """Helper method to emit updates to user"""
-        try:
-            socketio_instance = get_socketio() or self.socketio
-            if socketio_instance:
-                socketio_instance.emit('update', {'response': message}, room=user_id)
-                logger.info(f"Emitted to user {user_id}: {message}")
-        except Exception as e:
-            logger.error(f"Error emitting to user {user_id}: {e}")
 
     def query_knowledge_graph(self, json_query, token):
         """
@@ -89,15 +79,20 @@ class Graph:
             relevant_information = self._extract_relevant_information(query)
             
             # Convert to initial JSON
+            self.emit_to_user('Validating Constructed Json Format...', user_id)
             initial_json = self._convert_to_annotation_json(relevant_information, query)
             
             # Validate and update
-            self.emit_to_user('Validating Constructed Format...', user_id)
             validation = self._validate_and_update(initial_json)
             
             # If validation failed, return the intermediate steps
             if validation["validation_report"]["validation_status"] == "failed":
                 logger.error("Validation is failing *****sending the intial json format")
+                emit_to_user( {
+                    "text": None,
+                    "json_format": initial_json,
+                     "resource": {"id": None, 
+                             "type": "annotation"},},status="completed")
                 return {
                     "text": None,
                     "json_format": initial_json,
@@ -112,6 +107,12 @@ class Graph:
             TODO
             add query along with job id to specifiy to what query is the json requested is related to.
             '''
+            emit_to_user({
+                    "text": None,
+                    "json_format": validated_json,
+                     "resource": {"id": None, 
+                             "type": "annotation"},}
+                             ,status="completed")
             return {
                     "text": None,
                     "json_format": validated_json,
