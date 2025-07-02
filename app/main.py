@@ -9,6 +9,7 @@ from app.summarizer import Graph_Summarizer
 from app.hypothesis_generation.hypothesis import HypothesisGeneration
 from app.storage.history import History
 from app.storage.sql_redis_storage import DatabaseManager
+from socket_manager import emit_to_user
 import asyncio
 import logging.handlers as loghandlers
 from dotenv import load_dotenv
@@ -159,7 +160,7 @@ class AiAssistance:
     def _annotation_agent(self, state: AgentState) -> Dict[str, Any]:
         """Handle annotation-related queries"""
         try:
-            self.emit_to_user("Creating Query Builder Format...")
+            emit_to_user("Creating Query Builder Format...")
             # Use the annotation graph tool
             response = self.annotation_graph.validated_json(state["user_query"], user_id=state["user_id"])
             
@@ -178,6 +179,7 @@ class AiAssistance:
     def _hypothesis_agent(self, state: AgentState) -> Dict[str, Any]:
         """Handle hypothesis generation queries"""
         try:
+            emit_to_user("Generating hypothesis...")
             response = self.hypothesis_generation.generate_hypothesis(
                 token=state["token"], 
                 user_query=state["user_query"]
@@ -198,6 +200,7 @@ class AiAssistance:
     def _rag_agent(self, state: AgentState) -> Dict[str, Any]:
         """Handle general information queries"""
         try:
+            emit_to_user("Retrieving information...")
             response = self.rag.get_result_from_rag(state["user_query"], state["user_id"])
             
             return {
@@ -281,28 +284,31 @@ class AiAssistance:
             user_context=user_context
         )
         response = self.advanced_llm.generate(prompt)
-        self.emit_to_user("Analyzing...")
+        emit_to_user("Analyzing...")
         if response:
             if "response:" in response:
                 result = response.split("response:")[1].strip()
                 final_response = result.strip('"')
                 await self.store.save_user_information(self.advanced_llm, question_text, user_id, context)
                 self.history.create_history(user_id, question_text, final_response)
-                self.emit_to_user(final_response)
+                emit_to_user(final_response,status="completed")
                 return {"text": final_response}
                 
             elif "question:" in response:
                 refactored_question = response.split("question:")[1].strip()
                 await self.store.save_user_information(self.advanced_llm, question_text, user_id, context)
                 agent_response = self.agent(refactored_question, user_id, token)
+                emit_to_user(agent_response,status="completed")
                 return agent_response
             else:
                 logger.warning(f"Unexpected response format: {response}")
                 await self.store.save_user_information(self.advanced_llm, question_text, user_id, context)
+                emit_to_user({"text": response or "I'm sorry, I couldn't process your request properly."},status="completed")
                 return {"text": response or "I'm sorry, I couldn't process your request properly."}
         else:
             logger.error("No response generated from LLM")
             await self.store.save_user_information(self.advanced_llm, question_text, user_id, context)
+            emit_to_user({"text": "I'm sorry, I couldn't generate a response at this time."},status="completed")
             return {"text": "I'm sorry, I couldn't generate a response at this time."}
     
     def assistant_response(self,query,user_id,token,graph=None,graph_id=None,file=None,resource="annotation",json_query=None):  
@@ -331,21 +337,25 @@ class AiAssistance:
                     if resource == "annotation":
                             # Process summary with query
                             summary = self.graph_summarizer.summary(token=token, graph_id=graph_id)
+                            emit_to_user("Analyzing User Query...")
                             prompt = classifier_prompt.format(query=query, graph_summary=summary)
                             response = self.advanced_llm.generate(prompt)
                             
                             if response.startswith("related:"):
                                 logger.info("question is related with the graph")
+                                emit_to_user("Generating Response...")
                                 query_response = response[len("related:"):].strip()
                                 # creating users history
                                 self.history.create_history(user_id, query, query_response)
                                 logger.info(f"user query is {query} response is {query_response}")
+                                emit_to_user({"text":query_response},status="completed")
                                 return {"text":query_response}
 
                             elif "not" in response:
                                 logger.info("question not related with the graph so sending the query {query} to agent")
                                 response = asyncio.run(self.assistant(query, user_id, token, user_context=summary,context=resource))
                                 logger.info(f"user query is {query} response is {response}")  
+                                emit_to_user({"text":query_response},status="completed")
                                 return response           
                             else:
                                 logger.warning(f"Unexpected classifier response: {response}. Defaulting to not related.")
@@ -357,14 +367,17 @@ class AiAssistance:
                         save hypothesis graphs ids along summary if same graph is asked again we won't send an api call instead we will just refer from the db by the id
                         """
                         summary = self.hypothesis_generation.get_by_hypothesis_id(token,graph_id,query)
+                        emit_to_user("Analyzing User Query...")
                         logger.info(f"Summaries of the graph id {graph_id} is {summary}")
                         if summary is None:
                             logger.info(f"question not related with the graph so sending the query {query} to agent")
                             try:
                                 response = asyncio.run(self.assistant(query, user_id, token, user_context=summary))
                                 logger.info(f"user query is {query} response is {response}")
+                                emit_to_user(response,status="completed")
                                 return response
                             except:
+                                emit_to_user({"text":"Sorry I coudnt understand your question"},status="completed")
                                 return {"text":"Sorry I coudnt understand your question"}
                             
                         prompt = classifier_prompt.format(query=query,graph_summary=summary)
@@ -372,22 +385,27 @@ class AiAssistance:
 
                         if response.startswith("related:"):
                             logger.info("question is related with the graph")
+                            emit_to_user("Generating Response...")
                             query_response = response[len("related:"):].strip()
                             self.history.create_history(user_id, query, query_response)
                             logger.info(f"user query is {query} response is {query_response}")
+                            emit_to_user({"text":query_response},status="completed")
                             return {"text":query_response}
                             
                         elif response.strip() == "not":
                             logger.info(f"question not related with the graph so sending the query {query} to agent")
                             response = asyncio.run(self.assistant(query, user_id, token, user_context=summary))
                             logger.info(f"user query is {query} response is {response}")
+                            emit_to_user({"text":response},status="completed")
                             return response
 
                         else:
                             logger.warning(f"Unexpected classifier response: {response}. Defaulting to not related.")
+                            emit_to_user({"text": f"Unsupported resource type: '{resource}'"},status="completed")
                             return {"text":response}
                     else:
                         logger.error(f"Unsupported resource type: '{resource}'")
+                        emit_to_user({"text": f"Unsupported resource type: '{resource}'"},status="completed")
                         return {"text": f"Unsupported resource type: '{resource}'"}
 
                 # Case 2: Only graph_id is provided (no query)
@@ -412,25 +430,25 @@ class AiAssistance:
                 response = asyncio.run(self.assistant(query=query, user_id=user_id, token=token,context=resource))
                 return response 
 
-            if query and graph:
-                summary = self.graph_summarizer.summary(user_query=query,graph=graph)
-                self.history.create_history(user_id, query, response)             
-                return summary
+            # if query and graph:
+            #     summary = self.graph_summarizer.summary(user_query=query,graph=graph)
+            #     self.history.create_history(user_id, query, response)             
+            #     return summary
 
-            if graph:
-                summary = self.graph_summarizer.summary(user_query=query,graph=graph)
-                self.history.create_history(user_id, query, response)     
-                return summary
+            # if graph:
+            #     summary = self.graph_summarizer.summary(user_query=query,graph=graph)
+            #     self.history.create_history(user_id, query, response)     
+            #     return summary
 
-            if json_query:
-                logger.info(f"Executing a json query {json_query} to the annotation service")
-                try:
-                    logger.info(f"Generating graph with arguments: {json_query}")  # Add this line to log the arguments
-                    response = self.annotation_graph.generate_graph(f"",json_query,token)
-                    return response
-                except Exception as e:
-                    logger.error("Error in generating graph", exc_info=True)
-                    return f"I couldn't generate a graph for the given format would you please try again."
+            # if json_query:
+            #     logger.info(f"Executing a json query {json_query} to the annotation service")
+            #     try:
+            #         logger.info(f"Generating graph with arguments: {json_query}")  # Add this line to log the arguments
+            #         response = self.annotation_graph.generate_graph(f"",json_query,token)
+            #         return response
+            #     except Exception as e:
+            #         logger.error("Error in generating graph", exc_info=True)
+            #         return f"I couldn't generate a graph for the given format would you please try again."
 
 
         except:
