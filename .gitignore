@@ -9,3 +9,5 @@ user_pdf.json
 history.json
 logfiles
 data
+storage/
+rag_user_pdf.json
