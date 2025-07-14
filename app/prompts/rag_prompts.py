@@ -29,3 +29,48 @@ relying solely on the supplied content. If the context is insufficient or irrele
 reply with: "I can't help with your question based on the provided documents." 
 Do not use outside knowledge and do not fabricate information beyond what is given.
 """
+
+KEYWORDS_PROMPT = """
+You are an expert at analyzing documents and extracting key information. Given a PDF document's text content, 
+list exactly 10 of the most important keywords (single words or short phrases). Return them as a numbered list. 
+Do not return any explanations or extra text, only the list.
+
+Document content:
+{text_content}
+"""
+
+TOPICS_PROMPT = """
+You are an expert at analyzing documents and identifying main topics. Given a PDF document's text content, 
+list 5-7 main topics or themes from the document. Return them as a numbered list. 
+Do not return any explanations or extra text, only the list.
+
+Document content:
+{text_content}
+"""
+
+SUMMARY_PROMPT = """
+You are an expert at creating concise, informative summaries of documents. Given a PDF document's text content, 
+create a comprehensive summary that captures the main points and key information.
+
+Instructions:
+1. Create a 2-3 paragraph summary (approximately 150-250 words)
+2. Focus on the main ideas, key findings, and important details
+3. Maintain the document's tone and technical accuracy
+4. Organize information logically
+5. Avoid repetition and unnecessary details
+
+Document content:
+{text_content}
+"""
+
+QUESTION_GENERATION_PROMPT = """
+You are an expert at generating relevant questions based on document content. Given a PDF document's text content, 
+generate 5-8 thoughtful questions that users might ask about this document.
+
+Instructions:
+1. List 5-8 diverse questions, each on a new line, as a numbered list.
+2. Do not return any explanations or extra text, only the list of questions.
+
+Document content:
+{text_content}
+"""
