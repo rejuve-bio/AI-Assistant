@@ -1,14 +1,19 @@
 from app.lib.auth import token_required
-from flask import Blueprint, request, current_app, jsonify
+from flask import Blueprint, request, current_app, jsonify, send_file
 from dotenv import load_dotenv
 import traceback
 import json
 import uuid
 import os
 from app.rag.utils.pdf_processor import extract_text_from_pdf, chunk_text
+from app.rag.utils.pdf_analyzer import PDFAnalyzer
+from app.rag.utils.tts_utils import tts_manager
+
 from app.storage.qdrant import Qdrant
 from app.rag.utils.llm_wrapper import LLMWrapper
 from app.prompts.rag_prompts import PDF_PROCESSOR_PROMPT
+import fitz  # PyMuPDF
+from datetime import datetime
 
 load_dotenv()
 main_bp = Blueprint("main", __name__)
@@ -59,8 +64,9 @@ for llm usage:
 - use_openai=True: Uses OpenAI for text generation
 - use_openai=False: Uses Google gemini for text generation
 """
-qdrant_client = Qdrant(use_openai_embeddings=True)
-llm_wrapper = LLMWrapper(use_openai=True)
+qdrant_client = Qdrant(use_openai_embeddings=False)
+llm_wrapper = LLMWrapper(use_openai=False)
+pdf_analyzer = PDFAnalyzer(use_openai=False)
 
 
 @main_bp.route("/query", methods=["POST"])
@@ -182,6 +188,8 @@ def upload_pdf(current_user_id, auth_token):
                 )
 
         pdf_ids = []
+        analysis_results = []
+
         for uploaded in files:
             pdf_id = str(uuid.uuid4())
             pdf_ids.append(pdf_id)
@@ -193,9 +201,48 @@ def upload_pdf(current_user_id, auth_token):
             pdf_path = os.path.join(upload_folder, f"{pdf_id}.pdf")
             uploaded.save(pdf_path)
 
+            # Get number of pages
+            try:
+                with fitz.open(pdf_path) as doc:
+                    num_pages = doc.page_count
+            except Exception:
+                num_pages = None
+
+            # Get upload time
+            upload_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Get file size in MB
+            try:
+                file_size_bytes = os.path.getsize(pdf_path)
+                file_size = round(file_size_bytes / (1024 * 1024), 2)
+            except Exception:
+                file_size = None
+
             # extract & chunk
             full_text = extract_text_from_pdf(pdf_path)
             chunks = chunk_text(full_text)
+
+            # Generate summary with audio
+            summary = pdf_analyzer.generate_summary(
+                full_text, user_id=user_id, pdf_id=pdf_id
+            )
+            # Analyze other features
+            analysis = pdf_analyzer.analyze_pdf_content(full_text)
+            analysis["summary"] = summary
+
+            # Add file info to analysis results
+            file_analysis = {
+                "pdf_id": pdf_id,
+                "filename": uploaded.filename,
+                "keywords": analysis.get("keywords", ""),
+                "topics": analysis.get("topics", ""),
+                "summary": analysis.get("summary", ""),
+                "suggested_questions": analysis.get("suggested_questions", ""),
+                "num_pages": num_pages,
+                "file_size": f"{file_size} MB",
+                "upload_time": upload_time,
+            }
+            analysis_results.append(file_analysis)
 
             # metadata to store alongside each chunk
             metadata = {
@@ -215,7 +262,15 @@ def upload_pdf(current_user_id, auth_token):
                 {
                     "count": get_user_data(user_id)["count"] + 1,
                     "files": get_user_data(user_id)["files"]
-                    + [{"filename": uploaded.filename, "pdf_id": pdf_id}],
+                    + [
+                        {
+                            "filename": uploaded.filename,
+                            "pdf_id": pdf_id,
+                            "num_pages": num_pages,
+                            "file_size": file_size,
+                            "upload_time": upload_time,
+                        }
+                    ],
                 },
             )
 
@@ -228,6 +283,7 @@ def upload_pdf(current_user_id, auth_token):
                 user_id=user_id,
                 pdf_ids=pdf_ids,
                 message=f"PDF uploaded successfully. {final_count}/{PDF_LIMIT} PDFs used.",
+                analysis_results=analysis_results,
             ),
             200,
         )
@@ -260,6 +316,31 @@ def ask_question(current_user_id, auth_token):
         context = "\n\n".join(context_chunks)
         user_prompt = f"Context:\n{context}\n\nQuestion: {question}"
         answer = llm_wrapper.chat(PDF_PROCESSOR_PROMPT, user_prompt)
+
+        # Generate audio for the answer
+        if answer and user_id:
+            try:
+                # Generate a unique query ID for the audio file
+                query_id = str(uuid.uuid4())
+                audio_success = tts_manager.generate_query_audio(
+                    answer, user_id, query_id, voice="russell"
+                )
+                if audio_success:
+                    current_app.logger.info(
+                        f"Audio generated successfully for query: {query_id}"
+                    )
+                    # Return the query ID so the frontend can request the audio file
+                    return jsonify(answer=answer, query_id=query_id), 200
+                else:
+                    current_app.logger.warning(
+                        f"Failed to generate audio for query: {query_id}"
+                    )
+                    return jsonify(answer=answer), 200
+            except Exception as audio_error:
+                current_app.logger.error(
+                    f"Error generating audio for query: {audio_error}"
+                )
+                return jsonify(answer=answer), 200
 
         return jsonify(answer=answer), 200
 
@@ -327,3 +408,36 @@ def clear_user_data(current_user_id, auth_token):
         current_app.logger.error(f"Clear user data error: {e}")
         traceback.print_exc()
         return jsonify(error=f"Error clearing user data: {str(e)}"), 500
+
+
+@main_bp.route("/rag/delete_pdf", methods=["DELETE"])
+@token_required
+def delete_pdf(current_user_id, auth_token):
+    try:
+        data = request.get_json() or {}
+        user_id = data.get("user_id")
+        pdf_id = data.get("pdf_id")
+        if not user_id or not pdf_id:
+            return jsonify(error="Missing user_id or pdf_id"), 400
+
+        # Remove PDF file from storage
+        pdf_path = os.path.join("storage/pdfs", f"{pdf_id}.pdf")
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+        else:
+            current_app.logger.warning(f"PDF file {pdf_path} not found for deletion.")
+
+        # Remove from user tracking
+        user_data = get_user_data(user_id)
+        new_files = [f for f in user_data["files"] if f["pdf_id"] != pdf_id]
+        new_count = max(0, user_data["count"] - 1)
+        update_user_data(user_id, {"count": new_count, "files": new_files})
+
+        # Remove from Qdrant
+        qdrant_client.delete_pdf_by_id(user_id, pdf_id)
+
+        return jsonify(message=f"PDF {pdf_id} deleted for user {user_id}"), 200
+    except Exception as e:
+        current_app.logger.error(f"Delete PDF error: {e}")
+        traceback.print_exc()
+        return jsonify(error=f"Error deleting PDF: {str(e)}"), 500

@@ -25,7 +25,7 @@ load_dotenv()
 
 class Qdrant:
 
-    def __init__(self, use_openai_embeddings=True, batch_size=50):
+    def __init__(self, use_openai_embeddings=True, batch_size=32):
         self.use_openai_embeddings = use_openai_embeddings
         self.batch_size = batch_size
 
@@ -119,6 +119,30 @@ class Qdrant:
         )
 
         return [h.payload["text"] for h in hits]
+
+    def delete_pdf_by_id(self, collection_name, pdf_id):
+        # Delete all points in the given collection (user_id) with the specified pdf_id.
+        try:
+            self.client.delete(
+                collection_name=collection_name,
+                points_selector=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="pdf_id",
+                            match=models.MatchValue(value=pdf_id),
+                        )
+                    ]
+                ),
+            )
+            logger.info(
+                f"Deleted all points for pdf_id {pdf_id} in collection {collection_name}"
+            )
+            return True
+        except Exception as e:
+            logger.error(
+                f"Error deleting pdf_id {pdf_id} from collection {collection_name}: {e}"
+            )
+            return False
 
     def get_create_collection(self, collection_name):
 
