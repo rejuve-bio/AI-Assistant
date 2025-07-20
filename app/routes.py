@@ -1,19 +1,11 @@
 from app.lib.auth import token_required
-from flask import Blueprint, request, current_app, jsonify, send_file
+from flask import Blueprint, request, current_app, jsonify, Response
 from dotenv import load_dotenv
 import traceback
 import json
-import uuid
 import os
-from app.rag.utils.pdf_processor import extract_text_from_pdf, chunk_text
-from app.rag.utils.pdf_analyzer import PDFAnalyzer
 from app.rag.utils.tts_utils import tts_manager
-
-from app.storage.qdrant import Qdrant
-from app.rag.utils.llm_wrapper import LLMWrapper
-from app.prompts.rag_prompts import PDF_PROCESSOR_PROMPT
-import fitz  # PyMuPDF
-from datetime import datetime
+from app.storage.sql_redis_storage import set_audio_cache, get_audio_cache
 
 load_dotenv()
 main_bp = Blueprint("main", __name__)
@@ -32,7 +24,7 @@ def load_user_pdf():
 
 def save_user_pdf(user_pdf_data):
     with open(USER_PDF_FILE, "w") as f:
-        json.dump(user_pdf_data, f)
+        json.dump(user_pdf_data, f, indent=4)
 
 
 def update_user_data(user_id, new_user_data):
@@ -53,22 +45,6 @@ def get_user_data(user_id):
     return current_data.get(user_id, {"count": 0, "files": []})
 
 
-"""
-Initialize Qdrant and LLM for PDF processing
-
-for embedding:
-- use_openai_embeddings=True: Uses OpenAI for vector embeddings
-- use_openai_embeddings=False: Uses SentenceTransformers for vector embeddings
-
-for llm usage:
-- use_openai=True: Uses OpenAI for text generation
-- use_openai=False: Uses Google gemini for text generation
-"""
-qdrant_client = Qdrant(use_openai_embeddings=False)
-llm_wrapper = LLMWrapper(use_openai=False)
-pdf_analyzer = PDFAnalyzer(use_openai=False)
-
-
 @main_bp.route("/query", methods=["POST"])
 @token_required
 def process_query(current_user_id, auth_token):
@@ -76,58 +52,51 @@ def process_query(current_user_id, auth_token):
     Notes:
     - `query`: Contains the user's question or prompt.
     - `file`: Used when a file (e.g., a PDF) is uploaded for processing.
-    - `id`: Represents a graph ID and should be included if relevant to the query.(when Explaining a node is asked from a given graph)
-    - `resource`: Identifies the type of resource associated with the `id`. Currently not in use but it may support other types (e.g., "Hypothesis") in the future.
-    """
+    - `pdf_ids`: List of PDF IDs to target specific user-uploaded PDFs for question answering using the integrated PDF explainer and RAG system.
+    - `id`: Represents a graph ID and should be included if relevant to the query (e.g., when explaining a node from a given graph).
+    - `resource`: Identifies the type of resource associated with the `id`. Currently not in use but may support other types (e.g., "Hypothesis") in the future.
 
+    The endpoint now supports unified question answering from both user-uploaded PDFs and general knowledge, leveraging the integrated PDF explainer logic.
+    """
     try:
         ai_assistant = current_app.config["ai_assistant"]
 
-        if not request.form and "file" not in request.files:
-            return jsonify({"error": "Null request is invalid format."}), 400
-        if request.form.get("query") and request.form.get("json_query"):
-            return jsonify({"error": "Invalid format."}), 400
+        # Accept both JSON and form data
+        if request.is_json:
+            data = request.get_json()
+        else:
+            data = request.form
 
-        data = request.form
-        query = data.get("query", None)
+        user_id = data.get("user_id") or current_user_id
+        question = data.get("question") or data.get("query")
+        pdf_ids = data.get("pdf_ids")
+        if isinstance(pdf_ids, str):
+            # If pdf_ids is a comma-separated string, convert to list
+            pdf_ids = [pid.strip() for pid in pdf_ids.split(",") if pid.strip()]
+
         context = json.loads(data.get("context", "{}"))
         context_id = context.get("id", None)
         resource = context.get("resource", "annotation")
         graph = data.get("graph", None)
         json_query = data.get("json_query", None)
 
-        # Handle file upload
-        file = None
-        if "file" in request.files:
-            file = request.files["file"]
-
         # Ensure query exists before processing
-        if query:
-            response = ai_assistant.assistant_response(
-                query=query,
-                file=file,
-                user_id=current_user_id,
-                token=auth_token,
-                graph_id=context_id,
-                graph=graph,
-                resource=resource,
-            )
-        else:
-            # Handle case when only context is provided
-            print("no query provided")
-            response = ai_assistant.assistant_response(
-                query=None,
-                file=file,
-                user_id=current_user_id,
-                token=auth_token,
-                graph_id=context_id,
-                graph=graph,
-                resource=resource,
-                json_query=json_query,
-            )
+        if not question and not json_query:
+            return jsonify({"error": "No query provided."}), 400
 
-        return jsonify(response)  # Always return a valid JSON response
+        # Pass all relevant arguments to ai_assistant
+        response = ai_assistant.assistant_response(
+            query=question,
+            user_id=user_id,
+            token=auth_token,
+            graph_id=context_id,
+            graph=graph,
+            resource=resource,
+            json_query=json_query,
+            pdf_ids=pdf_ids,
+        )
 
+        return jsonify(response)
     except Exception as e:
         current_app.logger.error(f"Exception: {e}")
         traceback.print_exc()
@@ -137,7 +106,7 @@ def process_query(current_user_id, auth_token):
 @main_bp.route("/rag/upload_pdf", methods=["POST"])
 @token_required
 def upload_pdf(current_user_id, auth_token):
-    # Upload and process PDF documents
+    # Upload and process PDF documents using the RAG module
     try:
         user_id = request.form.get("user_id") or request.json.get("user_id")
         if not user_id:
@@ -150,204 +119,26 @@ def upload_pdf(current_user_id, auth_token):
         if not files or files[0].filename == "":
             return jsonify(error="No files selected"), 400
 
-        # Check all files for duplicates, limits, and file type before processing
+        ai_assistant = current_app.config["ai_assistant"]
+        results = []
         for uploaded in files:
-            # Check file extension
+            # Only allow PDF files
             if not uploaded.filename.lower().endswith(".pdf"):
-                return (
-                    jsonify(
-                        error="Only PDF files are allowed.",
-                        resource={
-                            "filename": uploaded.filename,
-                            "allowed_types": ["pdf"],
-                        },
-                    ),
-                    400,
+                results.append(
+                    {
+                        "filename": uploaded.filename,
+                        "error": "Only PDF files are allowed.",
+                    }
                 )
-
-            # Check for duplicate files by filename
-            if any(
-                f["filename"] == uploaded.filename
-                for f in get_user_data(user_id)["files"]
-            ):
-                return (
-                    jsonify(
-                        error="PDF already exists.",
-                        resource={"filename": uploaded.filename},
-                    ),
-                    400,
-                )
-
-            if get_user_data(user_id)["count"] >= PDF_LIMIT:
-                return (
-                    jsonify(
-                        error="Your quota is full. Maximum 5 PDFs allowed.",
-                        resource={"count": get_user_data(user_id)["count"]},
-                    ),
-                    400,
-                )
-
-        pdf_ids = []
-        analysis_results = []
-
-        for uploaded in files:
-            pdf_id = str(uuid.uuid4())
-            pdf_ids.append(pdf_id)
-
-            upload_folder = "storage/pdfs"
-            os.makedirs(upload_folder, exist_ok=True)
-
-            # save file
-            pdf_path = os.path.join(upload_folder, f"{pdf_id}.pdf")
-            uploaded.save(pdf_path)
-
-            # Get number of pages
-            try:
-                with fitz.open(pdf_path) as doc:
-                    num_pages = doc.page_count
-            except Exception:
-                num_pages = None
-
-            # Get upload time
-            upload_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            # Get file size in MB
-            try:
-                file_size_bytes = os.path.getsize(pdf_path)
-                file_size = round(file_size_bytes / (1024 * 1024), 2)
-            except Exception:
-                file_size = None
-
-            # extract & chunk
-            full_text = extract_text_from_pdf(pdf_path)
-            chunks = chunk_text(full_text)
-
-            # Generate summary with audio
-            summary = pdf_analyzer.generate_summary(
-                full_text, user_id=user_id, pdf_id=pdf_id
-            )
-            # Analyze other features
-            analysis = pdf_analyzer.analyze_pdf_content(full_text)
-            analysis["summary"] = summary
-
-            # Add file info to analysis results
-            file_analysis = {
-                "pdf_id": pdf_id,
-                "filename": uploaded.filename,
-                "keywords": analysis.get("keywords", ""),
-                "topics": analysis.get("topics", ""),
-                "summary": analysis.get("summary", ""),
-                "suggested_questions": analysis.get("suggested_questions", ""),
-                "num_pages": num_pages,
-                "file_size": f"{file_size} MB",
-                "upload_time": upload_time,
-            }
-            analysis_results.append(file_analysis)
-
-            # metadata to store alongside each chunk
-            metadata = {
-                "pdf_id": pdf_id,
-                "filename": uploaded.filename,
-                "user_id": user_id,
-            }
-
-            # store in Qdrant under this user
-            qdrant_client.add_pdf_document(
-                collection_name=user_id, chunks=chunks, metadata=metadata
-            )
-
-            # update user tracking for each file
-            update_user_data(
-                user_id,
-                {
-                    "count": get_user_data(user_id)["count"] + 1,
-                    "files": get_user_data(user_id)["files"]
-                    + [
-                        {
-                            "filename": uploaded.filename,
-                            "pdf_id": pdf_id,
-                            "num_pages": num_pages,
-                            "file_size": file_size,
-                            "upload_time": upload_time,
-                        }
-                    ],
-                },
-            )
-
-        # Get final count for response
-        final_user_data = get_user_data(user_id)
-        final_count = final_user_data["count"]
-
-        return (
-            jsonify(
-                user_id=user_id,
-                pdf_ids=pdf_ids,
-                message=f"PDF uploaded successfully. {final_count}/{PDF_LIMIT} PDFs used.",
-                analysis_results=analysis_results,
-            ),
-            200,
-        )
-
+                continue
+            # Delegate all processing to the RAG module
+            response = ai_assistant.rag.save_retrievable_docs(uploaded, user_id)
+            results.append({"filename": uploaded.filename, "response": response})
+        return jsonify(results=results), 200
     except Exception as e:
         current_app.logger.error(f"PDF upload error: {e}")
         traceback.print_exc()
         return jsonify(error=f"Error uploading PDF: {str(e)}"), 500
-
-
-@main_bp.route("/rag/ask_question", methods=["POST"])
-@token_required
-def ask_question(current_user_id, auth_token):
-    # Ask questions about uploaded PDF documents
-    try:
-        payload = request.get_json()
-        if not payload:
-            return jsonify(error="Invalid JSON payload"), 400
-
-        user_id = payload.get("user_id")
-        question = payload.get("question")
-        pdf_ids = payload.get("pdf_ids")
-
-        if not user_id or not question:
-            return jsonify(error="Missing user_id or question"), 400
-
-        context_chunks = qdrant_client.query_pdf_documents(
-            collection_name=user_id, query=question, top_k=10, pdf_ids=pdf_ids
-        )
-        context = "\n\n".join(context_chunks)
-        user_prompt = f"Context:\n{context}\n\nQuestion: {question}"
-        answer = llm_wrapper.chat(PDF_PROCESSOR_PROMPT, user_prompt)
-
-        # Generate audio for the answer
-        if answer and user_id:
-            try:
-                # Generate a unique query ID for the audio file
-                query_id = str(uuid.uuid4())
-                audio_success = tts_manager.generate_query_audio(
-                    answer, user_id, query_id, voice="russell"
-                )
-                if audio_success:
-                    current_app.logger.info(
-                        f"Audio generated successfully for query: {query_id}"
-                    )
-                    # Return the query ID so the frontend can request the audio file
-                    return jsonify(answer=answer, query_id=query_id), 200
-                else:
-                    current_app.logger.warning(
-                        f"Failed to generate audio for query: {query_id}"
-                    )
-                    return jsonify(answer=answer), 200
-            except Exception as audio_error:
-                current_app.logger.error(
-                    f"Error generating audio for query: {audio_error}"
-                )
-                return jsonify(answer=answer), 200
-
-        return jsonify(answer=answer), 200
-
-    except Exception as e:
-        current_app.logger.error(f"Question asking error: {e}")
-        traceback.print_exc()
-        return jsonify(error=f"Error processing question: {str(e)}"), 500
 
 
 @main_bp.route("/rag/user_status", methods=["GET"])
@@ -394,6 +185,7 @@ def clear_user_data(current_user_id, auth_token):
 
         # Clear Qdrant collection for this user
         try:
+            qdrant_client = current_app.config["qdrant_client"]
             qdrant_client.client.delete_collection(collection_name=user_id)
             print(f"Qdrant collection '{user_id}' deleted")
         except Exception as qdrant_error:
@@ -434,6 +226,7 @@ def delete_pdf(current_user_id, auth_token):
         update_user_data(user_id, {"count": new_count, "files": new_files})
 
         # Remove from Qdrant
+        qdrant_client = current_app.config["qdrant_client"]
         qdrant_client.delete_pdf_by_id(user_id, pdf_id)
 
         return jsonify(message=f"PDF {pdf_id} deleted for user {user_id}"), 200
@@ -441,3 +234,152 @@ def delete_pdf(current_user_id, auth_token):
         current_app.logger.error(f"Delete PDF error: {e}")
         traceback.print_exc()
         return jsonify(error=f"Error deleting PDF: {str(e)}"), 500
+
+
+@main_bp.route("/rag/audio/summary", methods=["GET"])
+@token_required
+def get_summary_audio(current_user_id, auth_token):
+    # Generate and serve summary audio on-demand, with Redis caching
+    try:
+        data = request.get_json()
+        user_id = data.get("user_id") if data else None
+        pdf_id = data.get("pdf_id") if data else None
+
+        if not user_id or not pdf_id:
+            return jsonify(error="Missing user_id or pdf_id"), 400
+
+        # Redis cache key
+        cache_key = f"audio:summary:{user_id}:{pdf_id}"
+        audio_data = get_audio_cache(cache_key)
+        if audio_data:
+            current_app.logger.info(
+                f"[AUDIO CACHE] Served summary audio for user_id={user_id}, pdf_id={pdf_id} from Redis cache."
+            )
+            return Response(audio_data, mimetype="audio/mpeg")
+
+        # Get user's PDF data to find the summary
+        user_data = get_user_data(user_id)
+        files = user_data.get("files", [])
+
+        # Find the PDF file with matching pdf_id
+        target_file = None
+        for file_info in files:
+            if file_info.get("pdf_id") == pdf_id:
+                target_file = file_info
+                break
+
+        if not target_file:
+            return jsonify(error="PDF not found for this user"), 404
+
+        # Get the summary from the stored user data
+        summary_text = target_file.get("summary", "")
+
+        if not summary_text:
+            return jsonify(error="No summary found for this PDF"), 404
+
+        # Generate audio on-demand
+        audio_data = tts_manager.generate_audio_on_demand(summary_text, voice="russell")
+
+        if audio_data is None:
+            return jsonify(error="Failed to generate audio"), 500
+
+        # Store in Redis cache for 10 minutes
+        set_audio_cache(cache_key, audio_data, expire_seconds=600)
+
+        # Return the audio data directly
+        return Response(audio_data, mimetype="audio/mpeg")
+
+    except Exception as e:
+        current_app.logger.error(f"Summary audio error: {e}")
+        traceback.print_exc()
+        return jsonify(error=f"Error generating summary audio: {str(e)}"), 500
+
+
+@main_bp.route("/audio/query", methods=["GET"])
+@token_required
+def get_query_audio(current_user_id, auth_token):
+    # Generate and serve query audio on-demand using query_id, with Redis caching
+    try:
+        data = request.get_json()
+        user_id = data.get("user_id") if data else None
+        query_id = data.get("query_id") if data else None
+
+        if not user_id or not query_id:
+            return jsonify(error="Missing user_id or query_id"), 400
+
+        # Redis cache key
+        cache_key = f"audio:query:{user_id}:{query_id}"
+        audio_data = get_audio_cache(cache_key)
+        if audio_data:
+            current_app.logger.info(
+                f"[AUDIO CACHE] Served query audio for user_id={user_id}, query_id={query_id} from Redis cache."
+            )
+            return Response(audio_data, mimetype="audio/mpeg")
+
+        # Get the AI assistant to access history
+        ai_assistant = current_app.config["ai_assistant"]
+
+        # Get the specific conversation entry by query_id
+        entry = ai_assistant.history.get_entry_by_query_id(user_id, query_id)
+
+        if not entry:
+            return jsonify(error="Query not found in history"), 404
+
+        # Get the assistant's answer text
+        text_content = entry.get("assistant answer", "")
+
+        if not text_content:
+            return jsonify(error="No text found for this query"), 404
+
+        # Generate audio on-demand
+        audio_data = tts_manager.generate_audio_on_demand(text_content, voice="russell")
+
+        if audio_data is None:
+            return jsonify(error="Failed to generate audio"), 500
+
+        # Store in Redis cache for 10 minutes
+        set_audio_cache(cache_key, audio_data, expire_seconds=600)
+
+        # Return the audio data directly
+        return Response(audio_data, mimetype="audio/mpeg")
+
+    except Exception as e:
+        current_app.logger.error(f"Query audio error: {e}")
+        traceback.print_exc()
+        return jsonify(error=f"Error generating query audio: {str(e)}"), 500
+
+
+@main_bp.route("/history", methods=["GET"])
+@token_required
+def get_user_history(current_user_id, auth_token):
+    # Get conversation history for a user
+    try:
+        user_id = request.args.get("user_id") or current_user_id
+
+        ai_assistant = current_app.config["ai_assistant"]
+        history = ai_assistant.history.retrieve_user_history(user_id)
+
+        return jsonify(history), 200
+    except Exception as e:
+        current_app.logger.error(f"Error retrieving history: {e}")
+        return jsonify(error=f"Error retrieving history: {str(e)}"), 500
+
+
+@main_bp.route("/history", methods=["DELETE"])
+@token_required
+def clear_user_history(current_user_id, auth_token):
+    # Clear conversation history for a user
+    try:
+        user_id = request.args.get("user_id") or current_user_id
+
+        ai_assistant = current_app.config["ai_assistant"]
+        # Clear history by setting empty list
+        ai_assistant.history.history[str(user_id)] = []
+        ai_assistant.history._save_history()
+
+        return jsonify(message="History cleared successfully"), 200
+    except Exception as e:
+        current_app.logger.error(f"Error clearing history: {e}")
+        return jsonify(error=f"Error clearing history: {str(e)}"), 500
+
+
