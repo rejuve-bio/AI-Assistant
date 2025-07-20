@@ -1,12 +1,12 @@
 import logging
-from .llm_wrapper import LLMWrapper
+from app.llm_handle.llm_models import get_llm_model
 from app.prompts.rag_prompts import (
     KEYWORDS_PROMPT,
     TOPICS_PROMPT,
     SUMMARY_PROMPT,
     QUESTION_GENERATION_PROMPT,
 )
-from app.rag.utils.tts_utils import tts_manager
+import re
 
 
 logger = logging.getLogger(__name__)
@@ -14,11 +14,34 @@ logger = logging.getLogger(__name__)
 
 class PDFAnalyzer:
     def __init__(self, use_openai=False):
-        self.llm_wrapper = LLMWrapper(use_openai=use_openai)
+        # Use the LLM models from llm_models.py
+        if use_openai:
+            self.llm_model = get_llm_model("openai", "gpt-3.5-turbo")
+        else:
+            self.llm_model = get_llm_model("gemini", "gemini-1.5-flash")
+
+    def _generate_text(self, prompt):
+        # Generate text using the LLM model
+        try:
+            if hasattr(self.llm_model, "model") and hasattr(
+                self.llm_model.model, "generate_content"
+            ):
+                # For Gemini models
+                response = self.llm_model.model.generate_content(prompt)
+                return response.text
+            elif hasattr(self.llm_model, "generate"):
+                # For OpenAI models
+                result = self.llm_model.generate(prompt)
+                if isinstance(result, dict):
+                    return result.get("content", str(result))
+                return str(result)
+            else:
+                raise ValueError("Unsupported LLM model type")
+        except Exception as e:
+            logger.error(f"Error generating text: {e}")
+            raise e
 
     def _parse_list(self, response):
-        import re
-
         text = response.strip()
         numbered = re.findall(r"(?:^\d+\.\s*|\n\d+\.\s*)([^\n]+)", text)
         if len(numbered) >= 2:
@@ -33,7 +56,7 @@ class PDFAnalyzer:
             if len(text_content) > max_chars:
                 text_content = text_content[:max_chars] + "..."
             prompt = KEYWORDS_PROMPT.format(text_content=text_content)
-            response = self.llm_wrapper.chat("", prompt)
+            response = self._generate_text(prompt)
             return self._parse_list(response)
         except Exception as e:
             logger.error(f"Error extracting keywords: {e}")
@@ -45,7 +68,7 @@ class PDFAnalyzer:
             if len(text_content) > max_chars:
                 text_content = text_content[:max_chars] + "..."
             prompt = TOPICS_PROMPT.format(text_content=text_content)
-            response = self.llm_wrapper.chat("", prompt)
+            response = self._generate_text(prompt)
             return self._parse_list(response)
         except Exception as e:
             logger.error(f"Error extracting topics: {e}")
@@ -57,28 +80,12 @@ class PDFAnalyzer:
             if len(text_content) > max_chars:
                 text_content = text_content[:max_chars] + "..."
             prompt = SUMMARY_PROMPT.format(text_content=text_content)
-            response = self.llm_wrapper.chat("", prompt)
+            response = self._generate_text(prompt)
             summary_text = (
                 response.strip()
                 if response and response.strip()
                 else "Summary could not be generated: LLM returned empty response."
             )
-
-            if user_id and pdf_id and summary_text:
-                try:
-                    audio_success = tts_manager.generate_summary_audio(
-                        summary_text, user_id, pdf_id, voice="russell"
-                    )
-                    if audio_success:
-                        logger.info(
-                            f"Audio generated successfully for PDF summary: {pdf_id}"
-                        )
-                    else:
-                        logger.warning(
-                            f"Failed to generate audio for PDF summary: {pdf_id}"
-                        )
-                except Exception as audio_error:
-                    logger.error(f"Error generating audio for summary: {audio_error}")
 
             return summary_text
         except Exception as e:
@@ -91,7 +98,7 @@ class PDFAnalyzer:
             if len(text_content) > max_chars:
                 text_content = text_content[:max_chars] + "..."
             prompt = QUESTION_GENERATION_PROMPT.format(text_content=text_content)
-            response = self.llm_wrapper.chat("", prompt)
+            response = self._generate_text(prompt)
             return self._parse_list(response)
         except Exception as e:
             logger.error(f"Error generating suggested questions: {e}")
