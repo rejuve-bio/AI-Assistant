@@ -1,11 +1,17 @@
-
 import uuid
 import json
 import openai
-from app.prompts.memory_prompt import FACT_RETRIEVAL_PROMPT,get_update_memory_messages
-from ..llm_handle.llm_models import LLMInterface,OpenAIModel,get_llm_model,openai_embedding_model
+from app.prompts.memory_prompt import FACT_RETRIEVAL_PROMPT, get_update_memory_messages
+from ..llm_handle.llm_models import (
+    LLMInterface,
+    OpenAIModel,
+    get_llm_model,
+    openai_embedding_model,
+)
 from app.storage.qdrant import Qdrant
 import traceback
+from flask import current_app
+
 
 class MemoryManager:
     def __init__(self, llm):
@@ -15,8 +21,8 @@ class MemoryManager:
         :param client: The Qdrant client instance.
         """
         self.llm = llm
-        self.embedding_model = openai_embedding_model
-        self.client = Qdrant()
+        self.embedding_model = current_app.config["embedding_model"]
+        self.client = current_app.config["qdrant_client"]
 
     def get_fact_retrieval_message(self, messages):
         """
@@ -52,7 +58,7 @@ class MemoryManager:
 
             metadata = {}
             system_prompt, user_prompt = self.get_fact_retrieval_message(messages)
-            response = self.llm.generate(user_prompt,system_prompt)
+            response = self.llm.generate(user_prompt, system_prompt)
 
             try:
                 new_retrieved_facts = response["facts"]
@@ -65,27 +71,42 @@ class MemoryManager:
             for fact in new_retrieved_facts:
                 embedded_message = self.embedding_model(fact)
                 new_message_embeddings[fact] = embedded_message
-                existing_memory = self.qdrant_client_retrieved_user_similar_preferences(user_id, embedded_message[0])
+                existing_memory = self.qdrant_client_retrieved_user_similar_preferences(
+                    user_id, embedded_message[0]
+                )
 
                 if existing_memory:
                     for mem in existing_memory:
-                        retrieved_old_memory.append({"id": mem["id"], "text": mem["content"]})
+                        retrieved_old_memory.append(
+                            {"id": mem["id"], "text": mem["content"]}
+                        )
 
-            temp_uuid_mapping = {str(idx): item["id"] for idx, item in enumerate(retrieved_old_memory)}
+            temp_uuid_mapping = {
+                str(idx): item["id"] for idx, item in enumerate(retrieved_old_memory)
+            }
             for idx, item in enumerate(retrieved_old_memory):
                 retrieved_old_memory[idx]["id"] = str(idx)
 
-            function_calling_prompt = get_update_memory_messages(retrieved_old_memory, new_retrieved_facts)
-            new_memories_with_actions = self.llm.generate(prompt=function_calling_prompt)
+            function_calling_prompt = get_update_memory_messages(
+                retrieved_old_memory, new_retrieved_facts
+            )
+            new_memories_with_actions = self.llm.generate(
+                prompt=function_calling_prompt
+            )
             returned_memories = []
 
             for resp in new_memories_with_actions["memory"]:
                 data = resp["text"]
                 if resp["event"] == "ADD":
                     memory_id = self.client._create_memory_update_memory(
-                        user_id=user_id, data=data, embedding=new_message_embeddings[data], metadata=metadata
+                        user_id=user_id,
+                        data=data,
+                        embedding=new_message_embeddings[data],
+                        metadata=metadata,
                     )
-                    returned_memories.append({"id": memory_id, "memory": data, "event": resp["event"]})
+                    returned_memories.append(
+                        {"id": memory_id, "memory": data, "event": resp["event"]}
+                    )
 
                 elif resp["event"] == "UPDATE":
                     self.client._create_memory_update_memory(
@@ -107,10 +128,7 @@ class MemoryManager:
                 elif resp["event"] == "NONE":
                     print("NOOP for Memory.")
 
-            print("returned memories are ",returned_memories)
+            print("returned memories are ", returned_memories)
             return returned_memories
         except:
             traceback.print_exc()
-
-
-
