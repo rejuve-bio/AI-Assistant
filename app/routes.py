@@ -5,80 +5,63 @@ import traceback
 import json
 import os
 from app.rag.utils.tts_utils import tts_manager
-from app.storage.sql_redis_storage import set_audio_cache, get_audio_cache
+from app.storage.sql_redis_storage import set_audio_cache, get_audio_cache, db_manager
+from app.storage.history_manager import HistoryManager
 
 load_dotenv()
 main_bp = Blueprint("main", __name__)
-
-# Initialize PDF processing components
-PDF_LIMIT = 5
-USER_PDF_FILE = "rag_user_pdf.json"
-
-
-def load_user_pdf():
-    if os.path.exists(USER_PDF_FILE):
-        with open(USER_PDF_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-
-def save_user_pdf(user_pdf_data):
-    with open(USER_PDF_FILE, "w") as f:
-        json.dump(user_pdf_data, f, indent=4)
-
-
-def update_user_data(user_id, new_user_data):
-    # Update only a specific user's data without affecting other users
-    try:
-        current_data = load_user_pdf()
-        current_data[user_id] = new_user_data
-        save_user_pdf(current_data)
-        return True
-    except Exception as e:
-        current_app.logger.error(f"Error updating user data: {e}")
-        return False
-
-
-def get_user_data(user_id):
-    # Get data for a specific user
-    current_data = load_user_pdf()
-    return current_data.get(user_id, {"count": 0, "files": []})
 
 
 @main_bp.route("/query", methods=["POST"])
 @token_required
 def process_query(current_user_id, auth_token):
     """
-    Notes:
-    - `query`: Contains the user's question or prompt.
-    - `file`: Used when a file (e.g., a PDF) is uploaded for processing.
-    - `pdf_ids`: List of PDF IDs to target specific user-uploaded PDFs for question answering using the integrated PDF explainer and RAG system.
-    - `id`: Represents a graph ID and should be included if relevant to the query (e.g., when explaining a node from a given graph).
-    - `resource`: Identifies the type of resource associated with the `id`. Currently not in use but may support other types (e.g., "Hypothesis") in the future.
+    Unified question answering endpoint for the Rejuve platform.
 
-    The endpoint now supports unified question answering from both user-uploaded PDFs and general knowledge, leveraging the integrated PDF explainer logic.
+    - Accepts form data.
+    - Required fields:
+        - user_id: The user's identifier (string).
+        - question: The user's question or prompt (string).
+        - context: JSON string with keys:
+            - id: For PDF queries, a list of PDF IDs; for other resources, a single ID.
+            - resource: The type of resource (e.g., 'pdf', 'annotation', 'hypothesis').
+        - graph, json_query: Optional, for advanced queries.
+    - For PDF queries (resource == 'pdf'), pdf_ids are extracted from context['id'].
+    - If pdf_ids are provided, answers are retrieved only from those PDFs; otherwise, answers are retrieved from all collections (user and general).
+    - Handles both user-uploaded PDF question answering and general knowledge queries.
     """
     try:
         ai_assistant = current_app.config["ai_assistant"]
-
-        # Accept both JSON and form data
-        if request.is_json:
-            data = request.get_json()
-        else:
-            data = request.form
+        data = request.form
 
         user_id = data.get("user_id") or current_user_id
         question = data.get("question") or data.get("query")
-        pdf_ids = data.get("pdf_ids")
-        if isinstance(pdf_ids, str):
-            # If pdf_ids is a comma-separated string, convert to list
-            pdf_ids = [pid.strip() for pid in pdf_ids.split(",") if pid.strip()]
-
-        context = json.loads(data.get("context", "{}"))
+        context_raw = data.get("context", "{}")
+        try:
+            context = json.loads(context_raw)
+        except Exception:
+            context = {}
         context_id = context.get("id", None)
         resource = context.get("resource", "annotation")
         graph = data.get("graph", None)
         json_query = data.get("json_query", None)
+
+        # Determine pdf_ids if resource is pdf and id is a list or string
+        pdf_ids = None
+        if resource == "pdf":
+            if isinstance(context_id, list):
+                pdf_ids = context_id
+            elif isinstance(context_id, str):
+                # If it's a comma-separated string, split it
+                if context_id.strip().startswith("["):
+                    try:
+                        pdf_ids = json.loads(context_id)
+                    except Exception:
+                        pdf_ids = [context_id]
+                else:
+                    pdf_ids = [
+                        pid.strip() for pid in context_id.split(",") if pid.strip()
+                    ]
 
         # Ensure query exists before processing
         if not question and not json_query:
@@ -89,7 +72,7 @@ def process_query(current_user_id, auth_token):
             query=question,
             user_id=user_id,
             token=auth_token,
-            graph_id=context_id,
+            graph_id=context_id if resource != "pdf" else None,
             graph=graph,
             resource=resource,
             json_query=json_query,
@@ -108,7 +91,7 @@ def process_query(current_user_id, auth_token):
 def upload_pdf(current_user_id, auth_token):
     # Upload and process PDF documents using the RAG module
     try:
-        user_id = request.form.get("user_id") or request.json.get("user_id")
+        user_id = request.form.get("user_id")
         if not user_id:
             return jsonify(error="Missing user_id"), 400
 
@@ -146,18 +129,35 @@ def upload_pdf(current_user_id, auth_token):
 def user_status(current_user_id, auth_token):
     # Get user's PDF status and limits
     try:
-        user_id = request.args.get("user_id")
+        data = request.form
+        user_id = data.get("user_id") or current_user_id
         if not user_id:
             return jsonify(error="Missing user_id"), 400
 
-        user_data = get_user_data(user_id)
-
+        pdf_files = db_manager.get_user_pdfs(user_id)
+        count = db_manager.get_pdf_count(user_id)
+        files = [
+            {
+                "filename": pdf.filename,
+                "pdf_id": pdf.pdf_id,
+                "num_pages": pdf.num_pages,
+                "file_size": pdf.file_size,
+                "upload_time": (
+                    pdf.upload_time.strftime("%Y-%m-%d %H:%M:%S")
+                    if pdf.upload_time
+                    else None
+                ),
+                "summary": pdf.summary,
+            }
+            for pdf in pdf_files
+        ]
+        PDF_LIMIT = 5
         return (
             jsonify(
                 user_id=user_id,
-                count=user_data["count"],
+                count=count,
                 limit=PDF_LIMIT,
-                files=user_data["files"],
+                files=files,
             ),
             200,
         )
@@ -171,19 +171,26 @@ def user_status(current_user_id, auth_token):
 @main_bp.route("/rag/clear_user_data", methods=["DELETE"])
 @token_required
 def clear_user_data(current_user_id, auth_token):
-    # Clear all PDF data for a specific user
+    # Clear all PDF data and conversation history for a specific user
     try:
-        user_id = request.args.get("user_id")
+        data = request.form
+        user_id = data.get("user_id") or current_user_id
         if not user_id:
             return jsonify(error="Missing user_id"), 400
 
-        # Load current data and remove user
-        current_data = load_user_pdf()
-        if user_id in current_data:
-            del current_data[user_id]
-            save_user_pdf(current_data)
+        # 1. Delete all PDF files for this user from DB and disk
+        pdf_files = db_manager.get_user_pdfs(user_id)
+        for pdf in pdf_files:
+            # Remove PDF file from storage
+            pdf_path = os.path.join("storage/pdfs", f"{pdf.pdf_id}.pdf")
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
+            db_manager.delete_pdf_file(user_id, pdf.pdf_id)
 
-        # Clear Qdrant collection for this user
+        # 2. Clear conversation history (and related memory/context)
+        HistoryManager().clear_user_history(user_id)
+
+        # 3. Clear Qdrant collection for this user
         try:
             qdrant_client = current_app.config["qdrant_client"]
             qdrant_client.client.delete_collection(collection_name=user_id)
@@ -206,7 +213,7 @@ def clear_user_data(current_user_id, auth_token):
 @token_required
 def delete_pdf(current_user_id, auth_token):
     try:
-        data = request.get_json() or {}
+        data = request.form
         user_id = data.get("user_id")
         pdf_id = data.get("pdf_id")
         if not user_id or not pdf_id:
@@ -219,11 +226,8 @@ def delete_pdf(current_user_id, auth_token):
         else:
             current_app.logger.warning(f"PDF file {pdf_path} not found for deletion.")
 
-        # Remove from user tracking
-        user_data = get_user_data(user_id)
-        new_files = [f for f in user_data["files"] if f["pdf_id"] != pdf_id]
-        new_count = max(0, user_data["count"] - 1)
-        update_user_data(user_id, {"count": new_count, "files": new_files})
+        # Remove from database
+        db_manager.delete_pdf_file(user_id, pdf_id)
 
         # Remove from Qdrant
         qdrant_client = current_app.config["qdrant_client"]
@@ -241,7 +245,7 @@ def delete_pdf(current_user_id, auth_token):
 def get_summary_audio(current_user_id, auth_token):
     # Generate and serve summary audio on-demand, with Redis caching
     try:
-        data = request.get_json()
+        data = request.form
         user_id = data.get("user_id") if data else None
         pdf_id = data.get("pdf_id") if data else None
 
@@ -258,21 +262,18 @@ def get_summary_audio(current_user_id, auth_token):
             return Response(audio_data, mimetype="audio/mpeg")
 
         # Get user's PDF data to find the summary
-        user_data = get_user_data(user_id)
-        files = user_data.get("files", [])
-
-        # Find the PDF file with matching pdf_id
+        pdf_files = db_manager.get_user_pdfs(user_id)
         target_file = None
-        for file_info in files:
-            if file_info.get("pdf_id") == pdf_id:
-                target_file = file_info
+        for pdf in pdf_files:
+            if pdf.pdf_id == pdf_id:
+                target_file = pdf
                 break
 
         if not target_file:
             return jsonify(error="PDF not found for this user"), 404
 
         # Get the summary from the stored user data
-        summary_text = target_file.get("summary", "")
+        summary_text = target_file.summary or ""
 
         if not summary_text:
             return jsonify(error="No summary found for this PDF"), 404
@@ -300,7 +301,7 @@ def get_summary_audio(current_user_id, auth_token):
 def get_query_audio(current_user_id, auth_token):
     # Generate and serve query audio on-demand using query_id, with Redis caching
     try:
-        data = request.get_json()
+        data = request.form
         user_id = data.get("user_id") if data else None
         query_id = data.get("query_id") if data else None
 
@@ -316,11 +317,8 @@ def get_query_audio(current_user_id, auth_token):
             )
             return Response(audio_data, mimetype="audio/mpeg")
 
-        # Get the AI assistant to access history
-        ai_assistant = current_app.config["ai_assistant"]
-
-        # Get the specific conversation entry by query_id
-        entry = ai_assistant.history.get_entry_by_query_id(user_id, query_id)
+        # Get the specific conversation entry by query_id using HistoryManager
+        entry = HistoryManager().get_entry_by_query_id(user_id, query_id)
 
         if not entry:
             return jsonify(error="Query not found in history"), 404
@@ -354,10 +352,10 @@ def get_query_audio(current_user_id, auth_token):
 def get_user_history(current_user_id, auth_token):
     # Get conversation history for a user
     try:
-        user_id = request.args.get("user_id") or current_user_id
+        data = request.form
+        user_id = data.get("user_id") or current_user_id
 
-        ai_assistant = current_app.config["ai_assistant"]
-        history = ai_assistant.history.retrieve_user_history(user_id)
+        history = HistoryManager().retrieve_user_history(user_id)
 
         return jsonify(history), 200
     except Exception as e:
@@ -370,16 +368,12 @@ def get_user_history(current_user_id, auth_token):
 def clear_user_history(current_user_id, auth_token):
     # Clear conversation history for a user
     try:
-        user_id = request.args.get("user_id") or current_user_id
+        data = request.form
+        user_id = data.get("user_id") or current_user_id
 
-        ai_assistant = current_app.config["ai_assistant"]
-        # Clear history by setting empty list
-        ai_assistant.history.history[str(user_id)] = []
-        ai_assistant.history._save_history()
+        HistoryManager().clear_user_history(user_id)
 
         return jsonify(message="History cleared successfully"), 200
     except Exception as e:
         current_app.logger.error(f"Error clearing history: {e}")
         return jsonify(error=f"Error clearing history: {str(e)}"), 500
-
-
