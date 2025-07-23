@@ -4,6 +4,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 from flask_cors import CORS
+import traceback
 from app.annotation_graph.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import (
     get_llm_model,
@@ -19,6 +20,8 @@ from .routes import main_bp
 import os
 import yaml
 import json
+from app.storage.sql_redis_storage import create_tables
+import os
 
 # Configure logging
 logging.basicConfig(
@@ -45,10 +48,6 @@ def load_config():
         raise
 
 
-from app.storage.sql_redis_storage import create_tables, db_manager
-import os
-
-
 def initialize_database():
     """Initialize the SQLite database with tables only - no sample data"""
     try:
@@ -62,8 +61,6 @@ def initialize_database():
 
     except Exception as e:
         print(f"Error initializing database: {str(e)}")
-        import traceback
-
         traceback.print_exc()
 
 
@@ -115,12 +112,6 @@ def create_app():
     )
     logger.info("ADVANCED LLM model initialized successfully")
 
-    """
-    Change the embedding_model to:
-    - openai_embedding_model to use openai embedding models
-    - gemini_embedding_model to use gemini embedding models
-    - sentence_transformer_embedding_model to use sentence transformer embedding
-    """
     embedding_model = sentence_transformer_embedding_model
     vector_size = get_embedding_vector_size(embedding_model)
     qdrant_client = Qdrant(embedding_model=embedding_model, vector_size=vector_size)
@@ -135,26 +126,38 @@ def create_app():
             logger.info(
                 "SITE_INFORMATION collection already exists, skipping population data"
             )
-        except:
-            logger.info(
-                "SITE_INFORMATION collection not found, uploading sample web data to qdrant db"
-            )
-            with open("sample_data.json") as data:
-                data = json.load(data)
+        except Exception as e:
+            # Check if the error is because the collection does not exist
+            if "not found" in str(e).lower() or "404" in str(e):
+                logger.info(
+                    "SITE_INFORMATION collection not found, uploading sample web data to qdrant db"
+                )
+                with open("sample_data.json") as data:
+                    sample_site_data = json.load(data)
 
-            rag = RAG(
-                advanced_llm,
-                qdrant_client=qdrant_client,
-            )
-            rag.save_doc_to_rag(
-                data=data, collection_name="SITE_INFORMATION", is_pdf=False
-            )
+                # Initialize a RAG instance to handle the data upload
+                rag = RAG(
+                    advanced_llm,
+                    qdrant_client=qdrant_client,
+                )
+                # Upload the data to the specified collection
+                rag.save_doc_to_rag(
+                    data=sample_site_data,
+                    collection_name="SITE_INFORMATION",
+                    is_pdf=False,
+                )
+                logger.info("Successfully populated SITE_INFORMATION collection.")
+            else:
+                # Log any other unexpected errors during collection check
+                logger.error(
+                    f"An unexpected error occurred when checking for SITE_INFORMATION collection: {e}",
+                    exc_info=True,
+                )
+
     except Exception as e:
-        import traceback
-
-        traceback.print_exc()
-        logger.warning(
-            "Qdrant Connection Failed!!! If you are running locally Please connect qdrant database by running docker run -d -p 6333:6333 -v qdrant_data:/qdrant/storage qdrant/qdrant"
+        logger.error(
+            f"An error occurred during the application setup for SITE_INFORMATION: {e}",
+            exc_info=True,
         )
 
     # Initialize AiAssistance with shared qdrant_client and embedding_model
