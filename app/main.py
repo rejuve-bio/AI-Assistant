@@ -10,7 +10,7 @@ from app.prompts.conversation_handler import conversation_prompt
 from app.prompts.classifier_prompt import classifier_prompt
 from app.summarizer import Graph_Summarizer
 from app.hypothesis_generation.hypothesis import HypothesisGeneration
-from app.storage.history import History
+from app.storage.history_manager import HistoryManager
 from app.storage.sql_redis_storage import DatabaseManager
 import logging.handlers as loghandlers
 from dotenv import load_dotenv
@@ -59,7 +59,7 @@ class AiAssistance:
             llm=advanced_llm,
             qdrant_client=qdrant_client,
         )
-        self.history = History()
+        self.history = HistoryManager()
         self.store = DatabaseManager()
         self.hypothesis_generation = HypothesisGeneration(advanced_llm)
 
@@ -75,7 +75,7 @@ class AiAssistance:
                 }
             ]
 
-    def agent(self, message, user_id, token):
+    def agent(self, message, user_id, token, pdf_ids=None):
         # message = self.preprocess_message(message)
 
         # graph_agent = AssistantAgent(
@@ -198,7 +198,9 @@ class AiAssistance:
         )
         def get_general_response() -> str:
             try:
-                response = self.rag.get_result_from_rag(message, user_id)
+                response = self.rag.get_result_from_rag(
+                    message, user_id, pdf_ids=pdf_ids
+                )
                 return response
             except Exception as e:
                 logger.error("Error in retrieving response", exc_info=True)
@@ -329,16 +331,157 @@ class AiAssistance:
             logger.info(
                 f"passes parameters are query = {query}, user_id= {user_id}, graphid={graph_id}, graph = {graph}, resource = {resource}, pdf_ids = {pdf_ids}"
             )
-            # Always use the RAG agent for all queries
-            response = self.rag.get_result_from_rag(query, user_id, pdf_ids=pdf_ids)
+            # Only error if both file and query/graph are provided
+            if (file and query) or (file and graph):
+                return {
+                    "text": "please pass a file to be uploaded or a query with/without graph ids not both"
+                }
 
-            # Save RAG responses to history for conversation continuity
-            if response and isinstance(response, dict) and "text" in response:
-                query_id = self.history.create_history(user_id, query, response["text"])
-                response["query_id"] = query_id
+            # File upload is now handled in the upload endpoint, so skip file logic here
 
-            return response
-        except Exception as e:
-            logger.error(f"Exception in assistant_response: {e}")
+            if graph_id:
+                logger.info("Explaining nodes")
+                # Case 1: Both graph_id and query are provided
+                if query:
+                    logger.debug("Query provided with graph_id")
+                    if resource == "annotation":
+                        # Process summary with query
+                        summary = self.graph_summarizer.summary(
+                            token=token, graph_id=graph_id
+                        )
+                        prompt = classifier_prompt.format(
+                            query=query, graph_summary=summary
+                        )
+                        response = self.advanced_llm.generate(prompt)
+                        if response.startswith("related:"):
+                            logger.info("question is related with the graph")
+                            query_response = response[len("related:") :].strip()
+                            self.history.create_history(user_id, query, query_response)
+                            logger.info(
+                                f"user query is {query} response is {query_response}"
+                            )
+                            return {"text": query_response}
+                        elif "not" in response:
+                            logger.info(
+                                f"question not related with the graph so sending the query {query} to agent"
+                            )
+                            response = self.agent(
+                                query, user_id, token, pdf_ids=pdf_ids
+                            )
+                            logger.info(f"user query is {query} response is {response}")
+                            return response
+                        else:
+                            logger.warning(
+                                f"Unexpected classifier response: {response}. Defaulting to not related."
+                            )
+                            return response
+                    elif resource == "hypothesis":
+                        summary = self.hypothesis_generation.get_by_hypothesis_id(
+                            token, graph_id, query
+                        )
+                        logger.info(
+                            f"Summaries of the graph id {graph_id} is {summary}"
+                        )
+                        if summary is None:
+                            logger.info(
+                                f"question not related with the graph so sending the query {query} to agent"
+                            )
+                            try:
+                                response = self.agent(
+                                    query, user_id, token, pdf_ids=pdf_ids
+                                )
+                                logger.info(
+                                    f"user query is {query} response is {response}"
+                                )
+                                return response
+                            except:
+                                return {
+                                    "text": "Sorry I coudnt understand your question"
+                                }
+                        prompt = classifier_prompt.format(
+                            query=query, graph_summary=summary
+                        )
+                        response = self.advanced_llm.generate(prompt)
+                        if response.startswith("related:"):
+                            logger.info("question is related with the graph")
+                            query_response = response[len("related:") :].strip()
+                            self.history.create_history(user_id, query, query_response)
+                            logger.info(
+                                f"user query is {query} response is {query_response}"
+                            )
+                            return {"text": query_response}
+                        elif response.strip() == "not":
+                            logger.info(
+                                f"question not related with the graph so sending the query {query} to agent"
+                            )
+                            response = self.agent(
+                                query, user_id, token, pdf_ids=pdf_ids
+                            )
+                            logger.info(f"user query is {query} response is {response}")
+                            return response
+                        else:
+                            logger.warning(
+                                f"Unexpected classifier response: {response}. Defaulting to not related."
+                            )
+                            return {"text": response}
+                    else:
+                        logger.error(f"Unsupported resource type: '{resource}'")
+                        return {"text": f"Unsupported resource type: '{resource}'"}
+                # Case 2: Only graph_id is provided (no query)
+                else:
+                    logger.debug("No query provided, but graph_id is available")
+                    if resource == "annotation":
+                        summary = self.graph_summarizer.summary(
+                            token=token, graph_id=graph_id, user_query=None
+                        )
+                        self.history.create_history(user_id, query, summary)
+                        return summary
+                    elif resource == "hypothesis":
+                        logger.info("Hypothesis resource, no query provided")
+                        summary = self.hypothesis_generation.get_by_hypothesis_id(
+                            token, graph_id, query
+                        )
+                        return {"text": summary}
+                    else:
+                        logger.error(f"Unsupported resource type: '{resource}'")
+                        return {"text": f"Unsupported resource type: '{resource}'"}
+            if query:
+                logger.info(
+                    f"RAG being called for a given query {query} from resource {resource}"
+                )
+                # [TEAM NOTE] For RAG/general queries, we bypass the agent system and call RAG directly.
+                # This avoids autogen/OpenAI dependency issues and allows pure Gemini usage for RAG.
+                # The agent system is still used for graph/hypothesis/annotation queries above.
+                response = self.rag.get_result_from_rag(query, user_id, pdf_ids=pdf_ids)
+                # Save RAG responses to history for conversation continuity
+                if response and isinstance(response, dict) and "text" in response:
+                    query_id = self.history.create_history(
+                        user_id, query, response["text"]
+                    )
+                    response["query_id"] = query_id
+                return response
+            if query and graph:
+                summary = self.graph_summarizer.summary(user_query=query, graph=graph)
+                self.history.create_history(user_id, query, summary)
+                return summary
+            if graph:
+                summary = self.graph_summarizer.summary(user_query=query, graph=graph)
+                self.history.create_history(user_id, query, summary)
+                return summary
+            if json_query:
+                logger.info(
+                    f"Executing a json query {json_query} to the annotation service"
+                )
+                try:
+                    logger.info(f"Generating graph with arguments: {json_query}")
+                    response = self.annotation_graph.generate_graph(
+                        f"json format accepted from the user is {json_query}",
+                        json_query,
+                        token,
+                    )
+                    return response
+                except Exception as e:
+                    logger.error("Error in generating graph", exc_info=True)
+                    return f"I couldn't generate a graph for the given format would you please try again."
+        except:
             traceback.print_exc()
-            return {"text": f"Error processing query: {str(e)}"}

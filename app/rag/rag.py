@@ -1,15 +1,15 @@
-from app.prompts.rag_prompts import SYSTEM_PROMPT, RETRIEVE_PROMPT
+from app.prompts.rag_prompts import RETRIEVE_PROMPT
 from app.storage.memory_layer import MemoryManager
+from app.storage.history_manager import HistoryManager
 import traceback
 import os
 import logging
-import re
-import json
 import uuid
 from datetime import datetime
 import fitz
 from app.rag.utils.pdf_processor import extract_text_from_pdf, chunk_text
 from app.rag.utils.pdf_analyzer import PDFAnalyzer
+from app.storage.sql_redis_storage import db_manager
 
 
 logging.basicConfig(
@@ -22,35 +22,6 @@ VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION", "SITE_INFORMATION")
 USER_COLLECTION = os.getenv("USER_COLLECTION", "CHAT_MEMORY")
 USERS_PDF_COLLECTION = os.getenv("PDF_COLLECTION", "PDF_COLLECTION")
 PDF_LIMIT = 5
-USER_PDF_FILE = "rag_user_pdf.json"
-
-
-def load_user_pdf():
-    if os.path.exists(USER_PDF_FILE):
-        with open(USER_PDF_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-
-def save_user_pdf(user_pdf_data):
-    with open(USER_PDF_FILE, "w") as f:
-        json.dump(user_pdf_data, f, indent=4)
-
-
-def update_user_data(user_id, new_user_data):
-    try:
-        current_data = load_user_pdf()
-        current_data[user_id] = new_user_data
-        save_user_pdf(current_data)
-        return True
-    except Exception as e:
-        logging.getLogger(__name__).error(f"Error updating user data: {e}")
-        return False
-
-
-def get_user_data(user_id):
-    current_data = load_user_pdf()
-    return current_data.get(user_id, {"count": 0, "files": []})
 
 
 class RAG:
@@ -128,17 +99,16 @@ class RAG:
             return_response = {"text": None, "resource": {}}
 
             # Check for duplicate files
-            if any(
-                f["filename"] == file.filename for f in get_user_data(user_id)["files"]
-            ):
+            pdf_files = db_manager.get_user_pdfs(user_id)
+            if any(f.filename == file.filename for f in pdf_files):
                 return_response["text"] = "PDF already exists."
                 return_response["resource"]["filename"] = file.filename
                 return return_response
 
             # Check quota
-            if get_user_data(user_id)["count"] >= PDF_LIMIT:
+            if db_manager.get_pdf_count(user_id) >= PDF_LIMIT:
                 return_response["text"] = "Your quota is full. Maximum 5 PDFs allowed."
-                return_response["resource"]["count"] = get_user_data(user_id)["count"]
+                return_response["resource"]["count"] = db_manager.get_pdf_count(user_id)
                 return return_response
 
             pdf_id = str(uuid.uuid4())
@@ -155,7 +125,7 @@ class RAG:
                 num_pages = None
 
             # Get upload time
-            upload_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            upload_time = datetime.now()
 
             # Get file size in MB
             try:
@@ -182,7 +152,7 @@ class RAG:
                 "suggested_questions": analysis.get("suggested_questions", ""),
                 "num_pages": num_pages,
                 "file_size": f"{file_size} MB",
-                "upload_time": upload_time,
+                "upload_time": upload_time.strftime("%Y-%m-%d %H:%M:%S"),
             }
 
             # Store in Qdrant using custom chunking logic
@@ -196,28 +166,26 @@ class RAG:
                 pdf_id=pdf_id,
             )
 
-            # update user tracking for each file
-            user_data = get_user_data(user_id)
-            update_user_data(
-                user_id,
-                {
-                    "count": user_data["count"] + 1,
-                    "files": user_data["files"]
-                    + [
-                        {
-                            "filename": file.filename,
-                            "pdf_id": pdf_id,
-                            "num_pages": num_pages,
-                            "file_size": file_size,
-                            "upload_time": upload_time,
-                            "summary": analysis.get("summary", ""),
-                        }
-                    ],
-                },
+            # Add PDF metadata to the database
+            db_manager.add_pdf_file(
+                user_id=user_id,
+                pdf_id=pdf_id,
+                filename=file.filename,
+                num_pages=num_pages,
+                file_size=file_size,
+                upload_time=upload_time,
+                summary=summary,
             )
 
             # Add memory for the upload
             MemoryManager(self.llm).add_memory(f"pdf file : {file.filename}", user_id)
+
+            # Add a history entry for the PDF upload
+            HistoryManager().create_history(
+                user_id=user_id,
+                user_message=f"Uploaded PDF: {file.filename}",
+                assistant_answer=f"PDF '{file.filename}' uploaded successfully.",
+            )
 
             return_response["text"] = "PDF uploaded successfully."
             return_response["resource"] = file_analysis
