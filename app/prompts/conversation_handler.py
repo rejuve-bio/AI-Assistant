@@ -61,8 +61,8 @@ EXAMPLES:
   and if user asks "What promoters super enhancers are associated with the gene in the graph"
   question: "What promoters and super enhancers are associated with the IGF1 gene"
 
-- If in recent conversation the user asked about "quantum computers" and now asks "What about their applications?", respond with:
-  question: "What are the applications of quantum computers?"
+- If in recent conversation the user asked about "p53 gene" and now asks "What about its functions?", respond with:
+  question: "What are the functions of the p53 gene?"
 
 CRITICAL RULE: NEVER provide factual information directly in your responses. ALL information-seeking queries must be routed to specialized agents using the "question:" prefix.
 """
