@@ -8,10 +8,10 @@ from sqlalchemy import (
     String,
     DateTime,
     Text,
-    ForeignKey,
+    Float,
 )
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import sessionmaker
 import uuid
 import redis
 from app.storage.memory_layer import MemoryManager
@@ -35,10 +35,6 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# REDIS_URL setup
-REDIS_URL = os.getenv("REDIS_URL")
-redis_client = redis.Redis.from_url(REDIS_URL)
-
 
 class UserInformation(Base):
     __tablename__ = "user_information"
@@ -50,10 +46,25 @@ class UserInformation(Base):
     time = Column(DateTime, default=datetime.utcnow)
     memory = Column(Text)  # JSON string for memory data
     context = Column(Text)  # JSON string for context data
+    assistant_answer = Column(Text, nullable=True)
+
+
+class UserPDFFile(Base):
+    __tablename__ = "user_pdf_file"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True, nullable=False)
+    pdf_id = Column(String, unique=True, nullable=False)
+    filename = Column(String, nullable=False)
+    num_pages = Column(Integer)
+    file_size = Column(Float)
+    upload_time = Column(DateTime)
+    summary = Column(Text)
 
 
 # Create tables
 def create_tables():
+    print("Creating tables...")
     Base.metadata.create_all(bind=engine)
 
 
@@ -240,9 +251,76 @@ class DatabaseManager:
             print(f"Error saving user information: {e}")
             return None
 
+    # PDF File CRUD Methods
+    def add_pdf_file(
+        self, user_id, pdf_id, filename, num_pages, file_size, upload_time, summary=None
+    ):
+        db = self.get_session()
+        try:
+            pdf_file = UserPDFFile(
+                user_id=user_id,
+                pdf_id=pdf_id,
+                filename=filename,
+                num_pages=num_pages,
+                file_size=file_size,
+                upload_time=upload_time,
+                summary=summary,
+            )
+            db.add(pdf_file)
+            db.commit()
+            db.refresh(pdf_file)
+            return pdf_file
+        except Exception as e:
+            db.rollback()
+            raise e
+        finally:
+            db.close()
+
+    def get_user_pdfs(self, user_id):
+        db = self.get_session()
+        try:
+            return (
+                db.query(UserPDFFile)
+                .filter(UserPDFFile.user_id == user_id)
+                .order_by(UserPDFFile.upload_time.asc())
+                .all()
+            )
+        finally:
+            db.close()
+
+    def get_pdf_count(self, user_id):
+        db = self.get_session()
+        try:
+            return db.query(UserPDFFile).filter(UserPDFFile.user_id == user_id).count()
+        finally:
+            db.close()
+
+    def delete_pdf_file(self, user_id, pdf_id):
+        db = self.get_session()
+        try:
+            pdf_file = (
+                db.query(UserPDFFile)
+                .filter(UserPDFFile.user_id == user_id, UserPDFFile.pdf_id == pdf_id)
+                .first()
+            )
+            if pdf_file:
+                db.delete(pdf_file)
+                db.commit()
+                return True
+            return False
+        except Exception as e:
+            db.rollback()
+            raise e
+        finally:
+            db.close()
+
 
 # Initialize database manager
 db_manager = DatabaseManager()
+
+# REDIS_URL setup
+REDIS_URL = os.getenv("REDIS_URL")
+redis_client = redis.Redis.from_url(REDIS_URL)
 
 
 # Audio cache helpers
