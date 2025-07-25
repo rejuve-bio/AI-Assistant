@@ -1,8 +1,8 @@
-
-
 import autogen
 from autogen import AssistantAgent, UserProxyAgent, GroupChat, GroupChatManager
-from .llm_handle.llm_models import LLMInterface,OpenAIModel,get_llm_model,openai_embedding_model
+from .llm_handle.llm_models import (
+    LLMInterface,
+)
 from .annotation_graph.annotated_graph import Graph
 from app.annotation_graph.schema_handler import SchemaHandler
 from app.rag.rag import RAG
@@ -10,21 +10,17 @@ from app.prompts.conversation_handler import conversation_prompt
 from app.prompts.classifier_prompt import classifier_prompt
 from app.summarizer import Graph_Summarizer
 from app.hypothesis_generation.hypothesis import HypothesisGeneration
-from app.storage.history import History
+from app.storage.history_manager import HistoryManager
 from app.storage.sql_redis_storage import DatabaseManager
-import asyncio
 import logging.handlers as loghandlers
 from dotenv import load_dotenv
 from typing import Annotated
 import traceback
 import logging
-import asyncio
-import json
 import autogen
 import os
 
 logger = logging.getLogger(__name__)
-
 
 log_dir = "/AI-Assistant/logfiles"
 log_file = os.path.join(log_dir, "Assistant.log")
@@ -33,31 +29,53 @@ os.makedirs(log_dir, exist_ok=True)
 
 logger.setLevel(logging.DEBUG)
 loghandle = loghandlers.TimedRotatingFileHandler(
-                filename="logfiles/Assistant.log",
-                when='D', interval=1, backupCount=7,
-                encoding="utf-8")
-loghandle.setFormatter(
-    logging.Formatter("%(asctime)s %(message)s"))
+    filename="logfiles/Assistant.log",
+    when="D",
+    interval=1,
+    backupCount=7,
+    encoding="utf-8",
+)
+loghandle.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
 logger.addHandler(loghandle)
 load_dotenv()
+
+
 class AiAssistance:
 
-    def __init__(self, advanced_llm:LLMInterface, basic_llm:LLMInterface, schema_handler:SchemaHandler) -> None:
-        self.advanced_llm = advanced_llm     
+    def __init__(
+        self,
+        advanced_llm: LLMInterface,
+        basic_llm: LLMInterface,
+        schema_handler: SchemaHandler,
+        embedding_model=None,
+        qdrant_client=None,
+    ) -> None:
+        self.advanced_llm = advanced_llm
         self.basic_llm = basic_llm
         self.annotation_graph = Graph(advanced_llm, schema_handler)
         self.graph_summarizer = Graph_Summarizer(self.advanced_llm)
-        self.rag = RAG(llm=advanced_llm)
-        self.history = History()
+
+        self.rag = RAG(
+            llm=advanced_llm,
+            qdrant_client=qdrant_client,
+        )
+        self.history = HistoryManager()
         self.store = DatabaseManager()
         self.hypothesis_generation = HypothesisGeneration(advanced_llm)
-    
-        if self.advanced_llm.model_provider == 'gemini':
-            self.llm_config = [{"model":"gemini-1.5-flash","api_key": self.advanced_llm.api_key}]
-        else:
-            self.llm_config = [{"model": self.advanced_llm.model_name, "api_key":self.advanced_llm.api_key}]
 
-    def agent(self,message,user_id, token):
+        if self.advanced_llm.model_provider == "gemini":
+            self.llm_config = [
+                {"model": "gemini-1.5-flash", "api_key": self.advanced_llm.api_key}
+            ]
+        else:
+            self.llm_config = [
+                {
+                    "model": self.advanced_llm.model_name,
+                    "api_key": self.advanced_llm.api_key,
+                }
+            ]
+
+    def agent(self, message, user_id, token, pdf_ids=None):
         # message = self.preprocess_message(message)
 
         # graph_agent = AssistantAgent(
@@ -73,8 +91,9 @@ class AiAssistance:
 
         annotation_validate_agent = AssistantAgent(
             name="validate a json format for a validation",
-            llm_config = {"config_list" : self.llm_config},
-            system_message=("""
+            llm_config={"config_list": self.llm_config},
+            system_message=(
+                """
                 You are responsible for handling ONLY factual annotation-related user queries. 
                 YOUR PRIMARY ROLE:
                 - Convert user questions into valid JSON format for Neo4j graph database execution
@@ -88,13 +107,15 @@ class AiAssistance:
                 DO NOT generate any text-based responses using your internal knowledge
                 ALWAYS use the function to process user queries about genomic information
                 When receiving a query, immediately execute the function with the query parameters
-                """),
-                )
-        
+                """
+            ),
+        )
+
         hypothesis_generation_agent = AssistantAgent(
             name="hypothesis generations",
-            llm_config = {"config_list" : self.llm_config},
-            system_message=("""
+            llm_config={"config_list": self.llm_config},
+            system_message=(
+                """
                 You are responsible for identifying hypothesis-generation queries about biological mechanisms and ALWAYS using the hypothesis_generation function to process them.
                 
                 YOUR PRIMARY ROLE:
@@ -109,13 +130,15 @@ class AiAssistance:
                 - The query seeks explanations rather than established facts
                 - The user wants reasoning about biological processes or effects
                 - ANY query asking to explain variants (rs numbers) or phenotypes
-                """),
-            )
-        
+                """
+            ),
+        )
+
         rag_agent = AssistantAgent(
             name="rag_retrival",
-            llm_config = {"config_list" : self.llm_config},
-            system_message=("""
+            llm_config={"config_list": self.llm_config},
+            system_message=(
+                """
                 You are responsible for identifying general information queries that fall outside specific biological entity lookups or mechanisms.
                 YOUR PRIMARY ROLE:
                 - Recognize general information requests that aren't targeted biological lookups or hypothesis generation
@@ -131,26 +154,33 @@ class AiAssistance:
                 "General information about this site?"
                 IMPORTANT: You only identify and route queries to the appropriate function. The function will retrieve and present the actual information. Reply 'TERMINATE' when the identification and routing is complete.
                """
-               ),)
+            ),
+        )
 
         user_agent = UserProxyAgent(
             name="user",
             llm_config=False,
             code_execution_config=False,
             human_input_mode="NEVER",
-            is_termination_msg=lambda x: x.get("content", "") and x.get("content", "").rstrip().endswith("TERMINATE"))
+            is_termination_msg=lambda x: x.get("content", "")
+            and x.get("content", "").rstrip().endswith("TERMINATE"),
+        )
 
         @user_agent.register_for_execution()
-        @annotation_validate_agent.register_for_llm(description="retrieve the json format provided from the tool")
+        @annotation_validate_agent.register_for_llm(
+            description="retrieve the json format provided from the tool"
+        )
         def get_json_format() -> str:
             try:
-                logger.info(f"Generating graph with arguments: {message}")  # Add this line to log the arguments
+                logger.info(
+                    f"Generating graph with arguments: {message}"
+                )  # Add this line to log the arguments
                 response = self.annotation_graph.validated_json(message)
                 return response
-            except Exception as e:                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
+            except Exception as e:
                 logger.error("Error in generating graph", exc_info=True)
                 return f"I couldn't generate a graph for the given question {message} please try again."
-        
+
         # @user_agent.register_for_execution()
         # @graph_agent.register_for_llm(description="Generate and handle bio-knowledge graphs for annotation-related queries.")
         # def generate_graph():
@@ -163,203 +193,295 @@ class AiAssistance:
         #         return f"I couldn't generate a graph for the given question {message} please try again."
 
         @user_agent.register_for_execution()
-        @rag_agent.register_for_llm(description="Retrieve information for general knowledge queries.")
+        @rag_agent.register_for_llm(
+            description="Retrieve information for general knowledge queries."
+        )
         def get_general_response() -> str:
             try:
-                response = self.rag.get_result_from_rag(message, user_id)
+                response = self.rag.get_result_from_rag(
+                    message, user_id, pdf_ids=pdf_ids
+                )
                 return response
             except Exception as e:
                 logger.error("Error in retrieving response", exc_info=True)
                 return "Error in retrieving response."
 
         @user_agent.register_for_execution()
-        @hypothesis_generation_agent.register_for_llm(description="generation of hypothesis")
+        @hypothesis_generation_agent.register_for_llm(
+            description="generation of hypothesis"
+        )
         def hypothesis_generation() -> str:
             try:
                 logger.info(f"Here is the user query passed to the agent {message}")
-                response = self.hypothesis_generation.generate_hypothesis(token=token,user_query=message)
+                response = self.hypothesis_generation.generate_hypothesis(
+                    token=token, user_query=message
+                )
                 return response
             except:
                 traceback.print_exc()
-       
-        group_chat = GroupChat(agents=[user_agent, rag_agent,annotation_validate_agent,hypothesis_generation_agent], messages=[],max_round=3)
+
+        group_chat = GroupChat(
+            agents=[
+                user_agent,
+                rag_agent,
+                annotation_validate_agent,
+                hypothesis_generation_agent,
+            ],
+            messages=[],
+            max_round=3,
+        )
         group_manager = GroupChatManager(
             groupchat=group_chat,
-            llm_config = {"config_list" : self.llm_config},
-            human_input_mode="NEVER")
+            llm_config={"config_list": self.llm_config},
+            human_input_mode="NEVER",
+        )
 
         user_agent.initiate_chat(group_manager, message=message, clear_history=True)
 
-        response = group_chat.messages[2]['content']
+        response = group_chat.messages[2]["content"]
         if response:
             return response
-        return group_chat.messages[1]['content']
-    
-    async def assistant(self,query,user_id, token, user_context=None,context=None):
+        return group_chat.messages[1]["content"]
+
+    async def assistant(self, query, user_id, token, user_context=None, context=None):
         try:
             user_information = self.store.get_context_and_memory(user_id)
-            context=None 
-            memory=user_information['memories']
-            history = user_information['questions']
+            context = None
+            memory = user_information["memories"]
+            history = user_information["questions"]
             logger.info(f"here is the memory and history {memory} {history}")
         except:
             context = {""}
             history = {""}
             memory = {""}
-        prompt = conversation_prompt.format(memory=memory,query=query,history=history,user_context=user_context)
+
+        # Get conversation history for better context
+        conversation_history = self.history.retrieve_user_history(user_id)
+        user_history = conversation_history.get(str(user_id), [])
+
+        # Format history for the prompt
+        history_context = ""
+        if user_history:
+            history_context = "\n\nPrevious conversation:\n"
+            for entry in user_history[-2:]:  # Last 2 conversations for context
+                history_context += f"User: {entry['user']}\n"
+                history_context += f"Assistant: {entry['assistant answer']}\n"
+
+        prompt = conversation_prompt.format(
+            memory=memory,
+            query=query,
+            history=history,
+            user_context=user_context,
+            conversation_history=history_context,
+        )
         response = self.advanced_llm.generate(prompt)
 
         if response:
             if "response:" in response:
                 result = response.split("response:")[1].strip()
                 final_response = result.strip('"')
-                await self.store.save_user_information(self.advanced_llm,query, user_id, context)
-                self.history.create_history(user_id, query, final_response)
-                return {"text": final_response}
-                
+                await self.store.save_user_information(
+                    self.advanced_llm, query, user_id, context
+                )
+                query_id = self.history.create_history(user_id, query, final_response)
+                return {"text": final_response, "query_id": query_id}
+
             elif "question:" in response:
                 refactored_question = response.split("question:")[1].strip()
-                await self.store.save_user_information(self.advanced_llm,query, user_id, context)
+                await self.store.save_user_information(
+                    self.advanced_llm, query, user_id, context
+                )
                 agent_response = self.agent(refactored_question, user_id, token)
-                return agent_response
+                # Also save agent responses to history
+                query_id = self.history.create_history(
+                    user_id, refactored_question, agent_response
+                )
+                return {"text": agent_response, "query_id": query_id}
             else:
                 logger.warning(f"Unexpected response format: {response}")
-                await self.store.save_user_information(self.advanced_llm,query, user_id, context)
-                return {"text": response or "I'm sorry, I couldn't process your request properly."}
+                await self.store.save_user_information(
+                    self.advanced_llm, query, user_id, context
+                )
+                query_id = self.history.create_history(user_id, query, response)
+                return {
+                    "text": response
+                    or "I'm sorry, I couldn't process your request properly.",
+                    "query_id": query_id,
+                }
         else:
             logger.error("No response generated from LLM")
-            await self.store.save_user_information(self.advanced_llm,query, user_id, context)
+            await self.store.save_user_information(
+                self.advanced_llm, query, user_id, context
+            )
             return {"text": "I'm sorry, I couldn't generate a response at this time."}
-    
-    def assistant_response(self,query,user_id,token,graph=None,graph_id=None,file=None,resource="annotation"):  
+
+    def assistant_response(
+        self,
+        query,
+        user_id,
+        token,
+        graph=None,
+        graph_id=None,
+        file=None,
+        resource="annotation",
+        json_query=None,
+        pdf_ids=None,
+    ):
         try:
-            logger.info(f"passes parameters are query = {query}, user_id= {user_id}, graphid={graph_id}, graph = {graph}, resource = {resource}")
+            logger.info(
+                f"passes parameters are query = {query}, user_id= {user_id}, graphid={graph_id}, graph = {graph}, resource = {resource}, pdf_ids = {pdf_ids}"
+            )
+            # Only error if both file and query/graph are provided
             if (file and query) or (file and graph):
-                return {"text":"please pass a file to be uploaded or a query with/without graph ids not both"}
+                return {
+                    "text": "please pass a file to be uploaded or a query with/without graph ids not both"
+                }
 
-            if file:
-                if file.filename.lower().endswith('.pdf'):
-                    response = self.rag.save_retrievable_docs(file,user_id,filter=True)   
-                    self.history.create_history(user_id, query, json.dumps(response))
-                    return response
-                else:
-                    response = {
-                        'text': "Only PDF files are supported."
-                        }
-                    return response, 400
-                
-            if graph_id:  
+            # File upload is now handled in the upload endpoint, so skip file logic here
+
+            if graph_id:
                 logger.info("Explaining nodes")
-
                 # Case 1: Both graph_id and query are provided
                 if query:
                     logger.debug("Query provided with graph_id")
                     if resource == "annotation":
-                            # Process summary with query
-                            summary = self.graph_summarizer.summary(token=token, graph_id=graph_id)
-                            prompt = classifier_prompt.format(query=query, graph_summary=summary)
-                            response = self.advanced_llm.generate(prompt)
-                            
-                            if response.startswith("related:"):
-                                logger.info("question is related with the graph")
-                                query_response = response[len("related:"):].strip()
-                                # creating users history
-                                self.history.create_history(user_id, query, query_response)
-                                logger.info(f"user query is {query} response is {query_response}")
-                                return {"text":query_response}
-
-                            elif "not" in response:
-                                logger.info("question not related with the graph so sending the query {query} to agent")
-                                response = asyncio.run(self.assistant(query, user_id, token, user_context=summary,context=resource))
-                                logger.info(f"user query is {query} response is {response}")  
-                                return response           
-                            else:
-                                logger.warning(f"Unexpected classifier response: {response}. Defaulting to not related.")
-                                return response
-
-                    elif resource == "hypothesis":
-                        """
-                        TODO
-                        save hypothesis graphs ids along summary if same graph is asked again we won't send an api call instead we will just refer from the db by the id
-                        """
-                        summary = self.hypothesis_generation.get_by_hypothesis_id(token,graph_id,query)
-                        logger.info(f"Summaries of the graph id {graph_id} is {summary}")
-                        if summary is None:
-                            logger.info(f"question not related with the graph so sending the query {query} to agent")
-                            try:
-                                response = asyncio.run(self.assistant(query, user_id, token, user_context=summary))
-                                logger.info(f"user query is {query} response is {response}")
-                                return response
-                            except:
-                                return {"text":"Sorry I coudnt understand your question"}
-                            
-                        prompt = classifier_prompt.format(query=query,graph_summary=summary)
+                        # Process summary with query
+                        summary = self.graph_summarizer.summary(
+                            token=token, graph_id=graph_id
+                        )
+                        prompt = classifier_prompt.format(
+                            query=query, graph_summary=summary
+                        )
                         response = self.advanced_llm.generate(prompt)
-
                         if response.startswith("related:"):
                             logger.info("question is related with the graph")
-                            query_response = response[len("related:"):].strip()
+                            query_response = response[len("related:") :].strip()
                             self.history.create_history(user_id, query, query_response)
-                            logger.info(f"user query is {query} response is {query_response}")
-                            return {"text":query_response}
-                            
-                        elif response.strip() == "not":
-                            logger.info(f"question not related with the graph so sending the query {query} to agent")
-                            response = asyncio.run(self.assistant(query, user_id, token, user_context=summary))
+                            logger.info(
+                                f"user query is {query} response is {query_response}"
+                            )
+                            return {"text": query_response}
+                        elif "not" in response:
+                            logger.info(
+                                f"question not related with the graph so sending the query {query} to agent"
+                            )
+                            response = self.agent(
+                                query, user_id, token, pdf_ids=pdf_ids
+                            )
                             logger.info(f"user query is {query} response is {response}")
                             return response
-
                         else:
-                            logger.warning(f"Unexpected classifier response: {response}. Defaulting to not related.")
-                            return {"text":response}
+                            logger.warning(
+                                f"Unexpected classifier response: {response}. Defaulting to not related."
+                            )
+                            return response
+                    elif resource == "hypothesis":
+                        summary = self.hypothesis_generation.get_by_hypothesis_id(
+                            token, graph_id, query
+                        )
+                        logger.info(
+                            f"Summaries of the graph id {graph_id} is {summary}"
+                        )
+                        if summary is None:
+                            logger.info(
+                                f"question not related with the graph so sending the query {query} to agent"
+                            )
+                            try:
+                                response = self.agent(
+                                    query, user_id, token, pdf_ids=pdf_ids
+                                )
+                                logger.info(
+                                    f"user query is {query} response is {response}"
+                                )
+                                return response
+                            except:
+                                return {
+                                    "text": "Sorry I coudnt understand your question"
+                                }
+                        prompt = classifier_prompt.format(
+                            query=query, graph_summary=summary
+                        )
+                        response = self.advanced_llm.generate(prompt)
+                        if response.startswith("related:"):
+                            logger.info("question is related with the graph")
+                            query_response = response[len("related:") :].strip()
+                            self.history.create_history(user_id, query, query_response)
+                            logger.info(
+                                f"user query is {query} response is {query_response}"
+                            )
+                            return {"text": query_response}
+                        elif response.strip() == "not":
+                            logger.info(
+                                f"question not related with the graph so sending the query {query} to agent"
+                            )
+                            response = self.agent(
+                                query, user_id, token, pdf_ids=pdf_ids
+                            )
+                            logger.info(f"user query is {query} response is {response}")
+                            return response
+                        else:
+                            logger.warning(
+                                f"Unexpected classifier response: {response}. Defaulting to not related."
+                            )
+                            return {"text": response}
                     else:
                         logger.error(f"Unsupported resource type: '{resource}'")
                         return {"text": f"Unsupported resource type: '{resource}'"}
-
                 # Case 2: Only graph_id is provided (no query)
                 else:
                     logger.debug("No query provided, but graph_id is available")
                     if resource == "annotation":
-                        # Process summary without query
-                        summary = self.graph_summarizer.summary(token=token, graph_id=graph_id, user_query=None)
-                        # creating users history
+                        summary = self.graph_summarizer.summary(
+                            token=token, graph_id=graph_id, user_query=None
+                        )
                         self.history.create_history(user_id, query, summary)
                         return summary
                     elif resource == "hypothesis":
                         logger.info("Hypothesis resource, no query provided")
-                        summary = self.hypothesis_generation.get_by_hypothesis_id(token,graph_id,query)
+                        summary = self.hypothesis_generation.get_by_hypothesis_id(
+                            token, graph_id, query
+                        )
                         return {"text": summary}
                     else:
                         logger.error(f"Unsupported resource type: '{resource}'")
                         return {"text": f"Unsupported resource type: '{resource}'"}
- 
             if query:
-                logger.info(f"agent being called for a given query {query} from resource {resource}")
-                response = asyncio.run(self.assistant(query=query, user_id=user_id, token=token,context=resource))
-                return response 
-
+                logger.info(
+                    f"RAG being called for a given query {query} from resource {resource}"
+                )
+                # [TEAM NOTE] For RAG/general queries, we bypass the agent system and call RAG directly.
+                # This avoids autogen/OpenAI dependency issues and allows pure Gemini usage for RAG.
+                # The agent system is still used for graph/hypothesis/annotation queries above.
+                response = self.rag.get_result_from_rag(query, user_id, pdf_ids=pdf_ids)
+                # Save RAG responses to history for conversation continuity
+                if response and isinstance(response, dict) and "text" in response:
+                    query_id = self.history.create_history(
+                        user_id, query, response["text"]
+                    )
+                    response["query_id"] = query_id
+                return response
             if query and graph:
-                summary = self.graph_summarizer.summary(user_query=query,graph=graph)
-                self.history.create_history(user_id, query, response)             
+                summary = self.graph_summarizer.summary(user_query=query, graph=graph)
+                self.history.create_history(user_id, query, summary)
                 return summary
-
             if graph:
-                summary = self.graph_summarizer.summary(user_query=query,graph=graph)
-                self.history.create_history(user_id, query, response)     
+                summary = self.graph_summarizer.summary(user_query=query, graph=graph)
+                self.history.create_history(user_id, query, summary)
                 return summary
-
             if json_query:
-                logger.info(f"Executing a json query {json_query} to the annotation service")
+                logger.info(
+                    f"Executing a json query {json_query} to the annotation service"
+                )
                 try:
-                    logger.info(f"Generating graph with arguments: {json_query}")  # Add this line to log the arguments
-                    response = self.annotation_graph.generate_graph(f"json format accepted from the user is {json}",json,token)
+                    logger.info(f"Generating graph with arguments: {json_query}")
+                    response = self.annotation_graph.generate_graph(
+                        f"json format accepted from the user is {json_query}",
+                        json_query,
+                        token,
+                    )
                     return response
                 except Exception as e:
                     logger.error("Error in generating graph", exc_info=True)
                     return f"I couldn't generate a graph for the given format would you please try again."
-
-
         except:
             traceback.print_exc()
-
-

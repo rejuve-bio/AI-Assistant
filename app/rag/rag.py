@@ -1,243 +1,272 @@
-from app.prompts.rag_prompts import SYSTEM_PROMPT, RETRIEVE_PROMPT
-from app.prompts.pdf_prompt import PDF_SUMMARY_PROMPT
-from app.llm_handle.llm_models import (
-    LLMInterface,
-    openai_embedding_model,
-    gemini_embedding_model,
-)
-from app.storage.qdrant import Qdrant
+from app.prompts.rag_prompts import RETRIEVE_PROMPT
 from app.storage.memory_layer import MemoryManager
-from PyPDF2 import PdfReader
+from app.storage.history_manager import HistoryManager
 import traceback
 import os
-import numpy as np
-import pandas as pd
 import logging
-import re
-import json
+import uuid
+from datetime import datetime
+import fitz
+from app.rag.utils.pdf_processor import extract_text_from_pdf, chunk_text
+from app.rag.utils.pdf_analyzer import PDFAnalyzer
+from app.storage.sql_redis_storage import db_manager
 
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
-VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION","SITE_INFORMATION")
-USER_COLLECTION = os.getenv("USER_COLLECTION","CHAT_MEMORY")
-USERS_PDF_COLLECTION = os.getenv("PDF_COLLECTION","PDF_COLLECTION")
-PDF_LIMIT=5
-class RAG:
+VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION", "SITE_INFORMATION")
+USER_COLLECTION = os.getenv("USER_COLLECTION", "CHAT_MEMORY")
+USERS_PDF_COLLECTION = os.getenv("PDF_COLLECTION", "PDF_COLLECTION")
+PDF_LIMIT = 5
 
-    def __init__(self, llm: LLMInterface,client=Qdrant()) -> None:
+
+class RAG:
+    def __init__(self, llm, qdrant_client):
         """
         Initializes the RAG (Retrieval Augmented Generation) class.
-        Sets up the Qdrant client and LLM interface for query handling.
-
+        Uses the provided Qdrant client
         :param llm: An instance of the LLMInterface for generating responses.
+        :param qdrant_client: The shared Qdrant client.
         """
-        self.client = client
         self.llm = llm
-        if self.llm.__class__.__name__ == 'GeminiModel':
-            self.max_token=2000
-            self.embedding_model = gemini_embedding_model
-            self.embedding_size = 768 # Gemini embedding size
-        elif self.llm.__class__.__name__ == 'OpenAIModel':
-            self.max_token=8000
-            self.embedding_model = openai_embedding_model
-            self.embedding_size = 1536 # OpenAI embedding size
-        logger.info("RAG initialized with LLM model and Qdrant client.")
+        self.client = qdrant_client
+        logger.info(
+            "RAG initialized with LLM and shared Qdrant client/embedding model."
+        )
 
-        self.user_pdf_file = "user_pdf.json"
-        if os.path.exists(self.user_pdf_file):
-            with open(self.user_pdf_file, "r") as f:
-                self.user_pdf = json.load(f)
+    def save_doc_to_rag(
+        self,
+        data,
+        collection_name=None,
+        is_pdf=False,
+        pdf_path=None,
+        file_name=None,
+        user_id=None,
+        pdf_id=None,
+    ):
+        """
+        Unified method to save documents to RAG storage using the unified upsert_data method.
+
+        :param data: The data to store (list of dicts for sample data, or None for PDF)
+        :param collection_name: The collection name to store in
+        :param is_pdf: Boolean indicating if this is PDF data
+        :param pdf_path: Path to PDF file (only for PDF data)
+        :param file_name: Name of the file (only for PDF data)
+        :param user_id: User ID (only for PDF data)
+        :param pdf_id: PDF ID (only for PDF data)
+        """
+        if is_pdf:
+            # Handle PDF data using custom extraction and chunking
+            if pdf_path and file_name and user_id and pdf_id:
+                text = extract_text_from_pdf(pdf_path)
+                chunks = chunk_text(text)
+                metadata = {
+                    "pdf_id": pdf_id,
+                    "filename": file_name,
+                    "user_id": user_id,
+                }
+                # Use unified upsert_data method for PDF
+                return self.client.upsert_data(
+                    collection_name=collection_name,
+                    data=None,
+                    is_pdf=True,
+                    chunks=chunks,
+                    metadata=metadata,
+                )
+            else:
+                logger.error("Missing required parameters for PDF processing")
+                return None
         else:
-            self.user_pdf = {}
+            # Handle sample/general data using unified upsert_data method
+            if isinstance(data, list) and all(isinstance(d, dict) for d in data):
+                # Pass the list of dicts directly to upsert_data
+                return self.client.upsert_data(
+                    collection_name=collection_name,
+                    data=data,
+                    is_pdf=False,
+                )
+            else:
+                logger.error("Invalid data format for sample data storage")
+                return None
 
-    def extract_preprocess_pdf(self,pdf, file_name):
-        logger.info("Extracting text using PyPDF2...")
+    def save_retrievable_docs(self, file, user_id):
         try:
-            reader = PdfReader(pdf)
-            docs = []
-            for page in reader.pages:
-                docs.append(page.extract_text())
-            logger.info("extracting pdf is done")
+            logger = logging.getLogger(__name__)
+            return_response = {"text": None, "resource": {}}
 
-            #create a topic and summary of the pdf
-            PROMPT = PDF_SUMMARY_PROMPT.format(pdf=docs)
-            summary = self.llm.generate(PROMPT)
-            docs.append(f"{file_name} summary: {summary}")
-            return docs
-        except Exception as e:
-            traceback.print_exc()
-
-    def chunking_data(self, datas) -> pd.DataFrame:
-        """
-        This function is a placeholder for data chunking implementation, 
-        which will handle dynamic chunking of various types of documents.
-
-        :datas:A data to be chunked.
-        :return: DataFrame with chunked data 
-        """
-        """Process documents to ensure each chunk has at most self.max_token."""
-        
-        if isinstance(datas, list) and all(isinstance(d, dict) for d in datas):
-            return pd.DataFrame(datas)
-        '''
-        todo:
-        add a token length counter for the models
-        add a chunking mechanism for the dict files 
-        '''
-        result = []
-        for doc in datas:
-            tokens = doc.split()
-            chunks = []
-            while len(tokens) > self.max_token:
-                chunks.append(" ".join(tokens[:self.max_token]))
-                tokens = tokens[self.max_token:]
-            if tokens:
-                chunks.append(" ".join(tokens))
-            result.extend(chunks)
-        df =pd.DataFrame({"content":result})
-        return df
-    
-    def get_contents_embed(self, df) -> pd.DataFrame:
-        """
-        Generates dense embeddings for the content column of the provided DataFrame.
-
-        :param data: DataFrame containing the documents to embed.
-        :return: DataFrame with the added 'dense' column containing embeddings.
-        """
-        try:
-            logger.info("Generating embeddings for content column.")
-            embeddings = self.embedding_model(df['content'].tolist())
-            embed = np.array(embeddings)
-            embedding = embed.reshape(-1, self.embedding_size) # Dynamic embedding size for Qdrant's format
-            df['dense'] = embedding.tolist()  # Add embeddings to DataFrame
-            logger.info("Embeddings generated successfully.")
-            return df
-        except Exception as e:
-            logger.error(f"Error generating dense embeddings: {e}")
-            traceback.print_exc()
-
-    def save_doc_to_rag(self,data,file_name=None,user_id=None,collection_name=VECTOR_COLLECTION):
-        """
-        Saves the DataFrame with embeddings to the specified Qdrant collection.
-
-        :param collection_name: The name of the collection to save data to.
-        :param data: data to be saved.
-        :param userid: user ids to be saved when this is passed datas passed will be save in the users collection
-        """
-        try:
-            df = self.chunking_data(data)
-            df["filename"] = file_name
-            logger.info(f"Embedding contents")
-            df = self.get_contents_embed(df)
-            if df is not None:
-                logger.info(f"Saving data to collection {collection_name}.")
-                response = self.client.upsert_data(collection_name, df,user_id)
-                return response
-        except Exception as e:
-            logger.error(f"Embedding generation failed. Data not upserted to collection {collection_name}")
-            logger.error(f"Error saving to collection {collection_name}: {e}")
-            traceback.print_exc()
-
-    def save_retrievable_docs(self,file,user_id,filter=True):
-        try:
-            return_response = {
-                            "text": None,
-                            "resource": {}
-                            }
-
-            if user_id not in self.user_pdf:
-                self.user_pdf[user_id] = {"count": 0, "names": [], "id": None}
-            
-            file_name = file.filename
-            if file_name in self.user_pdf[user_id]["names"]:
+            # Check for duplicate files
+            pdf_files = db_manager.get_user_pdfs(user_id)
+            if any(f.filename == file.filename for f in pdf_files):
                 return_response["text"] = "PDF already exists."
-                return_response["resource"]["id"] = self.user_pdf[user_id]["id"]
-                return return_response
-            if self.user_pdf[user_id]["count"] >= PDF_LIMIT:
-                return_response["text"] = "Your quota is full."
-                return_response["resource"]["id"] = self.user_pdf[user_id]["id"]
+                return_response["resource"]["filename"] = file.filename
                 return return_response
 
-            data = self.extract_preprocess_pdf(file, file_name)
-            saved_data = self.save_doc_to_rag(data=data, file_name=file_name,user_id=user_id,collection_name=USERS_PDF_COLLECTION)
-            
-            self.user_pdf[user_id]["count"]+=1
-            self.user_pdf[user_id]["names"].append(file_name)
-            self.user_pdf[user_id]["id"] = f"{user_id}_{file_name}"
-            
-            with open(self.user_pdf_file, 'w') as f:
-                json.dump(self.user_pdf,f)
+            # Check quota
+            if db_manager.get_pdf_count(user_id) >= PDF_LIMIT:
+                return_response["text"] = "Your quota is full. Maximum 5 PDFs allowed."
+                return_response["resource"]["count"] = db_manager.get_pdf_count(user_id)
+                return return_response
 
-            memory = MemoryManager(self.llm,self.client).add_memory(f"pdf file : {file_name}", user_id)
-            return_response["text"] = saved_data
-            return_response["resource"]["id"] = self.user_pdf[user_id]["id"]
-            return_response["resource"]["type"] = "file"
+            pdf_id = str(uuid.uuid4())
+            upload_folder = "storage/pdfs"
+            os.makedirs(upload_folder, exist_ok=True)
+            pdf_path = os.path.join(upload_folder, f"{pdf_id}.pdf")
+            file.save(pdf_path)
+
+            # Get number of pages
+            try:
+                with fitz.open(pdf_path) as doc:
+                    num_pages = doc.page_count
+            except Exception:
+                num_pages = None
+
+            # Get upload time
+            upload_time = datetime.now()
+
+            # Get file size in MB
+            try:
+                file_size_bytes = os.path.getsize(pdf_path)
+                file_size = round(file_size_bytes / (1024 * 1024), 2)
+            except Exception:
+                file_size = None
+
+            # Use PDFAnalyzer for summary and analysis
+            pdf_analyzer = PDFAnalyzer()
+            full_text = extract_text_from_pdf(pdf_path)
+            summary = pdf_analyzer.generate_summary(
+                full_text, user_id=user_id, pdf_id=pdf_id
+            )
+            analysis = pdf_analyzer.analyze_pdf_content(full_text)
+            analysis["summary"] = summary
+
+            file_analysis = {
+                "pdf_id": pdf_id,
+                "filename": file.filename,
+                "keywords": analysis.get("keywords", ""),
+                "topics": analysis.get("topics", ""),
+                "summary": analysis.get("summary", ""),
+                "suggested_questions": analysis.get("suggested_questions", ""),
+                "num_pages": num_pages,
+                "file_size": f"{file_size} MB",
+                "upload_time": upload_time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+
+            # Store in Qdrant using custom chunking logic
+            self.save_doc_to_rag(
+                data=None,
+                collection_name=user_id,
+                is_pdf=True,
+                pdf_path=pdf_path,
+                file_name=file.filename,
+                user_id=user_id,
+                pdf_id=pdf_id,
+            )
+
+            # Add PDF metadata to the database
+            db_manager.add_pdf_file(
+                user_id=user_id,
+                pdf_id=pdf_id,
+                filename=file.filename,
+                num_pages=num_pages,
+                file_size=file_size,
+                upload_time=upload_time,
+                summary=summary,
+            )
+
+            # Add memory for the upload
+            MemoryManager(self.llm).add_memory(f"pdf file : {file.filename}", user_id)
+
+            # Add a history entry for the PDF upload
+            HistoryManager().create_history(
+                user_id=user_id,
+                user_message=f"Uploaded PDF: {file.filename}",
+                assistant_answer=f"PDF '{file.filename}' uploaded successfully.",
+            )
+
+            return_response["text"] = "PDF uploaded successfully."
+            return_response["resource"] = file_analysis
             return return_response
-        except:
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error in save_retrievable_docs: {e}")
+            import traceback
+
             traceback.print_exc()
-            return_response["text"] = "Error uploading your document."
+            return {"text": f"Error uploading PDF: {str(e)}"}
 
-    def query(self, query_str: str, user_id=None,collection=VECTOR_COLLECTION, filter=None):
+    def query(
+        self,
+        query_str: str,
+        user_id=None,
+        filter=None,
+        pdf_ids=None,
+    ):
         """
-        Processes a query string by generating its embeddings and retrieving related content 
-        from the Qdrant vector collection.
-
+        Unified query method for retrieving similar content from Qdrant.
         :param query_str: The query string to process.
         :param user_id: The ID of the user making the query.
-        :return: Retrieved content from the collection or None if no content is found.
+        :param pdf_ids: Optional list of PDF IDs to filter user PDFs.
+        :return: List of relevant results.
         """
         try:
             if filter:
-                collection=USERS_PDF_COLLECTION
-
-            logger.info("Query embedding started.")
-            if isinstance(query_str, str):
-                query_str = [query_str]  
-
-            query = {}
-            embeddings = self.embedding_model(query_str)
-            if not embeddings or len(embeddings) == 0:
-                logger.error("Failed to generate dense embeddings for the query.")
-                return None
-
-            embed = np.array(embeddings)
-            query["dense"] = embed.reshape(-1, self.embedding_size).tolist()[0]
-
-            result = self.client.retrieve_data(collection, query["dense"],user_id,filter)
-            logger.warning("results found for the query.")
-            return result
+                # User PDF collection, optionally filtered by pdf_ids
+                return self.client.retrieve_similar_content(
+                    collection_name=user_id,
+                    query=query_str,
+                    user_id=user_id,
+                    pdf_ids=pdf_ids,
+                    top_k=10,
+                    filter=True,
+                )
+            else:
+                # General collection
+                return self.client.retrieve_similar_content(
+                    collection_name=VECTOR_COLLECTION,
+                    query=query_str,
+                    top_k=10,
+                    filter=False,
+                )
         except Exception as e:
             logger.error(f"An error occurred during query processing: {e}")
             traceback.print_exc()
-            return {}
+            return []
 
-    def get_result_from_rag(self, query_str: str, user_id: str):
+    def get_result_from_rag(self, query_str: str, user_id: str, pdf_ids=None):
         """
-        Retrieves the result for a query by calling the query method 
+        Retrieves the result for a query by calling the query method
         and generating a response based on the retrieved content.
-
         :param query_str: The query string to process.
         :param user_id: The ID of the user making the request.
+        :param pdf_ids: Optional list of PDF IDs to filter user PDFs.
         :return: The result from the LLM generated based on the query and retrieved content.
         """
         try:
             logger.info("Generating result for the query.")
             result1 = self.query(query_str=query_str, user_id=user_id)
-            result2 = self.query(query_str=query_str, user_id=user_id,filter=True)
-            query_result = {**result1, **result2}
-            if query_result is None:
+            result2 = self.query(
+                query_str=query_str, user_id=user_id, filter=True, pdf_ids=pdf_ids
+            )
+            # Combine both results (general + user PDFs)
+            combined_results = []
+            if isinstance(result1, list):
+                combined_results.extend(result1)
+            if isinstance(result2, list):
+                combined_results.extend(result2)
+            if not combined_results:
                 logger.error("No query result to process.")
                 return None
 
-            prompt = RETRIEVE_PROMPT.format(query=query_str, retrieved_content=query_result)
+            prompt = RETRIEVE_PROMPT.format(
+                query=query_str, retrieved_content=combined_results
+            )
             result = self.llm.generate(prompt)
             logger.info("Result generated successfully.")
-            response = {
-                "text": result
-            }
+            response = {"text": result}
             return response
         except Exception as e:
             logger.error(f"An error occurred while generating the result: {e}")
