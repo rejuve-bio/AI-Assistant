@@ -79,6 +79,12 @@ def create_app():
     app.config.update(config)
     logger.info("App config updated with loaded configuration")
 
+    # Code execution defaults from environment with safe fallbacks
+    app.config["CODE_EXEC_TIMEOUT"] = int(os.getenv("CODE_EXEC_TIMEOUT", "60"))
+    app.config["CODE_EXEC_MAX_MEM_MB"] = int(os.getenv("CODE_EXEC_MAX_MEM_MB", "1024"))
+    app.config["CODE_EXEC_ALLOW_NETWORK"] = os.getenv("CODE_EXEC_ALLOW_NETWORK", "false").lower() == "true"
+    app.config["ARTIFACT_TTL_MINUTES"] = int(os.getenv("ARTIFACT_TTL_MINUTES", "120"))
+
     # Apply rate limiting to the entire app (200 requests per minute)
     limiter = Limiter(
         get_remote_address,

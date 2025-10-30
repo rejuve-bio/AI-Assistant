@@ -44,6 +44,13 @@ def process_query(current_user_id, auth_token):
             context = {}
         context_id = context.get("id", None)
         resource = context.get("resource", "annotation")
+        # Code-exec specific optional fields
+        urls = request.form.getlist("urls") if resource == "code_exec" else []
+        options_raw = data.get("options", "{}") if resource == "code_exec" else "{}"
+        try:
+            options = json.loads(options_raw)
+        except Exception:
+            options = {}
         graph = data.get("graph", None)
         json_query = data.get("json_query", None)
 
@@ -78,6 +85,9 @@ def process_query(current_user_id, auth_token):
             resource=resource,
             json_query=json_query,
             content_ids=content_ids,
+            files=None,
+            urls=urls or None,
+            options=options or None,
         )
 
         return jsonify(response)

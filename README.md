@@ -109,6 +109,26 @@ curl -X POST http://localhost:5002/query \
   "query": "Your natural language query here"
 }
 ```
+### Code Execution Agent (ReAct + LangChain)
+
+Use `/query` with `context.resource=code_exec` and optionally `urls` and `options` to run Python-based analysis and plotting over CSV/HTML/XML/PDF/URL.
+
+Example:
+```bash
+curl -X POST http://localhost:5002/query \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "question=Compute correlation heatmap and a PCA preview" \
+  -d "context={\"resource\":\"code_exec\"}" \
+  -d "urls=https://example.com/data.csv" \
+  -d "options={\"timeout_seconds\":60,\"max_memory_mb\":1024}"
+```
+
+Env configuration (with defaults):
+- `CODE_EXEC_TIMEOUT` (60)
+- `CODE_EXEC_MAX_MEM_MB` (1024)
+- `CODE_EXEC_ALLOW_NETWORK` (false)
+- `ARTIFACT_TTL_MINUTES` (120)
+
 
 **Response:**
 

@@ -16,6 +16,7 @@ from .storage.history_manager import HistoryManager
 from .storage.mongo_storage import mongo_db_manager
 from .socket_manager import emit_to_user
 from .Galaxy_integration.galaxy import GalaxyHandler
+from .code_exec.handler import CodeExecutionHandler, CodeExecOptions
 import asyncio
 import logging.handlers as loghandlers
 from dotenv import load_dotenv
@@ -57,6 +58,9 @@ class AgentState(TypedDict):
     response: str
     error: str
     content_ids: Optional[List[str]]
+    files: Optional[List[str]]
+    urls: Optional[List[str]]
+    options: Optional[Dict[str, Any]]
 
 
 class AiAssistance:
@@ -79,6 +83,7 @@ class AiAssistance:
         self.hypothesis_generation = HypothesisGeneration(advanced_llm)
         self.galaxy_handler = GalaxyHandler(advanced_llm)
         self.embedding_model = embedding_model
+        self.code_exec_handler = CodeExecutionHandler()
 
         logger.info(
             f"AiAssistance initialized with advanced_llm: {type(self.advanced_llm).__name__}"
@@ -164,6 +169,7 @@ class AiAssistance:
         workflow.add_node("hypothesis_agent", self._hypothesis_agent)
         workflow.add_node("rag_agent", self._rag_agent)
         workflow.add_node("galaxy_agent", self._galaxy_agent)
+        workflow.add_node("code_exec_agent", self._code_exec_agent)
         workflow.add_node("finalizer", self._finalize_response)
 
         # Define edges
@@ -177,6 +183,7 @@ class AiAssistance:
                 "hypothesis": "hypothesis_agent",
                 "rag": "rag_agent",
                 "galaxy": "galaxy_agent",
+                "code_exec": "code_exec_agent",
                 "error": "finalizer",
             },
         )
@@ -185,6 +192,7 @@ class AiAssistance:
         workflow.add_edge("hypothesis_agent", "finalizer")
         workflow.add_edge("rag_agent", "finalizer")
         workflow.add_edge("galaxy_agent", "finalizer")
+        workflow.add_edge("code_exec_agent", "finalizer")
         workflow.add_edge("finalizer", END)
 
         return workflow
@@ -247,6 +255,7 @@ class AiAssistance:
         - hypothesis: Requests for Generation of a hypothesis graph on variant and phenotypes mentioned
         - galaxy: Requests about Galaxy web tools, workflows, or Galaxy platform capabilities
         - rag: General information requests, including queries about uploaded PDFs, web content, or document profiles (e.g., questions about content summaries, metadata, or content)
+        - code_exec: Requests to analyze/compute/plot using Python on CSV/HTML/XML/PDF/URL data (e.g., "compute correlations", "plot heatmap from CSV", "extract table from PDF and run stats")
         
         User query: {query}
         Content summaries: {content_summaries}
@@ -388,6 +397,34 @@ class AiAssistance:
                 ],
             }
 
+    def _code_exec_agent(self, state: AgentState) -> Dict[str, Any]:
+        """Handle code execution analysis requests"""
+        logger.info(
+            f"CodeExec agent processing query: {state['user_query']} for user: {state['user_id']}"
+        )
+        try:
+            emit_to_user(user=state["user_id"], message="Parsing documents…")
+            # For now, rely on the user's query to implicitly reference files/urls via upstream route
+            # Future: accept explicit file/url lists via /query payload and pass through state
+            result = self.code_exec_handler.execute(
+                instructions=state["user_query"],
+                files=state.get("files"),
+                urls=state.get("urls"),
+                options=CodeExecOptions(),
+                user_id=state["user_id"],
+            )
+            emit_to_user(user=state["user_id"], message="Execution completed.")
+            return {
+                "response": result,
+                "messages": [AIMessage(content="Code execution finished")],
+            }
+        except Exception as e:
+            logger.error("Error in code execution agent", exc_info=True)
+            return {
+                "response": f"Error executing code: {str(e)}",
+                "error": str(e),
+                "messages": [AIMessage(content=f"Error in code execution: {str(e)}")],
+            }
     def _finalize_response(self, state: AgentState) -> Dict[str, Any]:
         """Finalize and return the response"""
         response = state.get("response", "No response generated")
@@ -403,6 +440,9 @@ class AiAssistance:
         user_id: str,
         token: str,
         content_ids: Optional[List[str]] = None,
+        files: Optional[List[str]] = None,
+        urls: Optional[List[str]] = None,
+        options: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Main entry point for processing queries"""
         logger.info(
@@ -419,6 +459,9 @@ class AiAssistance:
                 "response": "",
                 "error": "",
                 "content_ids": content_ids,
+                "files": files,
+                "urls": urls,
+                "options": options,
             }
 
             # Run the workflow
@@ -449,6 +492,9 @@ class AiAssistance:
         resource=None,
         graph_id=None,
         content_ids: Optional[List[str]] = None,
+        files: Optional[List[str]] = None,
+        urls: Optional[List[str]] = None,
+        options: Optional[Dict[str, Any]] = None,
     ):
         logger.info(
             f"Assistant called with query: {query}, user_id: {user_id}, resource: {resource}, graph_id: {graph_id}, content_ids: {content_ids}"
@@ -516,6 +562,9 @@ class AiAssistance:
                     user_id,
                     token,
                     content_ids=content_ids,
+                    files=files,
+                    urls=urls,
+                    options=options,
                 )
                 if isinstance(agent_response, str):
                     agent_response = {"text": agent_response}
