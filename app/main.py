@@ -83,7 +83,7 @@ class AiAssistance:
         self.hypothesis_generation = HypothesisGeneration(advanced_llm)
         self.galaxy_handler = GalaxyHandler(advanced_llm)
         self.embedding_model = embedding_model
-        self.code_exec_handler = CodeExecutionHandler()
+        self.code_exec_handler = CodeExecutionHandler(llm=advanced_llm)
 
         logger.info(
             f"AiAssistance initialized with advanced_llm: {type(self.advanced_llm).__name__}"

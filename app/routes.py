@@ -97,12 +97,86 @@ def process_query(current_user_id, auth_token):
         return f"Bad Response: {e}", 400
 
 
+def save_data_file(uploaded_file, user_id, file_type):
+    """Helper function to save CSV/HTML/XML files for code execution"""
+    try:
+        return_response = {"text": None, "resource": {}}
+        
+        # Check for duplicate files
+        existing_files = mongo_db_manager.get_user_content_files(user_id, file_type)
+        if any(f.get("filename") == uploaded_file.filename for f in existing_files):
+            return_response["text"] = f"{file_type.upper()} file already exists."
+            return_response["resource"]["filename"] = uploaded_file.filename
+            return return_response
+        
+        # Check quota
+        if mongo_db_manager.get_content_count(user_id) >= 10:
+            return_response["text"] = "Your quota is full. Maximum 10 content items allowed."
+            return_response["resource"]["count"] = mongo_db_manager.get_content_count(user_id)
+            return return_response
+        
+        import uuid
+        from datetime import datetime
+        
+        content_id = str(uuid.uuid4())
+        upload_folder = f"storage/data_files/{file_type}"
+        os.makedirs(upload_folder, exist_ok=True)
+        
+        # Get file extension
+        ext = os.path.splitext(uploaded_file.filename)[1].lower()
+        file_path = os.path.join(upload_folder, f"{content_id}{ext}")
+        uploaded_file.save(file_path)
+        
+        upload_time = datetime.now()
+        
+        # Get file size in MB
+        try:
+            file_size_bytes = os.path.getsize(file_path)
+            file_size = round(file_size_bytes / (1024 * 1024), 2)
+        except Exception:
+            file_size = None
+        
+        file_analysis = {
+            "content_id": content_id,
+            "filename": uploaded_file.filename,
+            "file_path": file_path,
+            "file_size": f"{file_size} MB" if file_size else None,
+            "upload_time": upload_time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        
+        # Store metadata in MongoDB
+        mongo_db_manager.add_content_file(
+            user_id=user_id,
+            content_id=content_id,
+            content_type=file_type,
+            filename=uploaded_file.filename,
+            file_size=file_size,
+            upload_time=upload_time,
+        )
+        
+        # Add history entry
+        from app.storage.history_manager import HistoryManager
+        HistoryManager().create_history(
+            user_id=user_id,
+            user_message=f"Uploaded {file_type.upper()}: {uploaded_file.filename}",
+            assistant_answer=f"{file_type.upper()} file '{uploaded_file.filename}' uploaded successfully.",
+        )
+        
+        return_response["text"] = f"{file_type.upper()} file uploaded successfully."
+        return_response["resource"] = file_analysis
+        return return_response
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"text": f"Error uploading {file_type} file: {str(e)}"}
+
+
 @main_bp.route("/upload_content", methods=["POST"])
 @token_required
 def upload_content(current_user_id, auth_token):
     """
-    Unified endpoint for uploading both PDF files and web content
-    Accepts either files (PDFs) or URLs (web content)
+    Unified endpoint for uploading PDF, CSV, HTML, XML files and web content
+    Accepts either files (PDFs, CSV, HTML, XML) or URLs (web content)
     accepts a question to answer after upload (optional)
     """
     try:
@@ -116,68 +190,155 @@ def upload_content(current_user_id, auth_token):
         ai_assistant = current_app.config["ai_assistant"]
         results = []
 
-        # Handle PDF files
+        # Handle file uploads (PDF, CSV, HTML, XML)
         if "files" in request.files:
             files = request.files.getlist("files")
             for uploaded in files:
-                if uploaded.filename and uploaded.filename.lower().endswith(".pdf"):
-                    response = ai_assistant.rag.save_retrievable_docs(uploaded, user_id)
-                    item = {"filename": uploaded.filename, "response": response}
+                if uploaded.filename:
+                    filename_lower = uploaded.filename.lower()
+                    
+                    # Handle PDF files (with RAG indexing)
+                    if filename_lower.endswith(".pdf"):
+                        response = ai_assistant.rag.save_retrievable_docs(uploaded, user_id)
+                        item = {"filename": uploaded.filename, "response": response}
 
-                    # Handle question answering for both new uploads and duplicates
-                    if question and isinstance(response, dict):
-                        content_id = None
-                        is_duplicate = response.get("text") == "PDF already exists."
+                        # Handle question answering for both new uploads and duplicates
+                        if question and isinstance(response, dict):
+                            content_id = None
+                            is_duplicate = response.get("text") == "PDF already exists."
 
-                        if is_duplicate:
-                            # Get the existing content ID for this filename
-                            pdf_files = mongo_db_manager.get_user_content_files(
-                                user_id, "pdf"
-                            )
-                            existing_content = next(
-                                (
-                                    f
-                                    for f in pdf_files
-                                    if f.get("filename") == uploaded.filename
-                                ),
-                                None,
-                            )
-                            if existing_content:
-                                content_id = existing_content.get("content_id")
-                                # Update the response text to indicate question was answered
-                                item["response"][
-                                    "text"
-                                ] = "PDF already exists, but question was answered using existing content."
-                        else:
-                            # New upload - get content_id from response
-                            content_id = response.get("resource", {}).get("content_id")
-
-                        # Answer the question if we have a content_id
-                        if content_id:
-                            try:
-                                answer = ai_assistant.assistant_response(
-                                    query=question,
-                                    user_id=user_id,
-                                    token=auth_token,
-                                    resource="content",
-                                    graph_id=None,
-                                    content_ids=[content_id],
+                            if is_duplicate:
+                                # Get the existing content ID for this filename
+                                pdf_files = mongo_db_manager.get_user_content_files(
+                                    user_id, "pdf"
                                 )
-                                item["answer"] = answer or {
-                                    "text": "No answer generated"
-                                }
-                            except Exception:
-                                traceback.print_exc()
-                                item["answer"] = {"text": "Error answering question"}
+                                existing_content = next(
+                                    (
+                                        f
+                                        for f in pdf_files
+                                        if f.get("filename") == uploaded.filename
+                                    ),
+                                    None,
+                                )
+                                if existing_content:
+                                    content_id = existing_content.get("content_id")
+                                    # Update the response text to indicate question was answered
+                                    item["response"][
+                                        "text"
+                                    ] = "PDF already exists, but question was answered using existing content."
+                            else:
+                                # New upload - get content_id from response
+                                content_id = response.get("resource", {}).get("content_id")
 
-                    results.append(item)
-                else:
-                    results.append(
-                        {
-                            "filename": uploaded.filename,
-                            "error": "Only PDF files are allowed.",
-                        }
-                    )
+                            # Answer the question if we have a content_id
+                            if content_id:
+                                try:
+                                    answer = ai_assistant.assistant_response(
+                                        query=question,
+                                        user_id=user_id,
+                                        token=auth_token,
+                                        resource="content",
+                                        graph_id=None,
+                                        content_ids=[content_id],
+                                    )
+                                    item["answer"] = answer or {
+                                        "text": "No answer generated"
+                                    }
+                                except Exception:
+                                    traceback.print_exc()
+                                    item["answer"] = {"text": "Error answering question"}
+
+                        results.append(item)
+                    
+                    # Handle CSV files
+                    elif filename_lower.endswith(".csv"):
+                        response = save_data_file(uploaded, user_id, "csv")
+                        item = {"filename": uploaded.filename, "response": response}
+                        
+                        # Handle question answering (if question provided and it's for code_exec)
+                        if question and isinstance(response, dict) and question.lower().startswith(("compute", "analyze", "plot", "calculate", "generate", "create")):
+                            content_id = response.get("resource", {}).get("content_id")
+                            file_path = response.get("resource", {}).get("file_path")
+                            
+                            if content_id and file_path:
+                                try:
+                                    answer = ai_assistant.assistant_response(
+                                        query=question,
+                                        user_id=user_id,
+                                        token=auth_token,
+                                        resource="code_exec",
+                                        graph_id=None,
+                                        files=[file_path] if file_path else None,
+                                    )
+                                    item["answer"] = answer or {"text": "No answer generated"}
+                                except Exception:
+                                    traceback.print_exc()
+                                    item["answer"] = {"text": "Error answering question"}
+                        
+                        results.append(item)
+                    
+                    # Handle HTML files
+                    elif filename_lower.endswith((".html", ".htm")):
+                        response = save_data_file(uploaded, user_id, "html")
+                        item = {"filename": uploaded.filename, "response": response}
+                        
+                        # Handle question answering for code_exec
+                        if question and isinstance(response, dict) and question.lower().startswith(("compute", "analyze", "plot", "calculate", "generate", "extract", "create")):
+                            content_id = response.get("resource", {}).get("content_id")
+                            file_path = response.get("resource", {}).get("file_path")
+                            
+                            if content_id and file_path:
+                                try:
+                                    answer = ai_assistant.assistant_response(
+                                        query=question,
+                                        user_id=user_id,
+                                        token=auth_token,
+                                        resource="code_exec",
+                                        graph_id=None,
+                                        files=[file_path] if file_path else None,
+                                    )
+                                    item["answer"] = answer or {"text": "No answer generated"}
+                                except Exception:
+                                    traceback.print_exc()
+                                    item["answer"] = {"text": "Error answering question"}
+                        
+                        results.append(item)
+                    
+                    # Handle XML files
+                    elif filename_lower.endswith(".xml"):
+                        response = save_data_file(uploaded, user_id, "xml")
+                        item = {"filename": uploaded.filename, "response": response}
+                        
+                        # Handle question answering for code_exec
+                        if question and isinstance(response, dict) and question.lower().startswith(("compute", "analyze", "plot", "calculate", "generate", "extract", "create", "parse")):
+                            content_id = response.get("resource", {}).get("content_id")
+                            file_path = response.get("resource", {}).get("file_path")
+                            
+                            if content_id and file_path:
+                                try:
+                                    answer = ai_assistant.assistant_response(
+                                        query=question,
+                                        user_id=user_id,
+                                        token=auth_token,
+                                        resource="code_exec",
+                                        graph_id=None,
+                                        files=[file_path] if file_path else None,
+                                    )
+                                    item["answer"] = answer or {"text": "No answer generated"}
+                                except Exception:
+                                    traceback.print_exc()
+                                    item["answer"] = {"text": "Error answering question"}
+                        
+                        results.append(item)
+                    
+                    # Reject unsupported file types
+                    else:
+                        results.append(
+                            {
+                                "filename": uploaded.filename,
+                                "error": "Only PDF, CSV, HTML, and XML files are allowed.",
+                            }
+                        )
 
         # Handle web URLs
         urls = request.form.getlist("urls")
