@@ -1,3 +1,16 @@
+"""
+DEPRECATED: This prompt template is deprecated in favor of dynamic prompt building in CodeExecutionHandler.
+
+The old JSON-based code snippet generation approach has been replaced with PythonREPLTool,
+which uses natural language instructions and LangChain's built-in ReAct framework.
+
+The new prompt is built dynamically in CodeExecutionHandler._build_enhanced_prompt() method,
+which includes file paths, data profiles, and helper function documentation.
+
+This constant is kept for reference but should not be used in new code.
+"""
+
+# DEPRECATED: Use CodeExecutionHandler._build_enhanced_prompt() instead
 REACT_CODE_EXEC_PROMPT = """
 You are a code-execution agent for bio research. Follow ReAct: think step-by-step, generate executable Python code.
 

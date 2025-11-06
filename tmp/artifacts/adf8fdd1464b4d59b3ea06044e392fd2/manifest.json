@@ -1,0 +1,35 @@
+{
+  "run_id": "adf8fdd1464b4d59b3ea06044e392fd2",
+  "inputs": {
+    "files": [
+      "storage/data_files/pdf/79abab68-e8c9-4557-a1ad-26527cd6340a.pdf"
+    ],
+    "urls": [],
+    "instructions": "Extract all tables from this PDF and compute mean of numeric columns. Plot a bar chart"
+  },
+  "params": {
+    "timeout": 120,
+    "max_memory_mb": 2048
+  },
+  "environment": {
+    "limits": {
+      "timeout": 120,
+      "max_memory_mb": 2048
+    },
+    "llm": "GeminiModel"
+  },
+  "artifacts": [
+    {
+      "id": "b5f1fb8f-3d6c-46ca-8fdc-28decef298d3",
+      "type": "figure",
+      "name": "sample_means",
+      "format": "png",
+      "path_or_url": "tmp/artifacts/adf8fdd1464b4d59b3ea06044e392fd2/figures/sample_means.png",
+      "bytes_size": 15812,
+      "metadata": {
+        "step": "generated",
+        "filename": "sample_means.png"
+      }
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "run_id": "9583f8cd20654b60801e027b2b57d49f",
+  "inputs": {
+    "files": [
+      "storage/data_files/csv/7c4c47d6-b3b3-4ddf-9e3c-7a6c0461c6b5.csv"
+    ],
+    "urls": [],
+    "instructions": "\"Compute correlation heatmap and summary statistics for all numeric columns in the uploaded CSV file test_data.csv\""
+  },
+  "params": {
+    "timeout": 60,
+    "max_memory_mb": 1024
+  },
+  "environment": {
+    "limits": {
+      "timeout": 60,
+      "max_memory_mb": 1024
+    },
+    "llm": "GeminiModel"
+  },
+  "artifacts": []
+}

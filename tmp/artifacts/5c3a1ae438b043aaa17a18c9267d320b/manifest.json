@@ -1,0 +1,22 @@
+{
+  "run_id": "5c3a1ae438b043aaa17a18c9267d320b",
+  "inputs": {
+    "files": [
+      "storage/data_files/csv/681459da-338a-48b3-bf63-adc91b727407.csv"
+    ],
+    "urls": [],
+    "instructions": "Calculate the sum and mean of all numeric columns"
+  },
+  "params": {
+    "timeout": 120,
+    "max_memory_mb": 2048
+  },
+  "environment": {
+    "limits": {
+      "timeout": 120,
+      "max_memory_mb": 2048
+    },
+    "llm": "GeminiModel"
+  },
+  "artifacts": []
+}

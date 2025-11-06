@@ -1,0 +1,35 @@
+{
+  "run_id": "130cd08415354fdfb0c140cb34571781",
+  "inputs": {
+    "files": [
+      "storage/data_files/html/bc21121b-07bc-4e83-af00-7b8fb6fcea7e.html"
+    ],
+    "urls": [],
+    "instructions": "Extract all tables from the HTML file and Plot a bar chart of the mean values for all numeric columns"
+  },
+  "params": {
+    "timeout": 120,
+    "max_memory_mb": 2048
+  },
+  "environment": {
+    "limits": {
+      "timeout": 120,
+      "max_memory_mb": 2048
+    },
+    "llm": "GeminiModel"
+  },
+  "artifacts": [
+    {
+      "id": "a77cb560-c9e2-4eb3-a564-2f62b79dfa1e",
+      "type": "figure",
+      "name": "mean_values_bar_chart",
+      "format": "png",
+      "path_or_url": "tmp/artifacts/130cd08415354fdfb0c140cb34571781/figures/mean_values_bar_chart.png",
+      "bytes_size": 22454,
+      "metadata": {
+        "step": "generated",
+        "filename": "mean_values_bar_chart.png"
+      }
+    }
+  ]
+}

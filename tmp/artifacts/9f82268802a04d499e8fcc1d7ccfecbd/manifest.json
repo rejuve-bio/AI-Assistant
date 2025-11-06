@@ -1,0 +1,22 @@
+{
+  "run_id": "9f82268802a04d499e8fcc1d7ccfecbd",
+  "inputs": {
+    "files": [
+      "storage/data_files/csv/4ae238c7-925b-477e-8555-95dfa715d103.csv"
+    ],
+    "urls": [],
+    "instructions": "\"Compute correlation heatmap and summary statistics for the uploaded CSV file: gene_expression - Copy.csv\""
+  },
+  "params": {
+    "timeout": 60,
+    "max_memory_mb": 1024
+  },
+  "environment": {
+    "limits": {
+      "timeout": 60,
+      "max_memory_mb": 1024
+    },
+    "llm": "GeminiModel"
+  },
+  "artifacts": []
+}

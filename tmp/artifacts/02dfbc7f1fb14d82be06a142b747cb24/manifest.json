@@ -1,0 +1,35 @@
+{
+  "run_id": "02dfbc7f1fb14d82be06a142b747cb24",
+  "inputs": {
+    "files": [
+      "storage/data_files/csv/a3f1568f-0c5e-4666-b5c1-e9541b485a01.csv"
+    ],
+    "urls": [],
+    "instructions": "Plot a bar chart of the mean values for all numeric columns"
+  },
+  "params": {
+    "timeout": 120,
+    "max_memory_mb": 2048
+  },
+  "environment": {
+    "limits": {
+      "timeout": 120,
+      "max_memory_mb": 2048
+    },
+    "llm": "GeminiModel"
+  },
+  "artifacts": [
+    {
+      "id": "b861d7b6-36e8-4954-928d-b507dc44a21d",
+      "type": "figure",
+      "name": "mean_values_bar_chart",
+      "format": "png",
+      "path_or_url": "tmp/artifacts/02dfbc7f1fb14d82be06a142b747cb24/figures/mean_values_bar_chart.png",
+      "bytes_size": 32571,
+      "metadata": {
+        "step": "generated",
+        "filename": "mean_values_bar_chart.png"
+      }
+    }
+  ]
+}

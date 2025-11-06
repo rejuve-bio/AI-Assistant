@@ -1,0 +1,22 @@
+{
+  "run_id": "1e06ea9b228c42e683a5406b0670552b",
+  "inputs": {
+    "files": [
+      "storage/data_files/csv/04c3435d-7b8e-450d-9ba8-1cd485634e01.csv"
+    ],
+    "urls": [],
+    "instructions": "Compute correlation heatmap and summary statistics for all numeric columns"
+  },
+  "params": {
+    "timeout": 60,
+    "max_memory_mb": 1024
+  },
+  "environment": {
+    "limits": {
+      "timeout": 60,
+      "max_memory_mb": 1024
+    },
+    "llm": "GeminiModel"
+  },
+  "artifacts": []
+}

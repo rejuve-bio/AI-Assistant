@@ -375,6 +375,16 @@ def normalize_inputs(files: Optional[List[str]] = None, urls: Optional[List[str]
                 texts.append({"type": "log", "message": "XML parsed into records"})
             else:
                 texts.append({"type": "log", "message": f"XML load issue: {res.get('error')}"})
+        elif ext == ".pdf":
+            res = load_pdf(p)
+            if res.get("type") == "mixed":
+                tables.extend(res.get("tables", []))
+                if res.get("text"):
+                    texts.append({"type": "text", "source": p, "text": res.get("text")})
+            elif res.get("type") == "text":
+                texts.append(res)
+            else:
+                texts.append({"type": "log", "message": f"PDF load issue: {res.get('error')}"})
         else:
             texts.append({"type": "log", "message": f"Unsupported file type: {ext}"})
 

@@ -34,10 +34,10 @@ import logging
 logger = logging.getLogger(__name__)
 log_dir = "/AI-Assistant/logfiles"
 log_file = os.path.join(log_dir, "Assistant.log")
-# os.makedirs(log_dir, exist_ok=True)
+os.makedirs(log_dir, exist_ok=True)
 logger.setLevel(logging.DEBUG)
 loghandle = loghandlers.TimedRotatingFileHandler(
-    filename="logfiles/Assistant.log",
+    filename=log_file,
     when="D",
     interval=1,
     backupCount=7,
@@ -406,11 +406,24 @@ class AiAssistance:
             emit_to_user(user=state["user_id"], message="Parsing documents…")
             # For now, rely on the user's query to implicitly reference files/urls via upstream route
             # Future: accept explicit file/url lists via /query payload and pass through state
+            # Convert options dict to CodeExecOptions if provided
+            options_dict = state.get("options")
+            if options_dict and isinstance(options_dict, dict):
+                exec_options = CodeExecOptions(
+                    timeout_seconds=options_dict.get("timeout_seconds", 120),  # Increased default
+                    max_memory_mb=options_dict.get("max_memory_mb", 2048),  # Increased default
+                    output_formats=options_dict.get("output_formats"),
+                    allow_network=options_dict.get("allow_network", False),
+                    max_iterations=options_dict.get("max_iterations", 20),  # Added max_iterations
+                )
+            else:
+                exec_options = CodeExecOptions()
+            
             result = self.code_exec_handler.execute(
                 instructions=state["user_query"],
                 files=state.get("files"),
                 urls=state.get("urls"),
-                options=CodeExecOptions(),
+                options=exec_options,
                 user_id=state["user_id"],
             )
             emit_to_user(user=state["user_id"], message="Execution completed.")
@@ -467,9 +480,13 @@ class AiAssistance:
             # Run the workflow
             result = self.app.invoke(initial_state)
 
-            # Extract response
+            # Extract response - code_exec returns dict in "response" key
             response = result.get("response", "")
             if response:
+                # If response is a dict (from code_exec), return it as-is
+                if isinstance(response, dict):
+                    return response
+                # If response is a string, return it
                 return response
 
             # Fallback to last message content
@@ -526,6 +543,37 @@ class AiAssistance:
                 query, user_id, resource, token, graph_id
             )
             return graph_context
+
+        # Direct routing for code_exec: bypass conversation prompt if resource is explicitly set
+        if resource == "code_exec":
+            logger.info("Direct routing to code_exec agent (bypassing conversation prompt)")
+            agent_response = self.agent(
+                query,
+                user_id,
+                token,
+                content_ids=content_ids,
+                files=files,
+                urls=urls,
+                options=options,
+            )
+            if isinstance(agent_response, str):
+                agent_response = {"text": agent_response}
+            elif isinstance(agent_response, dict):
+                pass
+            else:
+                agent_response = {"text": str(agent_response)}
+            
+            emit_to_user(user=user_id, message=agent_response, status="completed")
+            # Extract text from agent_response for history storage
+            assistant_answer = (
+                agent_response.get("text", str(agent_response))
+                if isinstance(agent_response, dict)
+                else str(agent_response)
+            )
+            self.history.create_history(
+                user_id, query, assistant_answer, graph_id_referenced=graph_id
+            )
+            return agent_response
 
         prompt = conversation_prompt.format(
             memory=memory,
@@ -678,6 +726,9 @@ class AiAssistance:
         resource="annotation",
         json_query=None,
         content_ids=None,
+        files=None,
+        urls=None,
+        options=None,
     ):
         logger.info(
             f"Assistant response called with query: {query}, user_id: {user_id}, resource: {resource}, graph_id: {graph_id}, content_ids: {content_ids}"
@@ -697,6 +748,9 @@ class AiAssistance:
                     resource=resource,
                     graph_id=graph_id,
                     content_ids=content_ids,
+                    files=files,
+                    urls=urls,
+                    options=options,
                 )
             )
             return response

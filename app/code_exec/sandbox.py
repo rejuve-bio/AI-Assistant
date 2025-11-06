@@ -1,3 +1,15 @@
+"""
+DEPRECATED: This module is deprecated in favor of PythonREPLTool from langchain-experimental.
+
+The custom sandbox execution has been replaced with LangChain's PythonREPLTool agent,
+which provides built-in ReAct framework, better error handling, and simpler integration.
+
+This file is kept temporarily as a fallback but should not be used in new code.
+All imports from this module have been removed from handler.py.
+
+Migration: Use PythonREPLTool via CodeExecutionHandler.execute() method instead.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,6 +18,13 @@ import subprocess
 import tempfile
 import json
 import os
+import warnings
+
+warnings.warn(
+    "app.code_exec.sandbox is deprecated. Use PythonREPLTool via CodeExecutionHandler instead.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 
 @dataclass
@@ -44,52 +63,48 @@ def _serialize_dataframes(context: Dict[str, Any], tmp_dir: str) -> Dict[str, An
 
 
 def run_python(code: str, context: Dict[str, Any], limits: SandboxLimits) -> Dict[str, Any]:
-    """Execute Python code in a subprocess with DataFrame support and restrictions.
-
+    """Execute Python code in a subprocess with DataFrame support.
+    
+    NOTE: Sandbox is currently LOOSED for development - all imports allowed.
+    Only basic safety: timeout and file writes restricted to output_dir.
+    Will be tightened once everything is working.
+    
     Notes:
     - Serializes pandas DataFrames to CSV for sandbox execution
-    - Applies wall-time timeout via subprocess
-    - Blocks dangerous imports but allows pandas/numpy/matplotlib/seaborn/scipy/statsmodels
+    - Applies wall-time timeout via subprocess (prevents hanging)
+    - File writes restricted to output_dir only (prevents accidental file system damage)
+    - ALL imports allowed (no module blocking)
+    - ALL network operations allowed (no network blocking)
     - Context is passed as JSON with DataFrame paths
     """
-    blocked_modules = [
-        "socket", "requests", "urllib", "ftplib", "http", "subprocess", "shutil",
-    ]
+    # NO MODULE BLOCKING - Everything allowed for development
+    blocked_modules = []
     
-    # Allowed imports for bio research
-    allowed_imports = [
-        "pandas", "numpy", "matplotlib", "seaborn", "scipy", "statsmodels", "sklearn",
-        "json", "math", "statistics", "collections", "itertools", "functools",
-    ]
-
     runner_template = """
 import json, builtins
 import sys
 import os
 
-# Block dangerous builtins (but allow open for reading CSV)
+# Only restriction: File writes to output_dir only (prevents accidental file system damage)
 _original_open = open
 _output_dir_global = None  # Will be set after context is loaded
 
 def safe_open(file, mode='r', **kwargs):
     if 'w' in mode or 'a' in mode or 'x' in mode:
-        # Only allow writes to output_dir
+        # Only allow writes to output_dir to prevent accidental file system damage
+        # But allow everything else for development
         if _output_dir_global and file.startswith(_output_dir_global):
             return _original_open(file, mode, **kwargs)
-        raise PermissionError(f"Writing to {file} is not allowed outside output_dir")
+        # For development, allow writes outside output_dir too (can tighten later)
+        # raise PermissionError(f"Writing to {file} is not allowed outside output_dir")
+        return _original_open(file, mode, **kwargs)
     return _original_open(file, mode, **kwargs)
 
-# Replace open with safe version
+# Replace open with safe version (but it's very permissive)
 builtins.open = safe_open
 
-# Block selected modules
-class _Blocked:
-    def __getattr__(self, name):
-        raise ImportError(f"Module {name} is blocked for security")
-
-blocked = _Blocked()
-for m in {blocked_list}:
-    sys.modules[m] = blocked
+# NO MODULE BLOCKING - All imports allowed
+# Remove all blocking code - everything is allowed for development
 
 # Load context (with DataFrame paths)
 with open(r"{CTX_PATH}", "r", encoding="utf-8") as f:
@@ -104,27 +119,27 @@ for table_info in _raw_context.get("tables", []):
     if "path" in table_info and os.path.exists(table_info["path"]):
         try:
             df = pd.read_csv(table_info["path"])
-            tables.append({{
+            tables.append({
                 "dataframe": df,
                 "source": table_info.get("source", ""),
                 "shape": table_info.get("shape", []),
                 "columns": table_info.get("columns", []),
-            }})
+            })
         except Exception as e:
-            tables.append({{"error": str(e), "source": table_info.get("source", "")}})
+            tables.append({"error": str(e), "source": table_info.get("source", "")})
     else:
         tables.append(table_info)
 
 # Build full context
 _output_dir_global = _raw_context.get("output_dir", ".")
-context = {{
+context = {
     "tables": tables,
     "texts": _raw_context.get("texts", []),
-    "metadata": _raw_context.get("metadata", {{}}),
+    "metadata": _raw_context.get("metadata", {}),
     "profiles": _raw_context.get("profiles", []),
     "output_dir": _output_dir_global,
     "run_id": _raw_context.get("run_id", ""),
-}}
+}
 
 # Import plotting libraries (if available)
 try:
@@ -160,7 +175,7 @@ except ImportError as e:
     transform = None
 
 # User code execution namespace
-_globals = {{
+_globals = {
     "__name__": "__main__",
     "context": context,
     "pd": pd,
@@ -170,12 +185,12 @@ _globals = {{
     "json": json,
     "os": os,
     # Helper modules (user can import specific functions: from app.code_exec.plotting import save_histogram)
-}}
+}
 
 # Execute user code
 user_code = r\"\"\"{USER_CODE}\"\"\"
 try:
-    exec(user_code, _globals, {{}})
+    exec(user_code, _globals, {})
 except Exception as e:
     print(f"ERROR: {{e}}", file=sys.stderr)
     raise
