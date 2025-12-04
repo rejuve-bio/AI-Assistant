@@ -405,7 +405,6 @@ class AiAssistance:
         try:
             emit_to_user(user=state["user_id"], message="Parsing documents…")
             # For now, rely on the user's query to implicitly reference files/urls via upstream route
-            # Future: accept explicit file/url lists via /query payload and pass through state
             # Convert options dict to CodeExecOptions if provided
             options_dict = state.get("options")
             if options_dict and isinstance(options_dict, dict):

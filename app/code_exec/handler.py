@@ -103,8 +103,21 @@ class CodeExecutionHandler:
                 continue
             try:
                 numeric_cols = [c for c in getattr(df, "columns", []) if str(df[c].dtype).startswith(("int", "float"))]
-                dtypes = {str(c): str(df[c].dtype) for c in getattr(df, "columns", [])}
-                missing = {str(c): int(df[c].isna().sum()) for c in getattr(df, "columns", [])}
+                # Truncate profile info if too many columns
+                all_cols = getattr(df, "columns", [])
+                if len(all_cols) > 50:
+                    # Only keep first 20 for profile to save tokens
+                    kept_cols = all_cols[:20]
+                    dtypes = {str(c): str(df[c].dtype) for c in kept_cols}
+                    missing = {str(c): int(df[c].isna().sum()) for c in kept_cols}
+                    # Add a note about truncation in the dict keys or separate field if needed
+                    # For now, just limiting the dicts is enough as the prompt shows "Missing values: {...}"
+                    dtypes["..."] = f"({len(all_cols)-20} more)"
+                    missing["..."] = f"({len(all_cols)-20} more)"
+                else:
+                    dtypes = {str(c): str(df[c].dtype) for c in all_cols}
+                    missing = {str(c): int(df[c].isna().sum()) for c in all_cols}
+
                 desc = df[numeric_cols].describe().to_dict() if numeric_cols else {}
                 profiles.append({
                     "shape": [int(df.shape[0]), int(df.shape[1])],
@@ -183,11 +196,19 @@ class CodeExecutionHandler:
                     # Save DataFrame to CSV so PythonREPLTool can load it
                     csv_path = os.path.join(output_dir, f"data_{idx}.csv")
                     df.to_csv(csv_path, index=False)
+                    
+                    # Truncate columns if too many
+                    cols = list(df.columns.tolist())
+                    if len(cols) > 50:
+                        cols_display = cols[:20] + [f"... and {len(cols) - 20} more columns. Use df.columns to inspect."]
+                    else:
+                        cols_display = cols
+                        
                     file_paths_info.append({
                         "path": csv_path,
                         "source": source,
                         "shape": [int(df.shape[0]), int(df.shape[1])],
-                        "columns": list(df.columns.tolist())
+                        "columns": cols_display
                     })
             
             # Build original files info (for PDF/URL - pass original file paths)
@@ -471,6 +492,7 @@ class CodeExecutionHandler:
             "2. DO NOT use subprocess, pip, or any package installation commands",
             "3. Use the loaders module to load files if needed: from app.code_exec.loaders import load_pdf, load_csv, load_html, load_xml, load_url",
             "4. For PDFs, use pdfplumber or camelot (already installed) - DO NOT use tabula-py",
+            "5. IF DATASET SCHEMA IS LARGE OR TRUNCATED: You MUST run `df.columns` or `df.head()` to inspect the data before writing your analysis code. Do NOT guess column names.",
             "",
             "USER REQUEST:",
             instructions,

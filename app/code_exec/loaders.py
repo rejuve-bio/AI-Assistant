@@ -301,7 +301,13 @@ def load_url(url: str) -> Dict[str, Any]:
         try:
             html_text = content.decode(_detect_encoding(content), errors="ignore")
             # Reuse our HTML loader path by passing raw string
-            return load_html(html_text)
+            res = load_html(html_text)
+            # Fix: load_html sets source=content if it's not a file path.
+            # We must override it with the URL to avoid injecting full HTML into the prompt.
+            res["source"] = url
+            for table in res.get("tables", []):
+                table["source"] = url
+            return res
         except Exception as e:
             return {"type": "error", "source": url, "error": f"html parse: {e}"}
 
