@@ -192,7 +192,8 @@ Postman setup:
 ## Supported libraries and constraints
 
 ### Available Libraries
-- **pandas, numpy, matplotlib, seaborn, scipy, statsmodels, pdfplumber, camelot**
+- **pandas, numpy, matplotlib, seaborn, scipy, statsmodels, scikit-learn**
+- **pdfplumber, camelot, xmltodict, lxml, chardet**
 
 ### Strict Constraints
 - **No runtime package installation** (pip/subprocess not allowed)
@@ -325,6 +326,7 @@ Pass custom limits via `options` parameter:
 
 2) Document loading & profiling
    - The handler loads files/URLs, infers structure, and builds a concise prompt with file paths and quick data profiles.
+   - **Lazy Data Inspection**: For datasets with >50 columns, the schema is truncated in the prompt (showing only first 20) to save tokens. The LLM is instructed to inspect columns dynamically using `df.columns` if needed.
 
 3) Agent execution
    - Uses LangChain `PythonREPLTool` with a converted LLM (OpenAI/Gemini) to generate and execute Python.
