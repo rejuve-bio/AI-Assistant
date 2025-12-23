@@ -1,0 +1,132 @@
+name: CD - Deploy AI Assistant (production Only)
+
+on:
+  repository_dispatch:
+    types: [deploy-production]
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Debug workflow info
+        run: |
+          echo "Event Type: ${{ github.event.action }}"
+          echo "Image Tag: ${{ github.event.client_payload.image_tag }}"
+          echo "Triggered by: ${{ github.actor }}"
+          echo "Current user: $(whoami)"
+          echo "Home directory: $HOME"
+          echo "Working directory: $(pwd)"
+          echo "User ID: $(id -u)"
+          echo "Group ID: $(id -g)"
+
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+          
+      - name: Checkout Ansible repository
+        uses: actions/checkout@v4
+        with:
+          repository: rejuve-bio/ansible-deploy
+          path: ansible-deploy
+
+      - name: Create .env file for AI-Assistant
+        run: |
+          mkdir -p $HOME/services/AI-Assistant
+          cat > $HOME/services/AI-Assistant/.env << EOF
+          # === Port Configuration ===
+          FLASK_HOST_PORT=${{ secrets.FLASK_HOST_PORT }}
+          FLASK_INTERNAL_PORT=${{ secrets.FLASK_INTERNAL_PORT }}
+          REDIS_HOST_PORT=${{ secrets.REDIS_HOST_PORT }}
+          REDIS_INTERNAL_PORT=${{ secrets.REDIS_INTERNAL_PORT }}
+          MONGODB_HOST_PORT=${{ secrets.MONGODB_HOST_PORT }}
+          MONGODB_INTERNAL_PORT=${{ secrets.MONGODB_INTERNAL_PORT }}
+          QDRANT_HOST_PORT=${{ secrets.QDRANT_HOST_PORT }}
+          QDRANT_INTERNAL_PORT=${{ secrets.QDRANT_INTERNAL_PORT }}
+          QDRANT_GRPC_HOST_PORT=${{ secrets.QDRANT_GRPC_HOST_PORT }}
+          QDRANT_GRPC_INTERNAL_PORT=${{ secrets.QDRANT_GRPC_INTERNAL_PORT }}
+          
+          # === LLM Configuration ===
+          BASIC_LLM_PROVIDER=${{ secrets.BASIC_LLM_PROVIDER }}
+          BASIC_LLM_VERSION=${{ secrets.BASIC_LLM_VERSION }}
+          ADVANCED_LLM_PROVIDER=${{ secrets.ADVANCED_LLM_PROVIDER }}
+          ADVANCED_LLM_VERSION=${{ secrets.ADVANCED_LLM_VERSION }}
+          
+          # === API Keys ===
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          
+          # === Application Configuration ===
+          JWT_SECRET=${{ secrets.JWT_SECRET }}
+          MODEL_PATH=${{ secrets.MODEL_PATH }}
+          VECTOR_COLLECTION=${{ secrets.VECTOR_COLLECTION }}
+          
+          # === Database Configuration ===
+          MONGO_USERNAME=${{ secrets.MONGO_USERNAME }}
+          MONGO_PASSWORD=${{ secrets.MONGO_PASSWORD }}
+          MONGO_DATABASE=${{ secrets.MONGO_DATABASE }}
+          
+          # === Docker Images ===
+          ai-assistant_production=${{ secrets.DOCKER_HUB_USERNAME }}/ai-assistant:production
+          EOF
+          
+      - name: Create dynamic inventory
+        run: |
+          cd ansible-deploy
+          mkdir -p inventory
+          CURRENT_USER=$(whoami)
+          USER_HOME=$HOME
+          cat > inventory/hosts.ini <<EOL
+          [AI-Assistant_Remote]
+          localhost ansible_connection=local ansible_user=$CURRENT_USER ansible_become=false ansible_user_dir=$USER_HOME
+          EOL
+          echo "Inventory created for user: $CURRENT_USER"
+          cat inventory/hosts.ini
+          
+      - name: Create dynamic playbook
+        run: |
+          cd ansible-deploy
+          mkdir -p playbooks
+          cat > playbooks/deploy_ai-assistant.yml <<EOL
+          ---
+          # deploy_AI-Assistant
+          - name: Deploy AI Assistant Service
+            hosts: AI-Assistant_Remote
+            tags: AI-Assistant_Remote
+            become: no
+            tasks:
+              - include_role:
+                  name: AI-Assistant
+                  tasks_from: staging-production-deploy.yml
+          EOL
+          echo "Playbook created:"
+          cat playbooks/deploy_ai-assistant.yml
+          
+      - name: Ansible configuration
+        run: |
+          cd ansible-deploy
+          cat > ansible.cfg <<EOL
+          [defaults]
+          interpreter_python = /usr/bin/python3
+          host_key_checking = False
+          inventory = inventory/hosts.ini
+          become = false
+          remote_user = $(whoami)
+          [privilege_escalation]
+          become = false
+          become_method = sudo
+          become_user = root
+          become_ask_pass = false
+          EOL
+          
+      - name: Deploy with Ansible
+        run: |
+          cd ansible-deploy
+          echo "Running as user: $(whoami)"
+          echo "Home directory: $HOME"
+          ansible-playbook -i inventory/hosts.ini playbooks/deploy_ai-assistant.yml \
+            --tags "AI-Assistant_Remote" \
+            --tags "local_network" \
+            -e "install_dir=$HOME/services/AI-Assistant" \
+            -e "ansible_user_id=$(whoami)" \
+            -e "ansible_user_dir=$HOME" \
+            -e "ai-assistant_environment=production"\
+            -v
