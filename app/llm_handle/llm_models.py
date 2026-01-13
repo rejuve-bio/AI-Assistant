@@ -7,6 +7,7 @@ import logging
 import json
 from typing import Any, Dict
 from sentence_transformers import SentenceTransformer
+from groq import Groq
 
 
 logging.basicConfig(
@@ -114,6 +115,13 @@ def get_llm_model(model_provider, model_version=None):
         return GeminiModel(
             gemini_api_key, model_provider, model_version or "gemini-pro"
         )
+    elif model_provider == "groq":
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        if not groq_api_key:
+            raise ValueError("Groq API key not found")
+        return GroqModel(
+            groq_api_key, model_provider, model_version or "llama-3.3-70b-versatile"
+        )
     else:
         raise ValueError("Invalid model type in configuration")
 
@@ -189,6 +197,48 @@ class OpenAIModel(LLMInterface):
             return json.loads(json_content)
         except json.JSONDecodeError:
             return json_content
+
+    def _extract_json_from_codeblock(self, content: str) -> str:
+        start = content.find("```json")
+        end = content.rfind("```")
+        if start != -1 and end != -1:
+            json_content = content[start + 7 : end].strip()
+            return json_content
+        else:
+            return content
+
+
+class GroqModel(LLMInterface):
+    def __init__(self, api_key: str, model_provider, model_name="llama-3.3-70b-versatile"):
+        self.client = Groq(api_key=api_key)
+        self.model_name = model_name
+        self.model_provider = model_provider
+        self.api_key = api_key
+
+    def generate(self, prompt: str, system_prompt=None) -> Dict[str, Any]:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        
+        messages.append({"role": "user", "content": prompt})
+
+        try:
+            chat_completion = self.client.chat.completions.create(
+                messages=messages,
+                model=self.model_name,
+                temperature=0,
+                max_tokens=1000,
+            )
+            content = chat_completion.choices[0].message.content
+            
+            json_content = self._extract_json_from_codeblock(content)
+            try:
+                return json.loads(json_content)
+            except json.JSONDecodeError:
+                return json_content
+        except Exception as e:
+            logger.error(f"Groq generation error: {e}")
+            raise
 
     def _extract_json_from_codeblock(self, content: str) -> str:
         start = content.find("```json")

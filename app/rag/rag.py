@@ -393,10 +393,36 @@ class RAG:
                 logger.error("No query result to process.")
                 return None
 
+            # Extract content sources for transparency
+            content_sources = []
+            formatted_results = []
+            
+            for item in combined_results:
+                payload = item.get("payload", {})
+                score = item.get("score", 0)
+                
+                # Handle both 'text' and 'content' keys (sample_data.json uses 'content')
+                text_content = payload.get("text") or payload.get("content", "")
+                
+                source_info = {
+                    "filename": payload.get("filename", "Unknown"),
+                    "relevance_score": score,
+                    "snippet": text_content[:200] + "...",
+                    "url": payload.get("url", None)
+                }
+                content_sources.append(source_info)
+                
+                if text_content:
+                    formatted_results.append(f"Content: {text_content}\nSource: {source_info['filename']}")
+
             urls = SimpleWebSearch().get_context_urls(query_str, num_results=3)
             urls_line = ", ".join(urls) if urls else "None"
+            
+            # Join formatted results with newlines
+            retrieved_content_str = "\n\n".join(formatted_results)
+            
             retrieved_blob = (
-                f"{combined_results}\n\nWeb context URLs (not scraped): {urls_line}"
+                f"{retrieved_content_str}\n\nWeb context URLs (not scraped): {urls_line}"
             )
 
             prompt = RETRIEVE_PROMPT.format(
@@ -404,7 +430,16 @@ class RAG:
             )
             result = self.llm.generate(prompt)
             logger.info("Result generated successfully.")
-            response = {"text": result, "resource": {"type": "RAG", "id": None}}
+            
+            # Return enhanced response with content sources
+            response = {
+                "text": result, 
+                "resource": {
+                    "type": "RAG", 
+                    "id": None,
+                    "content_sources": content_sources
+                }
+            }
             return response
         except Exception as e:
             logger.error(f"An error occurred while generating the result: {e}")

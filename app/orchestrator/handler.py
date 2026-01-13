@@ -9,14 +9,15 @@ import logging
 import base64
 import sys
 import time
-from . import loaders
+from app.calculator import loaders
 from .artifacts import ensure_run_dirs, build_manifest, Artifact
-# Removed: from .sandbox import run_python, SandboxLimits
+
 from langchain_experimental.tools import PythonREPLTool
 from langchain.agents import initialize_agent, AgentType
-# Removed: REACT_CODE_EXEC_PROMPT import - no longer using JSON-based planning
+
 from app.llm_handle.llm_models import LLMInterface
 from app.socket_manager import emit_to_user
+from app.prompts.orchestrator_prompts import ORCHESTRATOR_PROMPT_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ class CodeExecOptions:
     max_iterations: int = 20  # Maximum agent iterations before stopping
 
 
-class CodeExecutionHandler:
+class Orchestrator:
     """Coordinator for the code-execution agent lifecycle with full LLM integration.
 
     Responsibilities:
@@ -41,17 +42,32 @@ class CodeExecutionHandler:
     - Iterative error correction via ReAct framework
     """
 
-    def __init__(self, llm: LLMInterface, *, artifacts_root: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        llm: LLMInterface,
+        *,
+        artifacts_root: Optional[str] = None,
+        rag=None,
+        annotation_graph=None,
+        hypothesis_generation=None,
+        galaxy_handler=None
+    ) -> None:
         self.llm = llm
         self.artifacts_root = artifacts_root
-        logger.info(f"CodeExecutionHandler initialized with LLM: {type(llm).__name__}")
+        self.rag = rag
+        self.annotation_graph = annotation_graph
+        self.hypothesis_generation = hypothesis_generation
+        self.galaxy_handler = galaxy_handler
+        logger.info(f"Orchestrator initialized with LLM: {type(llm).__name__}")
         # Convert LLMInterface to LangChain LLM for PythonREPLTool
         self._langchain_llm = self._convert_to_langchain_llm(llm)
+
     
     def _convert_to_langchain_llm(self, llm: LLMInterface):
         """Convert LLMInterface to LangChain ChatModel for PythonREPLTool agent."""
         from langchain_openai import ChatOpenAI
         from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_groq import ChatGroq
         import os
         
         # Check if llm has model_provider attribute
@@ -64,6 +80,10 @@ class CodeExecutionHandler:
                 api_key = getattr(llm, 'api_key', None) or os.getenv("GEMINI_API_KEY")
                 model_name = getattr(llm, 'model_name', 'gemini-pro')
                 return ChatGoogleGenerativeAI(model=model_name, temperature=0, google_api_key=api_key)
+            elif llm.model_provider == "groq":
+                api_key = getattr(llm, 'api_key', None) or os.getenv("GROQ_API_KEY")
+                model_name = getattr(llm, 'model_name', 'llama-3.1-70b-versatile')
+                return ChatGroq(model=model_name, temperature=0, groq_api_key=api_key)
         
         # Fallback: try to detect from class name
         llm_class_name = type(llm).__name__
@@ -75,6 +95,10 @@ class CodeExecutionHandler:
             api_key = getattr(llm, 'api_key', None) or os.getenv("GEMINI_API_KEY")
             model_name = getattr(llm, 'model_name', 'gemini-pro')
             return ChatGoogleGenerativeAI(model=model_name, temperature=0, google_api_key=api_key)
+        elif 'Groq' in llm_class_name:
+            api_key = getattr(llm, 'api_key', None) or os.getenv("GROQ_API_KEY")
+            model_name = getattr(llm, 'model_name', 'llama-3.1-70b-versatile')
+            return ChatGroq(model=model_name, temperature=0, groq_api_key=api_key)
         
         # Default to OpenAI if unsure
         logger.warning(f"Unknown LLM type {llm_class_name}, defaulting to OpenAI")
@@ -163,7 +187,7 @@ class CodeExecutionHandler:
         options: Optional[CodeExecOptions] = None,
         user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """High-level orchestration using PythonREPLTool for direct code execution."""
+        """High-level orchestration using CalculatorAgent as a tool."""
         opts = options or CodeExecOptions()
         run_id = uuid.uuid4().hex
         
@@ -183,7 +207,7 @@ class CodeExecutionHandler:
             dirs = ensure_run_dirs(root, run_id)
             output_dir = dirs["figures"]
             
-            # Step 4: Build natural language prompt with file paths, profiles, and helper info
+            # Step 4: Prepare context for CalculatorAgent
             if user_id:
                 emit_to_user(user=user_id, message="Preparing analysis...")
             
@@ -193,7 +217,7 @@ class CodeExecutionHandler:
                 df = table_item.get("dataframe")
                 source = table_item.get("source", f"table_{idx}")
                 if df is not None:
-                    # Save DataFrame to CSV so PythonREPLTool can load it
+                    # Save DataFrame to CSV so CalculatorAgent can load it
                     csv_path = os.path.join(output_dir, f"data_{idx}.csv")
                     df.to_csv(csv_path, index=False)
                     
@@ -228,137 +252,80 @@ class CodeExecutionHandler:
                         "source": url
                     })
             
-            # Step 5: Set up PythonREPLTool with project root in sys.path
-            if user_id:
-                emit_to_user(user=user_id, message="Executing code...")
+            # Context data to pass to CalculatorAgent
+            context_data = {
+                "file_paths": file_paths_info,
+                "original_files": original_files_info,
+                "profiles": prof.get("profiles", [])
+            }
             
-            # Get project root (parent of app directory)
+            
+            # Step 5: Build all available tools for the Orchestrator
+            from app.calculator.agent import CalculatorAgent
+            from app.tools.agent_tools import RAGTool #, AnnotationTool, HypothesisTool, GalaxyTool
+            from langchain.tools import Tool
+            
+            # Get project root
             project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
             
-            # Build enhanced prompt
-            prompt = self._build_enhanced_prompt(
-                instructions=instructions,
-                file_paths=file_paths_info,
-                original_files=original_files_info,
-                profiles=prof.get("profiles", []),
-                output_dir=output_dir,
-                project_root=project_root
-            )
+            tools = []
             
-            # Set up globals for PythonREPLTool to include project root in sys.path
-            # Note: PythonREPLTool executes code in its own namespace, so we add a setup command
-            # to the prompt or use globals if supported. For now, we'll rely on the prompt
-            # including instructions to modify sys.path if needed.
-            repl_globals = {
-                "__builtins__": __builtins__,
-            }
-            # Add project root to sys.path in the globals namespace
-            import sys
-            if project_root not in sys.path:
-                sys.path.insert(0, project_root)
+            # Always add CalculatorTool
+            calculator_agent = CalculatorAgent(llm=self._langchain_llm)
             
-            # Initialize PythonREPLTool with globals
-            # The globals dict allows the code to access project modules
-            python_repl = PythonREPLTool(globals=repl_globals)
-            
-            # Initialize agent with PythonREPLTool
-            tools = [python_repl]
-            
-            # Calculate max_iterations based on timeout (allow ~6 seconds per iteration)
-            max_iterations = getattr(opts, 'max_iterations', max(15, opts.timeout_seconds // 6))
-            
-            logger.info(
-                f"Initializing agent with max_iterations={max_iterations}, "
-                f"timeout={opts.timeout_seconds}s, max_memory={opts.max_memory_mb}MB"
-            )
-            
-            # Initialize agent with PythonREPLTool
-            # Note: initialize_agent may not support all parameters directly in some LangChain versions
-            # We'll configure via AgentExecutor if needed
-            try:
-                agent = initialize_agent(
-                    tools=tools,
-                    llm=self._langchain_llm,
-                    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-                    verbose=True,
-                    handle_parsing_errors=True,
-                    max_iterations=max_iterations,
-                    max_execution_time=opts.timeout_seconds,
-                )
-            except TypeError:
-                # Fallback if parameters not supported - initialize without them
-                logger.warning("Agent initialization doesn't support max_iterations/max_execution_time, using defaults")
-                agent = initialize_agent(
-                    tools=tools,
-                    llm=self._langchain_llm,
-                    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-                    verbose=True,
-                    handle_parsing_errors=True,
+            # Create a wrapper function that calls calculator_agent.run() with the required parameters
+            def calculator_wrapper(query: str) -> str:
+                """Wrapper to call CalculatorAgent.run with all required parameters."""
+                return calculator_agent.run(
+                    instructions=query,
+                    context_data=context_data,
+                    output_dir=output_dir,
+                    project_root=project_root,
+                    timeout_seconds=opts.timeout_seconds,
+                    max_iterations=opts.max_iterations,
+                    max_memory_mb=opts.max_memory_mb
                 )
             
-            # Step 6: Execute agent with prompt (with retry logic for rate limiting)
-            max_retries = 3
-            retry_delay = 2  # Initial delay in seconds
-            result = None
+            calculator_tool = Tool(
+                name="CalculatorTool",
+                description="Perform calculations, data analysis, generate plots, and execute Python code on data. Use this for any computational or data analysis tasks.",
+                func=calculator_wrapper
+            )
+            tools.append(calculator_tool)
+            
+            # Add RAG tool if available
+            if self.rag:
+                tools.append(RAGTool(rag_instance=self.rag))
+        
+            
+            logger.info(f"Orchestrator initialized with {len(tools)} tools: {[t.name for t in tools]}")
+            
+            # Initialize the orchestrator agent with all tools
+            orchestrator = initialize_agent(
+                tools=tools,
+                llm=self._langchain_llm,
+                agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+                verbose=True,
+                handle_parsing_errors=True,
+                agent_kwargs={"prefix": ORCHESTRATOR_PROMPT_PREFIX}
+            )
+            
+            # Step 6: Execute Orchestrator
+            if user_id:
+                emit_to_user(user=user_id, message="Orchestrating analysis...")
+            
             execution_output = ""
             execution_errors = ""
             
-            for attempt in range(max_retries):
-                try:
-                    result = agent.run(prompt)
-                    execution_output = str(result) if result else "Execution completed"
-                    execution_errors = ""
-                    break  # Success, exit retry loop
-                except Exception as e:
-                    error_str = str(e)
-                    logger.warning(f"Agent execution attempt {attempt + 1} error: {error_str}")
-                    
-                    # Check if it's a rate limit error (429)
-                    is_rate_limit = (
-                        "429" in error_str or 
-                        "Resource exhausted" in error_str or
-                        "rate limit" in error_str.lower() or
-                        "quota" in error_str.lower()
-                    )
-                    
-                    # Check if it's an iteration/time limit error
-                    is_limit_error = (
-                        "iteration limit" in error_str.lower() or
-                        "time limit" in error_str.lower() or
-                        "stopped due to" in error_str.lower()
-                    )
-                    
-                    if is_limit_error:
-                        # If hitting limits, log and break - this is a configuration issue, not retry-able
-                        logger.error(
-                            f"Agent hit iteration/time limit. max_iterations={max_iterations}, "
-                            f"timeout={opts.timeout_seconds}s. Error: {error_str}"
-                        )
-                        execution_output = (
-                            f"Execution stopped: {error_str}. "
-                            f"This may indicate the task is too complex or limits are too low. "
-                            f"Try simplifying the request or increasing timeout/memory limits."
-                        )
-                        execution_errors = error_str
-                        break
-                    
-                    if is_rate_limit and attempt < max_retries - 1:
-                        # Calculate exponential backoff: 2s, 4s, 8s
-                        delay = retry_delay * (2 ** attempt)
-                        logger.warning(
-                            f"Rate limit error (attempt {attempt + 1}/{max_retries}): {error_str}. "
-                            f"Retrying in {delay} seconds..."
-                        )
-                        time.sleep(delay)
-                        continue  # Retry
-                    else:
-                        # Not a rate limit error, or max retries reached
-                        logger.warning(f"Agent execution error: {e}", exc_info=True)
-                        execution_output = f"Execution completed with warnings: {str(e)}"
-                        execution_errors = str(e)
-                        break
+            try:
+                result = orchestrator.run(instructions)
+                execution_output = str(result)
+            except Exception as e:
+                logger.error(f"Orchestrator failed: {e}")
+                execution_errors = str(e)
+                execution_output = f"Orchestration failed: {e}"
             
-            # Step 7: Collect artifacts (figures, tables)
+            # Step 7: Collect artifacts (figures, tables) - same as before
             artifacts_list: List[Artifact] = []
             artifacts_with_data = []
             
@@ -460,9 +427,9 @@ class CodeExecutionHandler:
             return {
                 "text": "\n".join(summary_lines),
                 "manifest": manifest,
-                "outputs": [{"step": 1, "description": "Code execution", "stdout": execution_output, "stderr": execution_errors}],
+                "outputs": [{"step": 1, "description": "Orchestration", "stdout": execution_output, "stderr": execution_errors}],
                 "artifacts": artifacts_with_data if artifacts_with_data else [{"name": a.name, "format": a.format, "path": a.path_or_url} for a in artifacts_list],
-                "resource": {"type": "code_exec", "id": run_id},
+                "resource": {"type": "orchestrator", "id": run_id},
             }
             
         except Exception as e:
@@ -470,101 +437,9 @@ class CodeExecutionHandler:
             return {
                 "text": f"Error during code execution: {str(e)}",
                 "manifest": {},
-                "resource": {"type": "code_exec", "id": run_id},
+                "resource": {"type": "orchestrator", "id": run_id},
                 "error": str(e),
             }
-    
-    def _build_enhanced_prompt(
-        self,
-        instructions: str,
-        file_paths: List[Dict[str, Any]],
-        original_files: List[Dict[str, Any]],
-        profiles: List[Dict[str, Any]],
-        output_dir: str,
-        project_root: str
-    ) -> str:
-        """Build enhanced prompt for PythonREPLTool with file paths, profiles, and helper info."""
-        prompt_parts = [
-            "You are a Python data analysis assistant. Execute Python code to complete the user's request.",
-            "",
-            "CRITICAL RULES:",
-            "1. DO NOT install packages - use only libraries that are already installed",
-            "2. DO NOT use subprocess, pip, or any package installation commands",
-            "3. Use the loaders module to load files if needed: from app.code_exec.loaders import load_pdf, load_csv, load_html, load_xml, load_url",
-            "4. For PDFs, use pdfplumber or camelot (already installed) - DO NOT use tabula-py",
-            "5. IF DATASET SCHEMA IS LARGE OR TRUNCATED: You MUST run `df.columns` or `df.head()` to inspect the data before writing your analysis code. Do NOT guess column names.",
-            "",
-            "USER REQUEST:",
-            instructions,
-            "",
-        ]
-        
-        # Add original file paths (PDF/URL) - show these even if no tables extracted
-        if original_files:
-            prompt_parts.append("ORIGINAL FILES (if you need to process them directly):")
-            for orig_file in original_files:
-                file_path = orig_file['path']
-                file_type = orig_file.get('type', 'file')
-                if file_type == 'url':
-                    prompt_parts.append(f"  - URL: {file_path}")
-                    prompt_parts.append(f"    To load: from app.code_exec.loaders import load_url; data = load_url('{file_path}')")
-                else:
-                    ext = os.path.splitext(file_path)[1].lower()
-                    prompt_parts.append(f"  - File: {file_path} (type: {ext})")
-                    if ext == '.pdf':
-                        prompt_parts.append(f"    To load: from app.code_exec.loaders import load_pdf; data = load_pdf('{file_path}')")
-                        prompt_parts.append(f"    Or use: import pdfplumber; with pdfplumber.open('{file_path}') as pdf: tables = [page.extract_table() for page in pdf.pages]")
-                    elif ext == '.csv':
-                        prompt_parts.append(f"    To load: import pandas as pd; df = pd.read_csv('{file_path}')")
-                    elif ext in ['.html', '.htm']:
-                        prompt_parts.append(f"    To load: from app.code_exec.loaders import load_html; data = load_html('{file_path}')")
-                    elif ext == '.xml':
-                        prompt_parts.append(f"    To load: from app.code_exec.loaders import load_xml; data = load_xml('{file_path}')")
-            prompt_parts.append("")
-        
-        # Add extracted tables (CSV/HTML/XML - already loaded as CSV)
-        if file_paths:
-            prompt_parts.append("EXTRACTED TABLES (already loaded as CSV files):")
-            for fp_info in file_paths:
-                prompt_parts.append(f"  - File: {fp_info['path']}")
-                prompt_parts.append(f"    Source: {fp_info['source']}")
-                prompt_parts.append(f"    Shape: {fp_info['shape']}")
-                prompt_parts.append(f"    Columns: {fp_info['columns']}")
-            prompt_parts.append("")
-            prompt_parts.append("To load these CSV files, use:")
-            prompt_parts.append("  import pandas as pd")
-            prompt_parts.append("  df = pd.read_csv('path_to_file.csv')")
-            prompt_parts.append("")
-        
-        if profiles:
-            prompt_parts.append("DATA PROFILES:")
-            for prof in profiles[:3]:  # Limit to first 3 profiles
-                if "error" not in prof:
-                    prompt_parts.append(f"  Source: {prof.get('source', 'unknown')}")
-                    prompt_parts.append(f"    Shape: {prof.get('shape')}")
-                    prompt_parts.append(f"    Missing values: {prof.get('missing', {})}")
-            prompt_parts.append("")
-        
-        prompt_parts.extend([
-            "OUTPUT DIRECTORY:",
-            f"  Save all plots to: {output_dir}",
-            "",
-            "IMPORTANT: Complete the task efficiently. Use helper functions when available:",
-            f"  1. Add project root to sys.path: sys.path.insert(0, r'{project_root}')",
-            "  2. Import helpers: from app.code_exec.plotting import save_correlation_heatmap",
-            "  3. For correlation heatmap: save_correlation_heatmap(df, os.path.join(output_dir, 'heatmap.png'))",
-            "  4. For statistics: from app.code_exec.stats import correlations",
-            "",
-            "AVAILABLE LIBRARIES:",
-            "  - pandas (pd), numpy (np), matplotlib.pyplot (plt), seaborn (sns)",
-            "  - pdfplumber (for PDF text/table extraction)",
-            "  - camelot (for PDF table extraction)",
-            "  - app.code_exec.loaders (load_pdf, load_csv, load_html, load_xml, load_url)",
-            "",
-            "EXECUTE CODE NOW to complete: " + instructions,
-        ])
-        
-        return "\n".join(prompt_parts)
 
     # --- Tool-like wrappers to be exposed to the agent later ---
 

@@ -16,7 +16,7 @@ from .storage.history_manager import HistoryManager
 from .storage.mongo_storage import mongo_db_manager
 from .socket_manager import emit_to_user
 from .Galaxy_integration.galaxy import GalaxyHandler
-from .code_exec.handler import CodeExecutionHandler, CodeExecOptions
+from .orchestrator.handler import Orchestrator, CodeExecOptions
 import asyncio
 import logging.handlers as loghandlers
 from dotenv import load_dotenv
@@ -83,7 +83,14 @@ class AiAssistance:
         self.hypothesis_generation = HypothesisGeneration(advanced_llm)
         self.galaxy_handler = GalaxyHandler(advanced_llm)
         self.embedding_model = embedding_model
-        self.code_exec_handler = CodeExecutionHandler(llm=advanced_llm)
+        # Initialize Orchestrator as the central brain with access to all tools
+        self.orchestrator = Orchestrator(
+            llm=advanced_llm,
+            rag=self.rag,
+            annotation_graph=self.annotation_graph,
+            hypothesis_generation=self.hypothesis_generation,
+            galaxy_handler=self.galaxy_handler
+        )
 
         logger.info(
             f"AiAssistance initialized with advanced_llm: {type(self.advanced_llm).__name__}"
@@ -543,36 +550,51 @@ class AiAssistance:
             )
             return graph_context
 
-        # Direct routing for code_exec: bypass conversation prompt if resource is explicitly set
-        if resource == "code_exec":
-            logger.info("Direct routing to code_exec agent (bypassing conversation prompt)")
-            agent_response = self.agent(
-                query,
-                user_id,
-                token,
-                content_ids=content_ids,
-                files=files,
-                urls=urls,
-                options=options,
+
+        # NEW FLOW: Route ALL requests directly to Orchestrator (the central brain)
+        # The Orchestrator will decide which specialized tool to use based on the query
+        logger.info(f"Routing query to Orchestrator (central brain): {query}")
+        
+        # Convert options dict to CodeExecOptions if provided
+        options_dict = options or {}
+        if isinstance(options_dict, dict):
+            exec_options = CodeExecOptions(
+                timeout_seconds=options_dict.get("timeout_seconds", 120),
+                max_memory_mb=options_dict.get("max_memory_mb", 2048),
+                output_formats=options_dict.get("output_formats"),
+                allow_network=options_dict.get("allow_network", False),
+                max_iterations=options_dict.get("max_iterations", 20),
             )
-            if isinstance(agent_response, str):
-                agent_response = {"text": agent_response}
-            elif isinstance(agent_response, dict):
-                pass
-            else:
-                agent_response = {"text": str(agent_response)}
-            
-            emit_to_user(user=user_id, message=agent_response, status="completed")
-            # Extract text from agent_response for history storage
-            assistant_answer = (
-                agent_response.get("text", str(agent_response))
-                if isinstance(agent_response, dict)
-                else str(agent_response)
-            )
-            self.history.create_history(
-                user_id, query, assistant_answer, graph_id_referenced=graph_id
-            )
-            return agent_response
+        else:
+            exec_options = CodeExecOptions()
+        
+        # Call Orchestrator directly
+        agent_response = self.orchestrator.execute(
+            instructions=query,
+            files=files,
+            urls=urls,
+            options=exec_options,
+            user_id=user_id
+        )
+        
+        # Ensure response is in dict format
+        if isinstance(agent_response, str):
+            agent_response = {"text": agent_response}
+        elif not isinstance(agent_response, dict):
+            agent_response = {"text": str(agent_response)}
+        
+        emit_to_user(user=user_id, message=agent_response, status="completed")
+        
+        # Extract text from agent_response for history storage
+        assistant_answer = (
+            agent_response.get("text", str(agent_response))
+            if isinstance(agent_response, dict)
+            else str(agent_response)
+        )
+        self.history.create_history(
+            user_id, query, assistant_answer, graph_id_referenced=graph_id
+        )
+        return agent_response
 
         prompt = conversation_prompt.format(
             memory=memory,

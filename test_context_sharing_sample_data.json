@@ -1,0 +1,30 @@
+[
+    {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "URL": "https://test.bio/gene-a",
+        "Title": "Gene A Characteristics",
+        "Chunk_Number": 1,
+        "content": "Gene A is a newly discovered gene associated with cellular longevity. It has a total length of 1500 base pairs (bp). This gene is highly expressed in the liver tissues of Methuselah flies."
+    },
+    {
+        "id": "22222222-2222-2222-2222-222222222222",
+        "URL": "https://test.bio/gene-b",
+        "Title": "Gene B Characteristics",
+        "Chunk_Number": 1,
+        "content": "Gene B is known for its role in metabolic regulation. The coding sequence of Gene B spans exactly 3000 base pairs (bp). It is often studied in conjunction with Gene A."
+    },
+    {
+        "id": "33333333-3333-3333-3333-333333333333",
+        "URL": "https://test.bio/protein-x",
+        "Title": "Protein X Properties",
+        "Chunk_Number": 1,
+        "content": "Protein X is the primary product of Gene A. It has a molecular weight of 50 kilodaltons (kDa). This protein forms a dimer in its active state."
+    },
+    {
+        "id": "44444444-4444-4444-4444-444444444444",
+        "URL": "https://test.bio/protein-y",
+        "Title": "Protein Y Properties",
+        "Chunk_Number": 1,
+        "content": "Protein Y interacts with Protein X to regulate cell cycle progression. The molecular weight of Protein Y is recorded at 75 kilodaltons (kDa)."
+    }
+]

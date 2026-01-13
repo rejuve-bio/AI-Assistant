@@ -28,7 +28,7 @@ class Qdrant:
 
         try:
             qdrant_url = os.environ.get(
-                "QDRANT_CLIENT", "http://host.docker.internal:6333"
+                "QDRANT_CLIENT"
             )
             self.client = QdrantClient(
                 url=qdrant_url,
@@ -173,7 +173,7 @@ class Qdrant:
 
                     # Create payload with the item data and source info
                     payload = {
-                        "text": text,
+                        # "text": text,
                         "source": "sample_data",
                         **item,
                     }
@@ -262,17 +262,16 @@ class Qdrant:
             logger.info(
                 f"Searching collection '{collection_name}' with {len(filters)} filters"
             )
-            hits = self.client.search(
+            hits = self.client.query_points(
                 collection_name=collection_name,
-                query_vector=query,
+                query=query,
                 limit=top_k,
                 query_filter=query_filter,
                 with_payload=True,
             )
-            logger.info(f"Found {len(hits)} hits in collection '{collection_name}'")
+            logger.info(f"Found {len(hits.points)} hits in collection '{collection_name}'")
+            return [{"payload": h.payload, "score": h.score} for h in hits.points]
 
-            # Return a consistent format (list of payloads)
-            return [h.payload for h in hits]
         except Exception as e:
             logger.error(
                 f"Error in retrieve_similar_content for collection '{collection_name}': {e}"
@@ -331,6 +330,7 @@ class Qdrant:
                     payloads=data,
                 ),
             )
+            
             logger.info("collection updated")
             return memory_id
         except:
@@ -346,57 +346,57 @@ class Qdrant:
         )
         return None
 
-    def _retrieve_memory(self, user_id, embedding=None):
-        try:
-            if embedding:
-                result = self.client.search(
-                    collection_name=USER_COLLECTION,
-                    query_vector=embedding,
-                    with_payload=True,
-                    # score threshold of 0.5 will return a similiar memories with similiarity score of more than 0.5
-                    score_threshold=0.5,
-                    query_filter=models.Filter(
-                        must=[
-                            models.FieldCondition(
-                                key="user_id",
-                                match=models.MatchValue(value=user_id),
-                            ),
-                            models.FieldCondition(
-                                key="status",
-                                match=models.MatchValue(value=USER_MEMORY_NAME),
-                            ),
-                        ],
-                    ),
-                    limit=1000,
-                )
+    # def _retrieve_memory(self, user_id, embedding=None):
+    #     try:
+    #         if embedding:
+    #             result = self.client.query_points(
+    #                 collection_name=USER_COLLECTION,
+    #                 query=embedding,
+    #                 with_payload=True,
+    #                 # score threshold of 0.5 will return a similiar memories with similiarity score of more than 0.5
+    #                 score_threshold=0.5,
+    #                 query_filter=models.Filter(
+    #                     must=[
+    #                         models.FieldCondition(
+    #                             key="user_id",
+    #                             match=models.MatchValue(value=user_id),
+    #                         ),
+    #                         models.FieldCondition(
+    #                             key="status",
+    #                             match=models.MatchValue(value=USER_MEMORY_NAME),
+    #                         ),
+    #                     ],
+    #                 ),
+    #                 limit=1000,
+    #             )
 
-                if result:
-                    response = {}
-                    for i, point in enumerate(result):
-                        response[i] = {
-                            "id": point.id,
-                            "content": point.payload.get("content"),
-                            "date": point.payload.get("created_at_updated_at"),
-                        }
+    #             if result:
+    #                 response = {}
+    #                 for i, point in enumerate(result):
+    #                     response[i] = {
+    #                         "id": point.id,
+    #                         "content": point.payload.get("content"),
+    #                         "date": point.payload.get("created_at_updated_at"),
+    #                     }
 
-                    return [response[0]]
-            else:
-                data = self.client.scroll(
-                    collection_name=USER_COLLECTION,
-                    scroll_filter=models.Filter(
-                        must=[
-                            models.FieldCondition(
-                                key="user_id", match=models.MatchValue(value=user_id)
-                            ),
-                        ]
-                    ),
-                    limit=100,
-                    with_payload=True,
-                    with_vectors=False,
-                )
+    #                 return [response[0]]
+    #         else:
+    #             data = self.client.scroll(
+    #                 collection_name=USER_COLLECTION,
+    #                 scroll_filter=models.Filter(
+    #                     must=[
+    #                         models.FieldCondition(
+    #                             key="user_id", match=models.MatchValue(value=user_id)
+    #                         ),
+    #                     ]
+    #                 ),
+    #                 limit=100,
+    #                 with_payload=True,
+    #                 with_vectors=False,
+    #             )
 
-                data = [record.payload["content"] for record in data[0][::-1]]
-                return data
-        except:
-            traceback.print_exc()
-            return None
+    #             data = [record.payload["content"] for record in data[0][::-1]]
+    #             return data
+    #     except:
+    #         traceback.print_exc()
+    #         return None

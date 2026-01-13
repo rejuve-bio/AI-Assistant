@@ -123,7 +123,17 @@ def create_app():
     )
     logger.info("ADVANCED LLM model initialized successfully")
 
-    embedding_model = sentence_transformer_embedding_model
+    # Initialize Embedding Model
+    embedding_provider = os.getenv("EMBEDDING_PROVIDER", "local").lower()
+    logger.info(f"Initializing embedding model with provider: {embedding_provider}")
+
+    if embedding_provider == "openai":
+        embedding_model = openai_embedding_model
+    elif embedding_provider == "gemini":
+        embedding_model = gemini_embedding_model
+    else:
+        embedding_model = sentence_transformer_embedding_model
+
     vector_size = get_embedding_vector_size(embedding_model)
     qdrant_client = Qdrant(embedding_model=embedding_model, vector_size=vector_size)
     app.config["qdrant_client"] = qdrant_client
@@ -132,38 +142,79 @@ def create_app():
 
     # Check for SITE_INFORMATION collection and upload sample data if needed
     try:
+        # Check if collection exists and has data
+        collection_exists = False
+        is_empty = True
+        
         try:
-            qdrant_client.client.get_collection("SITE_INFORMATION")
-            logger.info(
-                "SITE_INFORMATION collection already exists, skipping population data"
-            )
-        except Exception as e:
-            # Check if the error is because the collection does not exist
-            if "not found" in str(e).lower() or "404" in str(e):
+            collection_info = qdrant_client.client.get_collection("SITE_INFORMATION")
+            collection_exists = True
+            if collection_info.points_count > 0:
+                is_empty = False
                 logger.info(
-                    "SITE_INFORMATION collection not found, uploading sample web data to qdrant db"
+                    f"SITE_INFORMATION collection exists with {collection_info.points_count} points. Skipping population."
                 )
-                with open("sample_data.json") as data:
-                    sample_site_data = json.load(data)
-
-                # Initialize a RAG instance to handle the data upload
-                rag = RAG(
-                    advanced_llm,
-                    qdrant_client=qdrant_client,
-                )
-                # Upload the data to the specified collection
-                rag.save_doc_to_rag(
-                    data=sample_site_data,
-                    collection_name="SITE_INFORMATION",
-                    is_content=False,
-                )
-                logger.info("Successfully populated SITE_INFORMATION collection.")
             else:
-                # Log any other unexpected errors during collection check
-                logger.error(
-                    f"An unexpected error occurred when checking for SITE_INFORMATION collection: {e}",
-                    exc_info=True,
-                )
+                logger.info("SITE_INFORMATION collection exists but is empty.")
+        except Exception as e:
+            if "not found" in str(e).lower() or "404" in str(e):
+                logger.info("SITE_INFORMATION collection not found.")
+            else:
+                logger.error(f"Error checking collection status: {e}")
+                raise e
+
+        # Trigger ingestion if collection is missing OR empty
+        # if not collection_exists or is_empty:
+        #     logger.info("Starting population of SITE_INFORMATION collection...")
+            
+        #     with open("sample_data.json") as data:
+        #         sample_site_data = json.load(data)
+
+        #     # Initialize a RAG instance to handle the data upload
+        #     rag = RAG(
+        #         advanced_llm,
+        #         qdrant_client=qdrant_client,
+        #     )
+        #     # Upload the data to the specified collection
+        #     rag.save_doc_to_rag(
+        #         data=sample_site_data,
+        #         collection_name="SITE_INFORMATION",
+        #         is_content=False,
+        #     )
+        #     logger.info("Successfully populated SITE_INFORMATION collection.")
+
+        # --- CONTEXT SHARING TEST DATA INGESTION ---
+        # Force re-ingestion for testing purposes
+        logger.info("Starting population of SITE_INFORMATION collection with TEST DATA...")
+        
+        # Delete existing collection to ensure clean test state
+        try:
+            qdrant_client.client.delete_collection("SITE_INFORMATION")
+            logger.info("Deleted existing SITE_INFORMATION collection for testing.")
+        except Exception as e:
+            logger.warning(f"Could not delete collection (might not exist): {e}")
+
+        with open("test_context_sharing_sample_data.json") as data:
+            test_data = json.load(data)
+            
+        rag = RAG(
+            advanced_llm,
+            qdrant_client=qdrant_client,
+        )
+        
+        rag.save_doc_to_rag(
+            data=test_data,
+            collection_name="SITE_INFORMATION",
+            is_content=False,
+        )
+        logger.info("Successfully populated SITE_INFORMATION collection with TEST DATA.")
+        # -------------------------------------------
+
+    except Exception as e:
+        logger.error(
+            f"An error occurred during the application setup for SITE_INFORMATION: {e}",
+            exc_info=True,
+        )
 
     except Exception as e:
         logger.error(
