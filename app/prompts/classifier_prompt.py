@@ -28,28 +28,24 @@ answer_from_graph = """
             """
 
 agent_descriptions = """
-1. **annotation_biological**: Queries about specific biological entities in the annotation database
-   - Finding/retrieving genes, proteins, transcripts, exons, variants
-   - Exploring relationships between biological entities
-   - Examples: "find gene BRCA1", "show transcripts for TP53", "what exons does IGF1 have"
+1. **annotation_agent**: Queries specific biological entities in the annotation database. Returns structured JSON + summaries. Best for retrieving genes, proteins, transcripts, exons, and variants.
+   - Examples: "find gene BRCA1", "show transcripts for TP53"
 
-2. **annotation_general**: Queries about database statistics and metadata
-   - Aggregate counts, database size, data types available
-   - Examples: "how many genes in the database", "what types of variants are stored"
+2. **annotation_general**: Database statistics/metadata queries. Use for aggregate counts or data type questions.
+   - Examples: "how many genes in database", "types of variants stored"
 
-3. **galaxy**: Queries about Galaxy bioinformatics platform
-   - Galaxy tools, workflows, pipeline recommendations
-   - Examples: "What Galaxy tools for RNA-seq?", "create a variant calling workflow"
+3. **galaxy_agent**: Bioinformatics tool expert. Recommend Galaxy platform workflows, tools, and pipelines for specific data types.
+   - Examples: "Galaxy tools for RNA-seq", "create a variant calling workflow"
 
-4. **rag**: General information queries and document retrieval
-   - Questions about uploaded PDFs, web content, user documents
-   - Background information that requires reading provided materials
-   - Examples: "summarize my uploaded PDF", "what does the document say about X"
+4. **rag_agent**: Document specialist. Extracts facts and entities from uploaded PDFs and provided web content. Always start here if the user mentions "the document".
+   - Examples: "summarize my uploaded PDF", "what does the doc say about X"
 
-5. **biogpt**: Biomedical knowledge questions requiring specialized medical/biological expertise
-   - Medical symptoms, diseases, drug information
-   - Biological processes, mechanisms, pathways (general knowledge, not database-specific)
-   - Examples: "What are symptoms of vitamin D deficiency?", "How does insulin work?", "What is CRISPR?"
+5. **biogpt_agent**: Biomedical knowledge expert. Explains diseases, mechanisms, drug pathways, and clinical significance using broad medical knowledge.
+   - Examples: "symptoms of vitamin D deficiency", "mechanism of CRISPR"
+
+6. **_hypothesis_agent**: Research theorist. Generates testable scientific hypotheses and future research directions based on findings from other agents.
+
+7. **content_retrieval_agent**: Data fetcher. Retrieves raw content from specific IDs or URLs explicitly provided by the user.
 """
 
 VALIDATION_PROMPT = """You are a Gatekeeper for a specialized Biomedical & Bioinformatics AI.
