@@ -170,22 +170,11 @@ class AiAssistance:
             logger.info(f"✅ Plan execution completed ({len(plan)} steps). Routing to aggregator.")
             return "aggregator"
         
-        # Case: Execute next step
         current_step = plan[current_index]
         agent_name = current_step.get("agent")
         
         logger.info(f"➡️  Routing to step {current_index + 1}/{len(plan)}: {agent_name}")
-        
-        # Map generic names if needed (e.g. from prompt to node name)
-        # Assuming prompt returns correct node names like "rag_agent"
-        # Handling mapping if prompt returns "rag" instead of "rag_agent"
-        if not agent_name.endswith("_agent") and agent_name != "_hypothesis_agent":
-             # Try appending _agent
-             if agent_name == "hypothesis":
-                 agent_name = "_hypothesis_agent"
-             else:
-                 agent_name = f"{agent_name}_agent"
-
+    
         # Check if valid node
         if agent_name in [
             "annotation_agent", "rag_agent", "galaxy_agent", 
