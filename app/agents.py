@@ -5,14 +5,12 @@ from .llm_handle.llm_models import (
     openai_embedding_model,
 )
 from .prompts.classifier_prompt import (
-    classifier_prompt,
-    answer_from_graph,
-    main_classifier_prompt,
     aggeregator_prompt,
     VALIDATION_PROMPT,
     PLANNER_PROMPT,
     agent_descriptions
 )
+from .prompts.dependency_prompts import DEPENDENCY_SUMMARIZATION_PROMPT
 from .annotation_graph.annotated_graph import Graph
 from .annotation_graph.schema_handler import SchemaHandler
 from .rag.rag import RAG
@@ -823,12 +821,7 @@ class AgentManager:
         # Context is too long, summarize it
         logger.info(f"📝 Summarizing long context from step {dependency_id} ({len(dep_output)} chars → target: ~400 words)")
         
-        summarize_prompt = f"""Summarize the following content concisely, keeping only the most important information relevant for answering questions. Focus on key facts, entities, and findings.
-
-Content to summarize:
-{dep_output}
-
-Provide a clear, concise summary in 200-300 words that captures the essential information:"""
+        summarize_prompt = DEPENDENCY_SUMMARIZATION_PROMPT.format(content=dep_output)
         
         try:
             summary = self.basic_llm.generate(summarize_prompt)
