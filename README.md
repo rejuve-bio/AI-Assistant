@@ -31,6 +31,13 @@ Ensure that the environment variables are set correctly in `.env` before running
 * **API Keys:**
   * `OPENAI_API_KEY`: Your OpenAI API key.
   * `GEMINI_API_KEY`: Your Gemini API key.
+* **LangSmith (optional tracing):**
+  * `LANGCHAIN_TRACING_V2`: Set to `true` to enable tracing.
+  * `LANGCHAIN_API_KEY`: Your LangSmith API key.
+  * `LANGCHAIN_PROJECT`: LangSmith project name.
+  * `LANGCHAIN_ENDPOINT`: LangSmith API endpoint.
+  * `LANGCHAIN_HIDE_INPUTS`: Optional. Set to `true` to hide inputs.
+  * `LANGCHAIN_HIDE_OUTPUTS`: Optional. Set to `true` to hide outputs.
 * **Neo4j Configuration:**
   * `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`: Connection details for the Neo4j database.
 * **Annotation Service Configuration:**
@@ -134,6 +141,13 @@ Ensure that the environment variables are set correctly in `.env` before running
 * **API Keys:**
   * `OPENAI_API_KEY`: Your OpenAI API key.
   * `GEMINI_API_KEY`: Your Gemini API key.
+* **LangSmith (optional tracing):**
+  * `LANGCHAIN_TRACING_V2`: Set to `true` to enable tracing.
+  * `LANGCHAIN_API_KEY`: Your LangSmith API key.
+  * `LANGCHAIN_PROJECT`: LangSmith project name.
+  * `LANGCHAIN_ENDPOINT`: LangSmith API endpoint.
+  * `LANGCHAIN_HIDE_INPUTS`: Optional. Set to `true` to hide inputs.
+  * `LANGCHAIN_HIDE_OUTPUTS`: Optional. Set to `true` to hide outputs.
 * **Neo4j Configuration:**
   * `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`: Connection details for the Neo4j database.
 * **Annotation Service Configuration:**

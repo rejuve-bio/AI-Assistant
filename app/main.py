@@ -10,6 +10,7 @@ from typing import TypedDict, List, Annotated, Any, Dict, Optional
 from flask_socketio import emit
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
+from langchain_core.tracers.context import tracing_v2_enabled
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_core.tools import tool
 import asyncio
@@ -225,7 +226,18 @@ class AiAssistance:
                 "suggested_questions": None,
             }
 
-            result = self.app.invoke(initial_state)
+            trace_enabled = os.getenv("LANGCHAIN_TRACING_V2", "").lower() == "true"
+            run_config = {
+                "run_name": "ai_assistant_graph",
+                "tags": ["ai-assistant", "langgraph"],
+            }
+
+            if trace_enabled:
+                project_name = os.getenv("LANGCHAIN_PROJECT")
+                with tracing_v2_enabled(project_name=project_name):
+                    result = self.app.invoke(initial_state, config=run_config)
+            else:
+                result = self.app.invoke(initial_state, config=run_config)
 
             # Extract the structured response
             response = result.get("response", {"text": ""})
