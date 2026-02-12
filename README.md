@@ -1,4 +1,4 @@
-# AI-Assistant Backend API
+# AI Assistant Backend API
 
 This is the backend API for the RejuveBio Platform AI Assistant.
 
@@ -7,13 +7,16 @@ This is the backend API for the RejuveBio Platform AI Assistant.
 Before you begin, ensure you have the following installed:
 
 * **Python 3.8+**
-* **Poetry** (for managing dependencies when installing locally)
+* **Docker** (for running the application)
 
-## Installation Using Docker to run the application
+## Dependency management when installing locally
+* **Poetry** 
+
+## Installation and Setup
 
 ### 1. Clone the repository
-First, clone the repository and navigate to the project folder:
 
+First, clone the repository and navigate to the project folder:
 ```bash
 git clone https://github.com/rejuve-bio/AI-Assistant.git
 cd AI-Assistant
@@ -57,78 +60,54 @@ Ensure that the environment variables are set correctly in `.env` before running
 
 ### 3. Start the application:
 
+Copy the example environment file and fill in your actual values:
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your configuration:
+
+
+### 3. Start the application
 ```bash
 docker-compose up --build
 ```
 
-**Example using curl:**
-```bash
-curl -X POST http://localhost:5002/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "your query here"}'
-```
 
-### 2. To stop the services, use:
-  ```bash
-  docker-compose down
-  ```
+## Usage
 
-### 3. Send a POST request to the `/query` endpoint
 ### Authentication
+
 First, generate and copy your authentication token. From the AI-Assistant project directory, run:
 ```bash
 python helper/access_token_generator.py
 ```
+
 Use this token in your API requests:
 - For Postman: Add header `Authorization: Bearer your_token_here`
 - For cURL: Add `-H "Authorization: Bearer your_token_here"`
 
-You can send a POST request to the `/query` endpoint to interact with the AI Assistant.
+### Sending a Query
+
+**Endpoint:** `POST /query`
 
 **Example using curl:**
-
 ```bash
 curl -X POST http://localhost:5002/query \
   -H "Authorization: Bearer your_token_here" \
-  -F "query=What enhancers are involved in the formation of the protein P78504?"
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "query=What enhancers are involved in the formation of the protein p78504?"
 ```
 
-**Request Body:**
-
-A form-data field:
-
-query  =  Your natural language query here
-
-
 **Response:**
-
 A JSON object containing the processed results from the AI assistant, based on the model's analysis.
 
 
-## Installation Locally to run the application
+### Stopping the application
 
-### 1. Install dependencies using Poetry
-Install the required dependencies for the project:
-
+To stop the services, use:
 ```bash
-poetry install
-```
-
-### 2. Activate the virtual environment
-Activate the Poetry-managed virtual environment:
-
-```bash
-poetry env activate
-```
-
-## 3. Configuration
-The application uses environment variables to set up its parameters.
-
-**Environment Variables**
-The `.env` file contains sensitive information like API keys, credentials, and configuration overrides. The `.env.example` file is provided as a template. You can copy it to a `.env` file and fill in your actual values.
-
-```bash
-cp .env.example .env
+docker-compose down
 ```
 
 Ensure that the environment variables are set correctly in `.env` before running the application:

@@ -103,9 +103,30 @@ def process_query(current_user_id, auth_token):
             if newly_uploaded_content_ids:
                 content_ids = content_ids + newly_uploaded_content_ids if content_ids else newly_uploaded_content_ids
 
-        # Ensure query exists before processing
-        if not question and not json_query:
-            return jsonify({"error": "No query provided."}), 400
+        # Case 1: files uploaded, but no question -> upload-only flow
+        if uploaded_files and not question and not json_query:
+            suggested_questions = []
+
+            for r in upload_results:
+                sq = r.get("response", {}).get("resource", {}).get("suggested_questions")
+                if sq:
+                    if isinstance(sq, list):
+                        suggested_questions.extend(sq)
+                    else:
+                        suggested_questions.append(sq)
+
+            return jsonify({
+                "text": "Files uploaded successfully.",
+                "content_ids": content_ids,
+                "suggested_questions": suggested_questions,
+            }), 200
+
+        # Case 2: no files and no query -> invalid request
+        if not uploaded_files and not question and not json_query:
+            return jsonify({
+                "error": "No input provided. Please upload files or submit a question."
+            }), 400
+
         # Pass all relevant arguments to ai_assistant
         response = ai_assistant.assistant_response(
             query=question,
@@ -429,45 +450,133 @@ def clear_user_history(current_user_id, auth_token):
         return jsonify(error=f"Error clearing history: {str(e)}"), 500
 
 
+def handle_hypothesis_faq(auth_token):
+    import os
+    import requests
+    projects_api_url = os.getenv("HYPOTHESIS_PROJECTS_API_URL")
+    headers = {"Authorization": auth_token}
+
+    r = requests.get(projects_api_url, headers=headers, timeout=15)
+    if r.status_code != 200:
+        print("Projects API failed:", r.text)
+        return None
+
+    projects = r.json().get("projects", [])
+    if not projects:
+        print("No projects found")
+        return None
+
+    project_map = []
+    all_genes = set()
+    all_tissues = set()
+    all_phenotypes = set()
+
+    for p in projects:
+        pid = p.get("id")
+        name = p.get("name")
+        phenotype = p.get("phenotype")
+
+        if not pid:
+            continue
+
+        d = requests.get(
+            projects_api_url,
+            headers=headers,
+            params={"id": pid},
+            timeout=15
+        )
+
+        if d.status_code != 200:
+            print(f"Project {pid} detail failed")
+            continue
+
+        data = d.json()
+
+        genes = set()
+        tissues = set()
+
+        for h in data.get("hypotheses", []):
+            if h.get("causal_gene"):
+                genes.add(h["causal_gene"])
+                all_genes.add(h["causal_gene"])
+
+        for t in data.get("ldsc", {}).get("tissues", []):
+            if t.get("name"):
+                tissues.add(t["name"])
+                all_tissues.add(t["name"])
+
+        if phenotype:
+            all_phenotypes.add(phenotype)
+
+        project_map.append({
+            "project_id": pid,
+            "project_name": name,
+            "phenotype": phenotype,
+            "causal_genes": list(genes),
+            "tissues": list(tissues)
+        })
+
+    if not project_map:
+        print("No usable hypothesis data")
+        return None
+
+    # LLM once with all info
+    llm_prompt = f"""
+                Here are hypothesis results grouped by project:
+
+                {json.dumps(project_map, indent=2)}
+
+                Generate 3 example research questions based on:
+                - project phenotypes
+                - causal genes
+                - tissues
+
+                Return JSON list of strings only.
+                """
+    ai_assistant = current_app.config["ai_assistant"]
+    llm_response = ai_assistant.advanced_llm.generate(llm_prompt)
+    return jsonify({
+        "text": "Here’s your hypothesis-based AI-generated questions:",
+        "projects": project_map,
+        "sample_questions": llm_response
+    }), 200
+
+   
 
 @main_bp.route("/faq", methods=["GET"])
 @token_required
-def get_faq_intro():
+def get_faq_intro(current_user_id,auth_token):
     """
     Get welcome message and list of FAQ questions.
     No authentication required - public endpoint for discovery.
     """
     try:
-        questions = mongo_db_manager.get_all_faq_questions()
-        
+        context = request.args.get("context",None)
+        if context == "hypothesis":
+            return handle_hypothesis_faq(auth_token)
+
+        questions = mongo_db_manager.get_all_faq_questions(context)
         question_list = [
-            {
-                "id": q["question_id"],
-                "text": q["question_text"],
-                "link": f"/faq/{q['question_id']}"
-            }
+            {"id": q["question_id"], "text": q["question_text"], "link": f"/faq/{q['question_id']}"}
             for q in questions
         ]
-        
+
         return jsonify({
-            "message": (
-                "Hello! I’m MOZI, your AI assistant for exploring and annotating "
+            "text": "Hello! I’m MOZI, your AI assistant for exploring and annotating "
                 "biomedical entities in the BioAtomspace. "
-                "To help you get started, here are some example questions you can try. "
-                "Just click one to begin:"
-            ),
+                f"To help you get started, here are some example questions you can try on {context} "
+                "Just click one to begin:",
             "questions": question_list
         }), 200
-
     except Exception as e:
-        current_app.logger.error(f"Error in FAQ intro: {e}")
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+            current_app.logger.error(f"Error in FAQ intro: {e}")
+            traceback.print_exc()
+            return jsonify({"error": str(e)}), 500
 
 
 @main_bp.route("/faq/<question_id>", methods=["GET"])
 @token_required
-def get_faq_answer(question_id):
+def get_faq_answer(current_user_id,auth_token,question_id):
     """
     Get answer for a FAQ question from MongoDB.
     No authentication required for demo purposes.
@@ -479,12 +588,13 @@ def get_faq_answer(question_id):
         if not faq:
             return jsonify({
                 "error": f"Question ID '{question_id}' not found in FAQ",
-                "suggestion": "Use POST /query for custom questions"
+                "text": "Use POST /query for custom questions"
             }), 404
         
         return jsonify({
             "question": faq["question_text"],
-            "answer": faq["answer"]
+            "text": faq["text"],
+            "json_format": faq["json_format"]
         }), 200
         
     except Exception as e:

@@ -381,10 +381,11 @@ class MongoManager:
 
     # ==================== FAQ METHODS ====================
 
-    def get_all_faq_questions(self):
+    def get_all_faq_questions(self, context=None):
         """Get all FAQ questions ordered by display_order"""
         try:
-            cursor = self.faq_collection.find({}).sort("display_order", 1)
+            query = {"context":context}
+            cursor = self.faq_collection.find(query).sort("display_order", 1)
             return list(cursor)
         except Exception as e:
             logger.error(f"Error retrieving FAQ questions: {e}")

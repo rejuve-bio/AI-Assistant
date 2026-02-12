@@ -194,7 +194,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.agents import create_agent
 
 async def run_mcp():
-    model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-001")
+    model = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
     client = MultiServerMCPClient({{
         "galaxyTools": {{
             "transport": "streamable_http",

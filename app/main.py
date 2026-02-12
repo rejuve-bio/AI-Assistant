@@ -187,6 +187,7 @@ class AiAssistance:
             f"Agent called with message: {message}, user_id: {user_id}, "
             f"content_ids: {content_ids}, graph_id: {graph_id}, urls: {urls}"
         )
+        # return  {"text" :self.biogpt.generate_answer(message)}
            
         try:
             initial_state = {
