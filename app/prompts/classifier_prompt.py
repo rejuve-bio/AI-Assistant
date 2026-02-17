@@ -79,13 +79,19 @@ We specialize ONLY in:
 """
 
 PLANNER_PROMPT = """You are a Master Planner for a biological multi-agent system.
-Your job is to strategically chain agents together so that the output of one serves as the vital input for the next.
+Your job is to organize agents into EXECUTION GROUPS that run either in PARALLEL or SEQUENTIALLY.
 
-## PLANNING STRATEGY (CHAINING RULES):
-1. **The "RAG First" Rule**: If a query refers to "the document", "the gene mentioned", or "the PDF", ALWAYS start with `rag_agent` to extract the specific entity.
-2. **The "Expert Chain"**: If a query asks for *what* (database) and *why* (mechanism), chain `annotation_agent` -> `biogpt_agent`.
-3. **The "Analysis Pipeline"**: If a query asks for tools to process specific data, chain `annotation_agent` (to find data type) -> `galaxy_agent` (to find tools for that data).
-4. **Dependency Integrity**: If Step B uses the result of Step A, you MUST set `"dependency": [ID of Step A]`.
+## KEY CONCEPT: Execution Groups
+- A **parallel** group runs ALL its agents at the same time (each gets the original query or its own input).
+- A **sequential** group runs agents ONE AT A TIME, where each agent can use the output of the previous step.
+- You can chain multiple groups: e.g., a sequential group first, then a parallel group that uses the first group's output.
+
+## PLANNING STRATEGY:
+1. **"RAG First" Rule**: If a query refers to "the document", "the gene mentioned", or "the PDF", ALWAYS start with `rag_agent` in a sequential group to extract the entity first.
+2. **"Parallel Expertise" Rule**: If a query asks about a topic that multiple agents can answer INDEPENDENTLY (e.g., "explain gene FTO" can use both RAG for documents AND annotation for database visualization), put them in a PARALLEL group.
+3. **"Expert Chain" Rule**: If a query asks for *what* (database lookup) and then needs that result for *why* (mechanism explanation), chain them SEQUENTIALLY: `annotation_agent` → `biogpt_agent`.
+4. **"Analysis Pipeline" Rule**: If a query asks for tools to process specific data, chain `annotation_agent` (to find data type) → `galaxy_agent` (to find tools for that data) SEQUENTIALLY.
+5. **"Dependency" Rule**: Within a sequential group, if Step B uses the result of Step A, set `"dependency": [ID of Step A]`. In a parallel group, all steps either have NO dependency or depend on a step from a PREVIOUS group.
 
 ## Agent Capabilities:
 {agent_descriptions}
@@ -95,50 +101,105 @@ User Query: "{query}"
 Context/Content Summaries: {content_summaries}
 
 ## Task:
-Generate a multi-step execution plan in JSON.
+Generate a grouped execution plan in JSON.
 
-## Chaining Examples:
+## Examples:
 
+### Example 1: PARALLEL — Independent agents answering different facets
+Query: "Explain gene FTO" (user has uploaded documents)
+Plan:
+{{
+  "execution_groups": [
+    {{
+      "group_id": 1,
+      "mode": "parallel",
+      "steps": [
+        {{"id": 1, "agent": "rag_agent", "input": "Explain gene FTO from the uploaded documents", "dependency": null}},
+        {{"id": 2, "agent": "annotation_agent", "input": "Find gene FTO in the annotation database", "dependency": null}}
+      ]
+    }}
+  ],
+  "reasoning": "RAG retrieves info from documents while Annotation provides database visualization — both run independently."
+}}
+
+### Example 2: SEQUENTIAL — Output of one feeds the next
+Query: "Annotate the gene in the uploaded document"
+Plan:
+{{
+  "execution_groups": [
+    {{
+      "group_id": 1,
+      "mode": "sequential",
+      "steps": [
+        {{"id": 1, "agent": "rag_agent", "input": "What specific gene is the primary focus of the document?", "dependency": null}},
+        {{"id": 2, "agent": "annotation_agent", "input": "Find biological properties and transcripts for [result from step 1]", "dependency": 1}}
+      ]
+    }}
+  ],
+  "reasoning": "RAG extracts the gene name first, then Annotation looks it up."
+}}
+
+### Example 3: MIXED — Sequential first, then parallel
 Query: "Explain the role of the gene in the document and suggest Galaxy tools for it"
 Plan:
 {{
-  "steps": [
-    {{"id": 1, "agent": "rag_agent", "input": "What specific gene is the primary focus of the document?", "dependency": null}},
-    {{"id": 2, "agent": "annotation_agent", "input": "Find biological properties and transcripts for [result from step 1]", "dependency": 1}},
-    {{"id": 3, "agent": "galaxy_agent", "input": "What are the best Galaxy tools for analyzing [result from step 2]", "dependency": 2}}
+  "execution_groups": [
+    {{
+      "group_id": 1,
+      "mode": "sequential",
+      "steps": [
+        {{"id": 1, "agent": "rag_agent", "input": "What specific gene is the primary focus of the document?", "dependency": null}}
+      ]
+    }},
+    {{
+      "group_id": 2,
+      "mode": "parallel",
+      "steps": [
+        {{"id": 2, "agent": "annotation_agent", "input": "Find biological properties for [result from step 1]", "dependency": 1}},
+        {{"id": 3, "agent": "biogpt_agent", "input": "Explain the biological role of [result from step 1]", "dependency": 1}}
+      ]
+    }},
+    {{
+      "group_id": 3,
+      "mode": "sequential",
+      "steps": [
+        {{"id": 4, "agent": "galaxy_agent", "input": "What are the best Galaxy tools for analyzing [result from step 2]", "dependency": 2}}
+      ]
+    }}
   ],
-  "reasoning": "Chaining RAG to identify the gene, Annotation to get data types, and Galaxy to find tools."
+  "reasoning": "RAG identifies the gene, then Annotation and BioGPT run in parallel, then Galaxy finds tools."
 }}
 
-Query: "What is CRISPR and how can I run it in Galaxy?"
+### Example 4: Single agent
+Query: "What is CRISPR?"
 Plan:
 {{
-  "steps": [
-    {{"id": 1, "agent": "biogpt_agent", "input": "Explain the biological mechanism of CRISPR gene editing", "dependency": null}},
-    {{"id": 2, "agent": "galaxy_agent", "input": "Find Galaxy workflows and tools for CRISPR/Cas9 experiments", "dependency": 1}}
+  "execution_groups": [
+    {{
+      "group_id": 1,
+      "mode": "sequential",
+      "steps": [
+        {{"id": 1, "agent": "biogpt_agent", "input": "Explain the biological mechanism of CRISPR gene editing", "dependency": null}}
+      ]
+    }}
   ],
-  "reasoning": "Using BioGPT for the core science and Galaxy for the technical implementation."
-}}
-
-Query: "Analyze BRCA1 for cancer research"
-Plan:
-{{
-  "steps": [
-    {{"id": 1, "agent": "annotation_agent", "input": "Lookup BRCA1 in the annotation database", "dependency": null}},
-    {{"id": 2, "agent": "biogpt_agent", "input": "Explain the role of BRCA1 in oncogenesis and cancer progression", "dependency": null}},
-    {{"id": 3, "agent": "_hypothesis_agent", "input": "Generate research hypotheses for BRCA1 based on its properties and cancer roles", "dependency": [1, 2]}}
-  ],
-  "reasoning": "Parallel lookup and explanation, followed by hypothesis generation depending on both."
+  "reasoning": "Simple knowledge question, only BioGPT needed."
 }}
 
 ## Output Format:
 {{
-    "steps": [
+    "execution_groups": [
         {{
-            "id": number,
-            "agent": "agent_name",
-            "input": "Refined query for this agent using [result from step X] notation if needed",
-            "dependency": [id_list] or null
+            "group_id": number,
+            "mode": "parallel" or "sequential",
+            "steps": [
+                {{
+                    "id": number,
+                    "agent": "agent_name",
+                    "input": "Refined query for this agent using [result from step X] notation if needed",
+                    "dependency": [id_list] or null
+                }}
+            ]
         }}
     ],
     "reasoning": "string"

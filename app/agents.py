@@ -21,6 +21,7 @@ from .hypothesis_generation.hypothesis import HypothesisGeneration
 from .socket_manager import emit_to_user
 from .Galaxy_integration.galaxy import GalaxyHandler
 from .biogpt_agent.biogpt import BioGPTAgent
+from .utils import RichLogger
 from typing import TypedDict, List, Annotated, Any, Dict, Optional
 from flask_socketio import emit
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
@@ -55,6 +56,10 @@ class AgentState(TypedDict):
     current_step_index: int
     step_input: Optional[str]
     step_outputs: Dict[int, str]
+    # --- Grouped execution fields ---
+    execution_groups: Optional[List[Dict[str, Any]]]
+    current_group_index: int
+    current_step_in_group: int
 
 
 
@@ -126,7 +131,7 @@ class AgentManager:
         """
         Two-step classification:
         1. VALIDATION: Check if query is relevant.
-        2. PLANNING: If relevant, create an execution plan (Sequential or Parallel).
+        2. PLANNING: If relevant, create a grouped execution plan (Sequential or Parallel).
         """
         query = state["user_query"]
         user_id = state["user_id"]
@@ -157,8 +162,9 @@ class AgentManager:
             logger.info(f"Query rejected: {refusal}")
             return {
                 "response": {"text": refusal, "json_format": None},
-                "agents_to_run": [], # No agents
+                "agents_to_run": [],
                 "plan": [],
+                "execution_groups": [],
                 "messages": [AIMessage(content=refusal)]
             }
 
@@ -176,31 +182,57 @@ class AgentManager:
                 plan_result = json.loads(plan_resp_str)
             else:
                 plan_result = plan_resp
-            steps = plan_result.get("steps", [])
+            
+            execution_groups = plan_result.get("execution_groups", [])
+            
+            if not execution_groups and plan_result.get("steps"):
+                old_steps = plan_result["steps"]
+                logger.info("Backward compat: wrapping old 'steps' format into a sequential group")
+                execution_groups = [{
+                    "group_id": 1,
+                    "mode": "sequential",
+                    "steps": old_steps
+                }]
+
         except Exception as e:
             logger.error(f"Planning parsing error: {e}")
-            steps = [{"agent": "rag_agent", "input": query, "id": 1}]
+            execution_groups = [{
+                "group_id": 1,
+                "mode": "sequential",
+                "steps": [{"agent": "rag_agent", "input": query, "id": 1, "dependency": None}]
+            }]
 
-        agents_to_run = [step["agent"] for step in steps]
+        all_steps = []
+        for group in execution_groups:
+            all_steps.extend(group.get("steps", []))
         
-        if (state.get("content_ids") or state.get("urls") or state.get("graph_id")) and "content_retrieval_agent" not in agents_to_run:
-             pass
-
-        if not steps:
-             steps = [{"agent": "rag_agent", "input": query, "id": 1}]
-             agents_to_run = ["rag_agent"]
-
-        logger.info(f"Generated Plan: {steps}")
+        agents_to_run = [step["agent"] for step in all_steps]
         
-        first_step_input = steps[0].get("input", query) if steps else query
+        if not all_steps:
+            execution_groups = [{
+                "group_id": 1,
+                "mode": "sequential",
+                "steps": [{"agent": "rag_agent", "input": query, "id": 1, "dependency": None}]
+            }]
+            all_steps = execution_groups[0]["steps"]
+            agents_to_run = ["rag_agent"]
+
+        logger.info(f"Generated Plan with {len(execution_groups)} execution groups: {execution_groups}")
+        
+        first_group = execution_groups[0]
+        first_step = first_group["steps"][0]
+        first_step_input = first_step.get("input", query)
 
         return {
-            "plan": steps,
+            "plan": all_steps,
+            "execution_groups": execution_groups,
+            "current_group_index": 0,
+            "current_step_in_group": 0,
             "current_step_index": 0,
             "step_input": first_step_input,
             "step_outputs": {},
-            "agents_to_run": agents_to_run, # Populated for visibility, but Router will use 'plan'
-            "messages": [HumanMessage(content=f"Plan generated with {len(steps)} steps")]
+            "agents_to_run": agents_to_run,
+            "messages": [HumanMessage(content=f"Plan generated with {len(execution_groups)} groups, {len(all_steps)} total steps")]
         }
 
 
@@ -797,7 +829,6 @@ class AgentManager:
             else:
                 return "Invalid resource type specified."
                 
-            # Return summary as dict for consistency
             return {"text": summary_text, "json_format": None}
             
         except Exception as e:
@@ -815,176 +846,274 @@ class AgentManager:
         MAX_CHARS = 1500  # Roughly 300-400 tokens
         
         if len(dep_output) <= MAX_CHARS:
-            logger.info(f"📏 Context from step {dependency_id}: {len(dep_output)} chars (within limit)")
+            logger.info(f"Context from step {dependency_id}: {len(dep_output)} chars (within limit)")
             return dep_output
         
-        # Context is too long, summarize it
-        logger.info(f"📝 Summarizing long context from step {dependency_id} ({len(dep_output)} chars → target: ~400 words)")
+        logger.info(f"Summarizing long context from step {dependency_id} ({len(dep_output)} chars → target: ~400 words)")
         
         summarize_prompt = DEPENDENCY_SUMMARIZATION_PROMPT.format(content=dep_output)
         
         try:
             summary = self.basic_llm.generate(summarize_prompt)
-            logger.info(f"✂️  Reduced context: {len(dep_output)} → {len(summary)} chars")
+            logger.info(f"Reduced context: {len(dep_output)} → {len(summary)} chars")
             
-            # Add metadata about summarization
             return f"[Summarized from previous step]: {summary}"
         except Exception as e:
-            logger.error(f"❌ Summarization failed: {e}, using truncation fallback")
+            logger.error(f"Summarization failed: {e}, using truncation fallback")
             truncated = dep_output[:MAX_CHARS] + "... [truncated due to length]"
-            logger.warning(f"⚠️  Using truncation fallback: {len(dep_output)} → {MAX_CHARS} chars")
+            logger.warning(f"Using truncation fallback: {len(dep_output)} → {MAX_CHARS} chars")
             return truncated
 
 
     def update_step_state(self, state: AgentState) -> Dict[str, Any]:
         """
-        Increment the step index and prepare input for the next step.
-        Also captures the output of the *completed* step and injects it into the next step if needed.
-        Enhanced with error propagation and progress tracking.
+        Group-aware step advancement.
+        - For SEQUENTIAL groups: advances one step at a time within the group.
+        - For PARALLEL groups: captures all agent outputs and advances to the next group.
+        Falls back to flat-plan behavior if execution_groups is missing.
         """
         plan = state.get("plan", [])
-        current_index = state.get("current_step_index", 0)
-        step_outputs = state.get("step_outputs", {})
+        execution_groups = state.get("execution_groups", [])
+        step_outputs = dict(state.get("step_outputs", {}))
         user_id = state.get("user_id")
-        
-        # 1. Capture output from the JUST COMPLETED step and detect errors
-        step_failed = False
-        if current_index < len(plan):
-            current_step_info = plan[current_index]
-            agent_name = current_step_info.get("agent")
-            step_id = current_step_info.get("id")
-            
-            # Map agent name to response key
-            response_key_map = {
-                "rag_agent": "rag_response",
-                "annotation_agent": "annotation_response",
-                "galaxy_agent": "galaxy_response",
-                "biogpt_agent": "biogpt_response",
-                "content_retrieval_agent": "content_retrieval_response",
-                "_hypothesis_agent": "response"
-            }
-            
-            # Check the specific key for the agent
-            key = response_key_map.get(agent_name)
-            if key:
-                resp_data = state.get(key)
-                if resp_data and isinstance(resp_data, dict):
-                    output_text = resp_data.get("text", "")
-                    json_data = resp_data.get("json_format")
-                    
-                    # A step is only truly failed if it has NO text AND NO JSON data,
-                    # OR if there is an explicit error state that we should respect.
-                    is_empty = not output_text and not json_data
-                    has_error_msg = output_text.startswith("Error:") or state.get("error")
-                    
-                    if is_empty or (has_error_msg and not json_data):
-                        step_failed = True
-                        error_msg = state.get("error", output_text or "Agent returned no data.")
-                        step_outputs[step_id] = f"FAILED: {error_msg}"
-                        logger.error(f"❌ Step {step_id} ({agent_name}) failed: {error_msg}")
-                    else:
-                        # SUCCESS case (or partial success with JSON)
-                        # Store whatever output we have
-                        step_outputs[step_id] = output_text if output_text else "[Structured Data Generated]"
-                        
-                        if has_error_msg and json_data:
-                            logger.warning(f"⚠️  Step {step_id} ({agent_name}) had warnings but produced JSON data.")
-                            emit_to_user(
-                                user=user_id,
-                                message=f"⚠️ Step {current_index + 1} completed with some connection warnings, but data was retrieved.",
-                                status="warning"
-                            )
-                        else:
-                            logger.info(f"✅ Step {step_id} ({agent_name}) completed successfully.")
 
-                    if step_failed:
-                        # Check if future steps depend on this failed step
-                        next_index = current_index + 1
-                        has_critical_dependents = any(
-                            s.get("dependency") == step_id 
-                            for s in plan[next_index:]
-                        )
-                        
-                        if has_critical_dependents:
-                            logger.warning(f"⚠️  Skipping remaining steps due to step {step_id} failure with dependents")
-                            emit_to_user(
-                                user=user_id,
-                                message=f"⚠️ Step {current_index + 1} failed. Skipping dependent steps...",
-                                status="warning"
-                            )
-                            return {
-                                "current_step_index": len(plan),  # Skip to aggregator
-                                "step_outputs": step_outputs,
-                                "error": f"Step {step_id} ({agent_name}) failed, dependent steps skipped"
-                            }
-                    else:
-                        # Success case
-                        if output_text:
-                            step_outputs[step_id] = output_text
-                            logger.info(f"✅ Step {step_id} completed: {output_text[:50]}...")
-
-        # 2. Advance to NEXT step
-        next_index = current_index + 1
-        updates = {
-            "current_step_index": next_index,
-            "step_outputs": step_outputs
+        response_key_map = {
+            "rag_agent": "rag_response",
+            "annotation_agent": "annotation_response",
+            "galaxy_agent": "galaxy_response",
+            "biogpt_agent": "biogpt_response",
+            "content_retrieval_agent": "content_retrieval_response",
+            "_hypothesis_agent": "response"
         }
-        
-        if next_index < len(plan):
-            next_step = plan[next_index]
-            next_agent_name = next_step.get("agent", "unknown")
-            raw_input = next_step.get("input", state.get("user_query"))
-            dependency_id = next_step.get("dependency")
-            
-            # 3. Resolve Dependencies with validation
-            final_input = raw_input
-            if dependency_id:
-                # Handle both single ID (int) and list of IDs (list)
-                dep_ids = dependency_id if isinstance(dependency_id, list) else [dependency_id]
-                combined_dep_output = []
-                failed_deps = []
-                
-                for d_id in dep_ids:
-                    d_out = step_outputs.get(d_id, "")
-                    if d_out.startswith("FAILED:"):
-                        failed_deps.append(d_id)
-                    elif d_out:
-                        # Prepare context for each dependency
-                        p_out = self._prepare_dependency_context(d_out, d_id)
-                        combined_dep_output.append(p_out)
 
-                # Check if ANY dependency failed
-                if failed_deps:
-                    logger.error(f"❌ Dependency steps {failed_deps} failed, cannot proceed with step {next_index}")
-                    emit_to_user(
-                        user=user_id,
-                        message=f"⚠️ Cannot execute step {next_index + 1}: required dependency failed",
-                        status="error"
-                    )
-                    return {
-                        "current_step_index": len(plan),  # Skip to aggregator
-                        "step_outputs": step_outputs,
-                        "error": f"Cannot execute step {next_index}: dependencies {failed_deps} failed"
-                    }
+        current_group_idx = state.get("current_group_index", 0)
+        current_step_in_group = state.get("current_step_in_group", 0)
+
+        if current_group_idx >= len(execution_groups):
+            logger.info(" All groups completed, routing to aggregator")
+            return {"step_input": None, "step_outputs": step_outputs}
+
+        current_group = execution_groups[current_group_idx]
+        mode = current_group.get("mode", "sequential")
+        group_steps = current_group.get("steps", [])
+
+        if mode == "parallel":
+            # Visualize the parallel group start
+            agent_names = [step.get("agent", "unknown") for step in group_steps]
+            RichLogger.log_group_start(current_group_idx, mode, agent_names)
+            
+            for step in group_steps:
+                self._capture_step_output(state, step, step_outputs, response_key_map)
+            
+            logger.info(f" Parallel group {current_group_idx + 1} completed ({len(group_steps)} agents)")
+        else:
+            if current_step_in_group < len(group_steps):
+                self._capture_step_output(state, group_steps[current_step_in_group], step_outputs, response_key_map)
+
+        if mode == "parallel":
+            return self._advance_to_next_group(
+                state, execution_groups, current_group_idx + 1, step_outputs, response_key_map, user_id
+            )
+        else:
+            next_step_in_group = current_step_in_group + 1
+            if next_step_in_group < len(group_steps):
+                next_step = group_steps[next_step_in_group]
+                next_agent_name = next_step.get("agent", "unknown")
                 
-                if combined_dep_output:
-                    # Join multiple contexts
-                    context_str = "\n---\n".join(combined_dep_output)
-                    final_input = f"{raw_input}. Context: {context_str}"
-                    logger.info(f"🔗 Injected context from steps {dep_ids} into step {next_index}")
+                final_input = self._resolve_step_input(next_step, step_outputs, state, user_id, plan)
+                if final_input is None:
+                    return {
+                        "current_group_index": len(execution_groups),
+                        "current_step_in_group": 0,
+                        "current_step_index": len(plan),
+                        "step_outputs": step_outputs,
+                        "step_input": None,
+                        "error": "Dependency failed, skipping remaining steps"
+                    }
+
+                global_index = self._get_global_step_index(execution_groups, current_group_idx, next_step_in_group)
+
+                emit_to_user(
+                    user=user_id,
+                    message=f"Step {global_index + 1}/{len(plan)}: Running {next_agent_name.replace('_', ' ').title()}...",
+                    status="processing"
+                )
+                RichLogger.log_agent_start(next_agent_name, global_index + 1, len(plan))
+                logger.info(f"Sequential group {current_group_idx + 1}, step {next_step_in_group + 1}/{len(group_steps)}: {next_agent_name}")
+
+                return {
+                    "current_group_index": current_group_idx,
+                    "current_step_in_group": next_step_in_group,
+                    "current_step_index": global_index,
+                    "step_input": final_input,
+                    "step_outputs": step_outputs,
+                }
+            else:
+                return self._advance_to_next_group(
+                    state, execution_groups, current_group_idx + 1, step_outputs, response_key_map, user_id
+                )
+
+    def _capture_step_output(self, state, step_info, step_outputs, response_key_map):
+        """Capture the output of a completed step into step_outputs."""
+        agent_name = step_info.get("agent")
+        step_id = step_info.get("id")
+        key = response_key_map.get(agent_name)
+        
+        if not key:
+            return
+        
+        resp_data = state.get(key)
+        if resp_data and isinstance(resp_data, dict):
+            output_text = resp_data.get("text", "")
+            json_data = resp_data.get("json_format")
+            is_empty = not output_text and not json_data
+            has_error_msg = (isinstance(output_text, str) and output_text.startswith("Error:")) or state.get("error")
             
-            updates["step_input"] = final_input
-            
-            # 4. Emit progress update to user
+            if is_empty or (has_error_msg and not json_data):
+                error_msg = state.get("error", output_text or "Agent returned no data.")
+                step_outputs[step_id] = f"FAILED: {error_msg}"
+                logger.error(f"Step {step_id} ({agent_name}) failed: {error_msg}")
+            else:
+                step_outputs[step_id] = output_text if output_text else "[Structured Data Generated]"
+                if has_error_msg and json_data:
+                    logger.warning(f"  Step {step_id} ({agent_name}) had warnings but produced JSON data.")
+                else:
+                    RichLogger.log_agent_complete(agent_name, str(step_outputs[step_id]), success=True)
+                    logger.info(f" Step {step_id} ({agent_name}) completed successfully.")
+
+    def _advance_to_next_group(self, state, execution_groups, next_group_idx, step_outputs, response_key_map, user_id):
+        """Advance to the next execution group, preparing inputs for its first step(s)."""
+        plan = state.get("plan", [])
+
+        if next_group_idx >= len(execution_groups):
+            logger.info(f"All {len(execution_groups)} groups completed, routing to aggregator")
+            return {
+                "current_group_index": next_group_idx,
+                "current_step_in_group": 0,
+                "current_step_index": len(plan),
+                "step_input": None,
+                "step_outputs": step_outputs,
+            }
+
+        next_group = execution_groups[next_group_idx]
+        next_mode = next_group.get("mode", "sequential")
+        next_steps = next_group.get("steps", [])
+
+        if not next_steps:
+            return self._advance_to_next_group(state, execution_groups, next_group_idx + 1, step_outputs, response_key_map, user_id)
+
+        global_index = self._get_global_step_index(execution_groups, next_group_idx, 0)
+
+        if next_mode == "parallel":
+            agent_names = [s.get("agent", "?") for s in next_steps]
             emit_to_user(
                 user=user_id,
-                message=f"🔄 Step {next_index + 1}/{len(plan)}: Running {next_agent_name.replace('_', ' ').title()}...",
+                message=f" Running {len(next_steps)} agents in parallel: {', '.join(n.replace('_', ' ').title() for n in agent_names)}...",
                 status="processing"
             )
-            logger.info(f"📍 Executing step {next_index + 1}/{len(plan)}: {next_agent_name}")
-        else:
-            updates["step_input"] = None
-            logger.info(f"✅ All {len(plan)} steps completed, routing to aggregator")
+            RichLogger.log_group_start(next_group_idx, "parallel", agent_names)
+            logger.info(f" Parallel group {next_group_idx + 1}: {agent_names}")
             
-        return updates
+            first_input = self._resolve_step_input(next_steps[0], step_outputs, state, user_id, plan)
+            if first_input is None:
+                return {
+                    "current_group_index": len(execution_groups),
+                    "current_step_in_group": 0,
+                    "current_step_index": len(plan),
+                    "step_outputs": step_outputs,
+                    "step_input": None,
+                    "error": "Dependency failed for parallel group"
+                }
+            
+            return {
+                "current_group_index": next_group_idx,
+                "current_step_in_group": 0,
+                "current_step_index": global_index,
+                "step_input": first_input,
+                "step_outputs": step_outputs,
+            }
+        else:
+            first_step = next_steps[0]
+            next_agent_name = first_step.get("agent", "unknown")
+            final_input = self._resolve_step_input(first_step, step_outputs, state, user_id, plan)
+            
+            if final_input is None:
+                return {
+                    "current_group_index": len(execution_groups),
+                    "current_step_in_group": 0,
+                    "current_step_index": len(plan),
+                    "step_outputs": step_outputs,
+                    "step_input": None,
+                    "error": "Dependency failed, skipping remaining steps"
+                }
+
+            emit_to_user(
+                user=user_id,
+                message=f" Step {global_index + 1}/{len(plan)}: Running {next_agent_name.replace('_', ' ').title()}...",
+                status="processing"
+            )
+            RichLogger.log_group_start(next_group_idx, "sequential", [next_agent_name])
+            RichLogger.log_agent_start(next_agent_name, global_index + 1, len(plan))
+            logger.info(f"📍 Sequential group {next_group_idx + 1}, step 1/{len(next_steps)}: {next_agent_name}")
+
+            return {
+                "current_group_index": next_group_idx,
+                "current_step_in_group": 0,
+                "current_step_index": global_index,
+                "step_input": final_input,
+                "step_outputs": step_outputs,
+            }
+
+    def _resolve_step_input(self, step_info, step_outputs, state, user_id, plan):
+        """
+        Resolve the input for a step, injecting dependency context if needed.
+        Returns None if a required dependency has failed.
+        """
+        raw_input = step_info.get("input", state.get("user_query"))
+        dependency_id = step_info.get("dependency")
+        
+        if not dependency_id:
+            return raw_input
+        
+        dep_ids = dependency_id if isinstance(dependency_id, list) else [dependency_id]
+        combined_dep_output = []
+        failed_deps = []
+        
+        for d_id in dep_ids:
+            d_out = step_outputs.get(d_id, "")
+            if isinstance(d_out, str) and d_out.startswith("FAILED:"):
+                failed_deps.append(d_id)
+            elif d_out:
+                p_out = self._prepare_dependency_context(d_out, d_id)
+                combined_dep_output.append(p_out)
+
+        if failed_deps:
+            logger.error(f" Dependency steps {failed_deps} failed")
+            emit_to_user(
+                user=user_id,
+                message=f"Required dependency failed, skipping dependent steps...",
+                status="error"
+            )
+            return None
+        
+        if combined_dep_output:
+            context_str = "\n---\n".join(combined_dep_output)
+            final_input = f"{raw_input}. Context: {context_str}"
+            logger.info(f" Injected context from steps {dep_ids}")
+            return final_input
+        
+        return raw_input
+
+    def _get_global_step_index(self, execution_groups, group_idx, step_in_group):
+        """Calculate the global step index from group_idx and step_in_group."""
+        count = 0
+        for i, group in enumerate(execution_groups):
+            if i < group_idx:
+                count += len(group.get("steps", []))
+            elif i == group_idx:
+                count += step_in_group
+                break
+        return count
+
+
 
