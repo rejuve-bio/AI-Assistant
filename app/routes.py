@@ -85,7 +85,7 @@ def process_query(current_user_id, auth_token):
         if uploaded_files:
             for uploaded in uploaded_files:
                 if uploaded.filename and uploaded.filename.lower().endswith(".pdf"):
-                    response = ai_assistant.rag.save_retrievable_docs(uploaded, user_id)
+                    response = ai_assistant.agents.rag.save_retrievable_docs(uploaded, user_id)
                     if isinstance(response, dict):
                         is_duplicate = response.get("text") == "PDF already exists."
                         if is_duplicate:

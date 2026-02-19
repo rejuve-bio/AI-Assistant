@@ -8,6 +8,7 @@ from typing import Any, Dict
 from typing import Any, Dict
 from sentence_transformers import SentenceTransformer
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langsmith import traceable
 
 
 logging.basicConfig(
@@ -132,6 +133,7 @@ class GeminiModel(LLMInterface):
             temperature=0,
         )
         self.model_provider = model_provider
+    @traceable(name="gemini_generate", run_type="llm")
     def generate(self, prompt: str, system_prompt=None, top_k=1) -> Dict[str, Any]:
         messages = []
         if system_prompt:
@@ -162,6 +164,7 @@ class OpenAIModel(LLMInterface):
         self.model_provider = model_provider
         openai.api_key = self.api_key
 
+    @traceable(name="openai_generate", run_type="llm")
     def generate(self, prompt: str, system_prompt=None) -> Dict[str, Any]:
         if system_prompt:
             response = openai.chat.completions.create(

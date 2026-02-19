@@ -52,6 +52,7 @@ langgraph = "^1.0.3"
 
 #optimum-intel = {extras = ["openvino"], version = "1.26.1"}
 #psutil = "^7.1.3"
+langsmith = "^0.6.8"
 
 [[tool.poetry.source]]
 name = "pytorch-cpu"
