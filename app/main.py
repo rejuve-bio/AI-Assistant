@@ -60,7 +60,12 @@ class AiAssistance:
     ) -> None:
         self.advanced_llm = advanced_llm
         self.basic_llm = basic_llm
-        self.annotation_graph = Graph(advanced_llm, schema_handler)
+        self.annotation_graph = Graph(
+            llm=advanced_llm,
+            schema_handler=schema_handler,
+            annotation_service_url=os.getenv("ANNOTATION_SERVICE_URL"),
+            use_external_api=bool(os.getenv("ANNOTATION_SERVICE_URL"))
+        )
         self.graph_summarizer = Graph_Summarizer(self.advanced_llm)
         self.rag = RAG(llm=advanced_llm, qdrant_client=qdrant_client)
         self.history = HistoryManager()
@@ -68,19 +73,20 @@ class AiAssistance:
         self.hypothesis_generation = HypothesisGeneration(advanced_llm)
         self.galaxy_handler = GalaxyHandler(advanced_llm)
         self.embedding_model = embedding_model
+        # Initialize BioGPT agent
+        from app.biogpt import BioGPTAgent
+        self.biogpt = BioGPTAgent(llm=advanced_llm)
+        logger.info("BioGPT agent initialized")
+
         # Initialize Orchestrator as the central brain with access to all tools
         self.orchestrator = Orchestrator(
             llm=advanced_llm,
             rag=self.rag,
             annotation_graph=self.annotation_graph,
             hypothesis_generation=self.hypothesis_generation,
-            galaxy_handler=self.galaxy_handler
+            galaxy_handler=self.galaxy_handler,
+            biogpt=self.biogpt
         )
-
-        logger.info(
-            f"AiAssistance initialized with advanced_llm: {type(self.advanced_llm).__name__}"
-        )
-        logger.info(f"Galaxy handler initialized: {type(self.galaxy_handler).__name__}")
 
 
 
@@ -194,7 +200,8 @@ class AiAssistance:
             files=files,
             urls=urls,
             options=exec_options,
-            user_id=user_id
+            user_id=user_id,
+            token=token
         )
         
         # Ensure response is in dict format

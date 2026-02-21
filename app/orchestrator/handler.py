@@ -50,7 +50,8 @@ class Orchestrator:
         rag=None,
         annotation_graph=None,
         hypothesis_generation=None,
-        galaxy_handler=None
+        galaxy_handler=None,
+        biogpt=None
     ) -> None:
         self.llm = llm
         self.artifacts_root = artifacts_root
@@ -58,6 +59,7 @@ class Orchestrator:
         self.annotation_graph = annotation_graph
         self.hypothesis_generation = hypothesis_generation
         self.galaxy_handler = galaxy_handler
+        self.biogpt = biogpt
         logger.info(f"Orchestrator initialized with LLM: {type(llm).__name__}")
         # Convert LLMInterface to LangChain LLM for PythonREPLTool
         self._langchain_llm = self._convert_to_langchain_llm(llm)
@@ -186,6 +188,7 @@ class Orchestrator:
         urls: Optional[List[str]] = None,
         options: Optional[CodeExecOptions] = None,
         user_id: Optional[str] = None,
+        token: Optional[str] = None,
     ) -> Dict[str, Any]:
         """High-level orchestration using CalculatorAgent as a tool."""
         opts = options or CodeExecOptions()
@@ -262,7 +265,7 @@ class Orchestrator:
             
             # Step 5: Build all available tools for the Orchestrator
             from app.calculator.agent import CalculatorAgent
-            from app.tools.agent_tools import RAGTool #, AnnotationTool, HypothesisTool, GalaxyTool
+            from app.tools.agent_tools import RAGTool, AnnotationTool, HypothesisTool, GalaxyTool, BioGPTTool
             from langchain.tools import Tool
             
             # Get project root
@@ -297,8 +300,29 @@ class Orchestrator:
             if self.rag:
                 tools.append(RAGTool(rag_instance=self.rag))
         
-            
-            logger.info(f"Orchestrator initialized with {len(tools)} tools: {[t.name for t in tools]}")
+            # Add Annotation Tool (if enabled)
+            if self.annotation_graph:
+                tools.append(AnnotationTool(
+                    db_handler=self.annotation_graph,
+                    token=token,
+                    user_id=user_id or "orchestrator"
+                ))
+
+            # Add Hypothesis Tool (if enabled)
+            if self.hypothesis_generation:
+                tools.append(HypothesisTool(
+                    hypothesis_instance=self.hypothesis_generation,
+                    token=token,
+                    user_id=user_id or "orchestrator"
+                ))
+
+            # Add Galaxy Tool (if enabled)
+            if self.galaxy_handler:
+                tools.append(GalaxyTool(galaxy_handler=self.galaxy_handler))
+
+            # Add BioGPT Tool (if enabled)
+            if self.biogpt:
+                tools.append(BioGPTTool(biogpt_agent=self.biogpt))
             
             # Initialize the orchestrator agent with all tools
             orchestrator = initialize_agent(

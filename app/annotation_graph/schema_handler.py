@@ -10,17 +10,39 @@ logger = logging.getLogger(__name__)
 
 class SchemaHandler:
     def __init__(self, schema_config_path, biocypher_config_path, enhanced_schema_path):
+        # Initialize default values FIRST to prevent AttributeError if initialization fails
+        self.enhanced_schema = ""
+        self.schema = {}
+        self.processed_schema = {}
+        self.parent_nodes = []
+        self.adj_list = {}
+        self.schema_graph = {}
+        self.graph_file = 'graph.pkl'
+        
         try:
             self.bcy = BioCypher(schema_config_path=schema_config_path, biocypher_config_path=biocypher_config_path)
-            self.graph_file = 'graph.pkl'
-            self.enhanced_schema = open(enhanced_schema_path, 'r').read()
+            
+            # Try to load enhanced schema with proper error handling
+            try:
+                with open(enhanced_schema_path, 'r') as f:
+                    self.enhanced_schema = f.read()
+                logger.info(f"Enhanced schema loaded successfully from {enhanced_schema_path}")
+            except FileNotFoundError:
+                logger.warning(f"Enhanced schema file not found: {enhanced_schema_path}. Using empty schema.")
+                self.enhanced_schema = "No schema available. Please provide the enhanced schema file."
+            except Exception as e:
+                logger.error(f"Error reading enhanced schema file: {e}")
+                self.enhanced_schema = "Schema unavailable due to read error."
+            
             self.schema = self.bcy._get_ontology_mapping()._extend_schema()
             self.processed_schema = self.process_schema(self.schema) 
             self.parent_nodes = self.get_parent_nodes()
             self.adj_list = self.get_adjacency_list()
             self.schema_graph = self.build_graph(self.adj_list)
+            
         except Exception as e:
             logger.error(f"Unable to initialize Schema Handler: {e}")
+            # Fallback values already set above, so the object is still usable
 
     def process_schema(self, schema):
         process_schema = {}
@@ -192,5 +214,3 @@ class SchemaHandler:
                     graph[node].append((target, rel))
         # store the graph in file
         return graph
-        
-                

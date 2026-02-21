@@ -61,6 +61,7 @@ chardet = "^5.2.0"
 groq = "<1.0.0"
 langchain-groq = "^0.2.0"
 httpx = "0.27.2"
+transformers = "^4.30.0"
 
 [[tool.poetry.source]]
 name = "pytorch-cpu"
