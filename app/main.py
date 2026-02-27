@@ -16,7 +16,7 @@ import os
 import logging
 import logging.handlers as loghandlers
 from .agents import AgentManager, AgentState
-from .utils import RichLogger
+from .utils import RichLogger, safe_agent_node
 
 logger = logging.getLogger(__name__)
 log_dir = "/AI-Assistant/logfiles"
@@ -69,37 +69,55 @@ class AiAssistance:
         self.app = self.workflow.compile()
 
     def _create_workflow(self) -> StateGraph:
-        """Create the LangGraph workflow with parallel + sequential execution support"""
-        logger.info("Creating LangGraph workflow with parallel + sequential execution")
+        """Create the LangGraph workflow with parallel + sequential execution and error recovery"""
+        logger.info("Creating LangGraph workflow with parallel + sequential execution + error recovery")
 
         workflow = StateGraph(AgentState)
 
         workflow.add_node("classifier", self.agents.classify_query)
         workflow.add_node("increment_step", self.increment_step)
         
-        workflow.add_node("annotation_agent", self.agents.annotation_agent)
-        workflow.add_node("rag_agent", self.agents.rag_agent)
-        workflow.add_node("galaxy_agent", self.agents.galaxy_agent)
-        workflow.add_node("biogpt_agent", self.agents.biogpt_agent)
-        workflow.add_node("content_retrieval_agent", self.agents.content_retrieval_agent)
-        workflow.add_node("_hypothesis_agent", self.agents.hypothesis_agent)
+        # Wrap agent nodes with error recovery (retry + graceful degradation)
+        workflow.add_node("annotation_agent", safe_agent_node(
+            self.agents.annotation_agent, "Annotation Agent",
+            max_retries=2, response_key="annotation_response"
+        ))
+        workflow.add_node("rag_agent", safe_agent_node(
+            self.agents.rag_agent, "RAG Agent",
+            max_retries=2, response_key="rag_response"
+        ))
+        workflow.add_node("galaxy_agent", safe_agent_node(
+            self.agents.galaxy_agent, "Galaxy Agent",
+            max_retries=2, response_key="galaxy_response"
+        ))
+        workflow.add_node("biogpt_agent", safe_agent_node(
+            self.agents.biogpt_agent, "BioGPT Agent",
+            max_retries=2, response_key="biogpt_response"
+        ))
+        workflow.add_node("content_retrieval_agent", safe_agent_node(
+            self.agents.content_retrieval_agent, "Content Retrieval Agent",
+            max_retries=2, response_key="content_retrieval_response"
+        ))
+        workflow.add_node("_hypothesis_agent", safe_agent_node(
+            self.agents.hypothesis_agent, "Hypothesis Agent",
+            max_retries=1, response_key=None
+        ))
         
         workflow.add_node("aggregator", self.agents.aggregate_responses)
-        # workflow.add_node("clarifying_questions", self.agents.generate_clarifying_questions) # Removed
         workflow.add_node("finalizer", self.agents.finalize_response)
         
         workflow.set_entry_point("classifier")
         
-    agent_nodes = [
-        "annotation_agent", 
-        "rag_agent", 
-        "galaxy_agent", 
-        "biogpt_agent", 
-        "content_retrieval_agent",
-        "_hypothesis_agent",
-        "aggregator",
-        "finalizer"
-    ]
+        agent_nodes = [
+            "annotation_agent", 
+            "rag_agent", 
+            "galaxy_agent", 
+            "biogpt_agent", 
+            "content_retrieval_agent",
+            "_hypothesis_agent",
+            "aggregator",
+            "finalizer"
+        ]
         workflow.add_conditional_edges(
             "classifier",
             self._route_to_agents,
@@ -122,8 +140,6 @@ class AiAssistance:
         )
         
         workflow.add_edge("aggregator", "finalizer")
-        # workflow.add_edge("aggregator", "clarifying_questions")
-        # workflow.add_edge("clarifying_questions", "finalizer")
         workflow.add_edge("finalizer", END)
         
         return workflow
@@ -134,12 +150,14 @@ class AiAssistance:
 
     def _route_to_agents(self, state: AgentState):
         """
-        Group-aware router. Determines which agent(s) to run next.
+        Group-aware router with error-aware routing.
         - For PARALLEL groups: returns a LIST of agent names (LangGraph runs them concurrently)
         - For SEQUENTIAL groups: returns a single agent name
+        - Skips agents that have permanently failed
         - When all groups are done: routes to aggregator
         """
         execution_groups = state.get("execution_groups", [])
+        agent_errors = state.get("agent_errors", {})
         
         current_group_idx = state.get("current_group_index", 0)
         current_step_in_group = state.get("current_step_in_group", 0)
@@ -164,18 +182,22 @@ class AiAssistance:
             logger.warning("Empty group, routing to aggregator")
             return "aggregator"
         
+        valid_agents = [
+            "annotation_agent", "rag_agent", "galaxy_agent",
+            "biogpt_agent", "content_retrieval_agent", "_hypothesis_agent"
+        ]
+        
         if mode == "parallel":
-            # Return ALL agent names in this group — LangGraph runs them concurrently
+            # Return ALL non-failed agent names in this group
             agent_names = []
             for step in group_steps:
                 agent_name = step.get("agent")
-                if agent_name in [
-                    "annotation_agent", "rag_agent", "galaxy_agent",
-                    "biogpt_agent", "content_retrieval_agent", "_hypothesis_agent"
-                ]:
-                    agent_names.append(agent_name)
-                else:
+                if agent_name not in valid_agents:
                     logger.warning(f" Unknown agent in parallel group: {agent_name}")
+                elif agent_name in agent_errors:
+                    logger.warning(f" Skipping failed agent in parallel group: {agent_name}")
+                else:
+                    agent_names.append(agent_name)
             
             if not agent_names:
                 logger.warning("No valid agents in parallel group, routing to aggregator")
@@ -192,10 +214,12 @@ class AiAssistance:
             step = group_steps[current_step_in_group]
             agent_name = step.get("agent")
             
-            if agent_name in [
-                "annotation_agent", "rag_agent", "galaxy_agent",
-                "biogpt_agent", "content_retrieval_agent", "_hypothesis_agent"
-            ]:
+            # Skip failed agents in sequential mode
+            if agent_name in agent_errors:
+                logger.warning(f" Skipping failed agent: {agent_name}, advancing to next step")
+                return "aggregator"
+            
+            if agent_name in valid_agents:
                 logger.info(f" SEQUENTIAL routing to: {agent_name}")
                 RichLogger.log_router_decision(agent_name, "Sequential Step")
                 return agent_name
@@ -246,6 +270,7 @@ class AiAssistance:
                 "execution_groups": [],
                 "current_group_index": 0,
                 "current_step_in_group": 0,
+                "agent_errors": {},
             }
 
             result = self.app.invoke(initial_state)

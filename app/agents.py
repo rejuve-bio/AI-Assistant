@@ -1,8 +1,13 @@
 from .llm_handle.llm_models import (
     LLMInterface,
+    LangChainLLM,
     OpenAIModel,
     get_llm_model,
     openai_embedding_model,
+)
+from .llm_handle.structured_models import (
+    ValidationResult,
+    ExecutionPlan,
 )
 from .prompts.classifier_prompt import (
     aggeregator_prompt,
@@ -60,6 +65,8 @@ class AgentState(TypedDict):
     execution_groups: Optional[List[Dict[str, Any]]]
     current_group_index: int
     current_step_in_group: int
+    # --- Error tracking ---
+    agent_errors: Dict[str, str]
 
 
 
@@ -129,9 +136,9 @@ class AgentManager:
 
     def classify_query(self, state: AgentState) -> Dict[str, Any]:
         """
-        Two-step classification:
-        1. VALIDATION: Check if query is relevant.
-        2. PLANNING: If relevant, create a grouped execution plan (Sequential or Parallel).
+        Two-step classification with structured output parsing:
+        1. VALIDATION: Check if query is relevant (→ ValidationResult).
+        2. PLANNING: If relevant, create a grouped execution plan (→ ExecutionPlan).
         """
         query = state["user_query"]
         user_id = state["user_id"]
@@ -140,25 +147,34 @@ class AgentManager:
         
         logger.info(f"Classifying query: {query}")
 
-        # --- STEP 1: VALIDATION ---
+        # --- STEP 1: VALIDATION (structured output) ---
         validation_prompt = VALIDATION_PROMPT.format(
             query=query,
             agent_descriptions=agent_descriptions
         )
         
         try:
-            validation_resp = self.advanced_llm.generate(validation_prompt)
-            if isinstance(validation_resp, str):
-                validation_resp_str = validation_resp.replace("```json", "").replace("```", "").strip()
-                validation_result = json.loads(validation_resp_str)
+            # Use structured output if LLM supports it
+            if isinstance(self.advanced_llm, LangChainLLM):
+                validation_result = self.advanced_llm.generate_structured(
+                    validation_prompt, ValidationResult
+                )
             else:
-                validation_result = validation_resp
+                # Fallback for non-LangChain LLMs
+                validation_resp = self.advanced_llm.generate(validation_prompt)
+                if isinstance(validation_resp, str):
+                    validation_resp_str = validation_resp.replace("```json", "").replace("```", "").strip()
+                    validation_result = ValidationResult.model_validate_json(validation_resp_str)
+                elif isinstance(validation_resp, dict):
+                    validation_result = ValidationResult.model_validate(validation_resp)
+                else:
+                    validation_result = ValidationResult(is_valid=True)
         except Exception as e:
             logger.error(f"Validation parsing error: {e}")
-            validation_result = {"is_valid": True}
+            validation_result = ValidationResult(is_valid=True)
 
-        if not validation_result.get("is_valid", True):
-            refusal = validation_result.get("refusal_message", "I can only help with biological queries.")
+        if not validation_result.is_valid:
+            refusal = validation_result.refusal_message or "I can only help with biological queries."
             logger.info(f"Query rejected: {refusal}")
             return {
                 "response": {"text": refusal, "json_format": None},
@@ -168,7 +184,7 @@ class AgentManager:
                 "messages": [AIMessage(content=refusal)]
             }
 
-        # --- STEP 2: PLANNING ---
+        # --- STEP 2: PLANNING (structured output) ---
         planner_prompt_text = PLANNER_PROMPT.format(
             query=query,
             agent_descriptions=agent_descriptions,
@@ -176,22 +192,35 @@ class AgentManager:
         )
 
         try:
-            plan_resp = self.advanced_llm.generate(planner_prompt_text)
-            if isinstance(plan_resp, str):
-                plan_resp_str = plan_resp.replace("```json", "").replace("```", "").strip()
-                plan_result = json.loads(plan_resp_str)
+            # Use structured output if LLM supports it
+            if isinstance(self.advanced_llm, LangChainLLM):
+                plan_result = self.advanced_llm.generate_structured(
+                    planner_prompt_text, ExecutionPlan
+                )
+                execution_groups = [
+                    group.model_dump() for group in plan_result.execution_groups
+                ]
             else:
-                plan_result = plan_resp
+                # Fallback for non-LangChain LLMs
+                plan_resp = self.advanced_llm.generate(planner_prompt_text)
+                if isinstance(plan_resp, str):
+                    plan_resp_str = plan_resp.replace("```json", "").replace("```", "").strip()
+                    plan_obj = ExecutionPlan.model_validate_json(plan_resp_str)
+                elif isinstance(plan_resp, dict):
+                    plan_obj = ExecutionPlan.model_validate(plan_resp)
+                else:
+                    raise ValueError(f"Unexpected plan response type: {type(plan_resp)}")
+                execution_groups = [
+                    group.model_dump() for group in plan_obj.execution_groups
+                ]
             
-            execution_groups = plan_result.get("execution_groups", [])
-            
-            if not execution_groups and plan_result.get("steps"):
-                old_steps = plan_result["steps"]
-                logger.info("Backward compat: wrapping old 'steps' format into a sequential group")
+            # Backward compat: handle old 'steps' format
+            if not execution_groups:
+                logger.info("Empty execution groups, falling back to single RAG step")
                 execution_groups = [{
                     "group_id": 1,
                     "mode": "sequential",
-                    "steps": old_steps
+                    "steps": [{"agent": "rag_agent", "input": query, "id": 1, "dependency": None}]
                 }]
 
         except Exception as e:
@@ -232,6 +261,7 @@ class AgentManager:
             "step_input": first_step_input,
             "step_outputs": {},
             "agents_to_run": agents_to_run,
+            "agent_errors": {},
             "messages": [HumanMessage(content=f"Plan generated with {len(execution_groups)} groups, {len(all_steps)} total steps")]
         }
 
