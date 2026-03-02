@@ -971,6 +971,12 @@ class AgentManager:
             
             if is_empty or (has_error_msg and not json_data):
                 error_msg = state.get("error", output_text or "Agent returned no data.")
+                
+                if agent_name == "rag_agent":
+                    error_msg = "No document found. Please upload a file first before asking document-specific questions."
+                elif agent_name == "annotation_agent":
+                    error_msg = "Could not find this gene in the database. Try checking the gene name or searching a different identifier."
+                
                 step_outputs[step_id] = f"FAILED: {error_msg}"
                 logger.error(f"Step {step_id} ({agent_name}) failed: {error_msg}")
             else:
