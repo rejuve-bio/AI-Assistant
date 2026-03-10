@@ -46,7 +46,7 @@ agent_descriptions = """
 6. **_hypothesis_agent**: Research theorist. Generates testable scientific hypotheses and future research directions based on findings from other agents.
 
 7. **content_retrieval_agent** [context-dependent]: Retrieves graph or document data from external backends when specific parameters are available.
-   - active_when: graph_id is set (queries annotation/hypothesis APIs and returns graph), content_ids are set (retrieves user uploaded PDFs/web content), urls are set (fetches and indexes HTML content)
+  - active_when: graph_id is set (queries annotation/hypothesis APIs and returns graph), content_ids are set (retrieves user uploaded PDFs/web content), urls are set (fetches and indexes HTML content)
    - If any of these parameters are present in the session context, this agent should be included as the FIRST step to retrieve the data before other agents analyze it.
    - Do NOT include this agent if none of these parameters are present.
 """

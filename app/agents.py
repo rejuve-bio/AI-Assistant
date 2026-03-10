@@ -206,6 +206,29 @@ class AgentManager:
         all_steps = []
         for group in execution_groups:
             all_steps.extend(group.get("steps", []))
+
+        has_context_sources = bool(
+            state.get("graph_id") or state.get("content_ids") or state.get("urls")
+        )
+        has_retrieval_step = any(
+            step.get("agent") == "content_retrieval_agent" for step in all_steps
+        )
+        if has_context_sources and not has_retrieval_step:
+            logger.info("Injecting content_retrieval_agent as first step due to provided context")
+            retrieval_group = {
+                "group_id": 0,
+                "mode": "sequential",
+                "steps": [
+                    {
+                        "id": 0,
+                        "agent": "content_retrieval_agent",
+                        "input": query,
+                        "dependency": None,
+                    }
+                ],
+            }
+            execution_groups = [retrieval_group] + execution_groups
+            all_steps = retrieval_group["steps"] + all_steps
         
         agents_to_run = [step["agent"] for step in all_steps]
         
@@ -830,7 +853,9 @@ class AgentManager:
         try:
             if resource == "annotation":
                 summary_result = self.graph_summarizer.summary(
-                    token=token, graph_id=graph_id, user_query=query
+                    token=token,
+                    graph_id=graph_id,
+                    user_query=query,
                 )
                 summary_text = summary_result.get('text', '') if isinstance(summary_result, dict) else summary_result
                 emit_to_user(user=user_id, message="Analyzing...")
