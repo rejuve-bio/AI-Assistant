@@ -46,6 +46,7 @@ class AgentState(TypedDict):
     error: str
     content_ids: Optional[List[str]]
     graph_id: Optional[str]
+    graph: Optional[Dict[str, Any]]
     urls: Optional[List[str]]
     resource: Optional[str]
     pipeline_details: Dict[str, Any]
@@ -234,6 +235,29 @@ class AgentManager:
         all_steps = []
         for group in execution_groups:
             all_steps.extend(group.get("steps", []))
+
+        has_context_sources = bool(
+            state.get("graph_id") or state.get("graph") or state.get("content_ids") or state.get("urls")
+        )
+        has_retrieval_step = any(
+            step.get("agent") == "content_retrieval_agent" for step in all_steps
+        )
+        if has_context_sources and not has_retrieval_step:
+            logger.info("Injecting content_retrieval_agent as first step due to provided context")
+            retrieval_group = {
+                "group_id": 0,
+                "mode": "sequential",
+                "steps": [
+                    {
+                        "id": 0,
+                        "agent": "content_retrieval_agent",
+                        "input": query,
+                        "dependency": None,
+                    }
+                ],
+            }
+            execution_groups = [retrieval_group] + execution_groups
+            all_steps = retrieval_group["steps"] + all_steps
         
         agents_to_run = [step["agent"] for step in all_steps]
         
@@ -459,6 +483,7 @@ class AgentManager:
         user_id = state.get("user_id")
         token = state.get("token")
         graph_id = state.get("graph_id")
+        graph = state.get("graph")
         urls = state.get("urls")
         content_ids = state.get("content_ids")
         resource = state.get("resource")
@@ -471,22 +496,26 @@ class AgentManager:
 
         try:
             # Graph summary
-            if graph_id:
-                logger.info(f"Retrieving graph summary for graph_id: {graph_id}")
+            if graph_id or graph:
+                logger.info(
+                    "Retrieving graph summary for %s",
+                    f"graph_id: {graph_id}" if graph_id else "direct graph payload",
+                )
                 graph_summary = self.answer_from_graph_summaries(
                     query=query, 
                     user_id=user_id,
                     graph_id=graph_id, 
+                    graph=graph,
                     token=token, 
                     resource=resource
                 )
                 if graph_summary:
                     graph_text = graph_summary.get("text", str(graph_summary)) if isinstance(graph_summary, dict) else str(graph_summary)
                     content_parts.append({
-                        "source": f"graph:{graph_id}",
+                        "source": f"graph:{graph_id}" if graph_id else "graph:direct",
                         "content": graph_text
                     })
-                    sources.append(f"graph:{graph_id}")
+                    sources.append(f"graph:{graph_id}" if graph_id else "graph:direct")
 
             # Galaxy urls
             if urls:
@@ -835,7 +864,7 @@ class AgentManager:
         return {"response": response}
 
 
-    def answer_from_graph_summaries(self, query, user_id, resource, token, graph_id):
+    def answer_from_graph_summaries(self, query, user_id, resource, token, graph_id=None, graph=None):
         """Legacy method for backward compatibility"""
         logger.info(
             f"Answer from graph summaries called with query: {query}, user_id: {user_id}, "
@@ -845,7 +874,10 @@ class AgentManager:
         try:
             if resource == "annotation":
                 summary_result = self.graph_summarizer.summary(
-                    token=token, graph_id=graph_id, user_query=query
+                    token=token,
+                    graph_id=graph_id,
+                    graph=graph,
+                    user_query=query,
                 )
                 summary_text = summary_result.get('text', '') if isinstance(summary_result, dict) else summary_result
                 emit_to_user(user=user_id, message="Analyzing...")

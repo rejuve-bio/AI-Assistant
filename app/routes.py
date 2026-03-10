@@ -50,6 +50,12 @@ def process_query(current_user_id, auth_token):
         resource = context.get("resource", "annotation")
         url = context.get("url",None)
         graph = data.get("graph", None)
+        if isinstance(graph, str) and graph.strip():
+            try:
+                graph = json.loads(graph)
+            except Exception:
+                # Keep original value so downstream validation can report a clear issue.
+                pass
         json_query = data.get("json_query", None)
 
 
@@ -112,6 +118,7 @@ def process_query(current_user_id, auth_token):
             user_id=user_id,
             token=auth_token,
             graph_id=graph_id,
+            graph=graph,
             resource=resource,
             content_ids=content_ids,
             urls=url

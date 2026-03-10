@@ -87,6 +87,10 @@ def register_socket_events(socketio_instance):
         """Handle incoming questions from clients."""
         query = data.get('question')
         graph_id = data.get('graph_id')
+        graph = data.get('graph')
+        resource = data.get('resource', 'annotation')
+        content_ids = data.get('content_ids')
+        urls = data.get('urls')
         user_id = session['user_id']
         token = session['token']
         
@@ -125,7 +129,16 @@ def register_socket_events(socketio_instance):
                                 responses = {"text": "Error processing request"}
                         else:
                             # Handle sync method - use agent method directly
-                            responses = ai_assistant.agent(query, user_id, token)
+                            responses = ai_assistant.agent(
+                                query,
+                                user_id,
+                                token,
+                                content_ids=content_ids,
+                                graph_id=graph_id,
+                                graph=graph,
+                                urls=urls,
+                                resource=resource,
+                            )
                         
                         logger.info(f"Responses generated for user {user_id}: {responses}")
                                             

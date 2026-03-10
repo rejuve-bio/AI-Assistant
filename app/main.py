@@ -236,6 +236,7 @@ class AiAssistance:
         token: str,
         content_ids: Optional[List[str]] = None,
         graph_id: Optional[str] = None,
+        graph: Optional[Dict[str, Any]] = None,
         urls: Optional[List[str]] = None,
         resource: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -256,6 +257,7 @@ class AiAssistance:
                 "error": "",
                 "content_ids": content_ids,
                 "graph_id": graph_id,
+                "graph": graph,
                 "urls": urls,
                 "resource": resource,
                 "pipeline_details": {},
@@ -307,6 +309,7 @@ class AiAssistance:
         user_id: str, 
         token: str, 
         graph_id: Optional[str] = None,
+        graph: Optional[Dict[str, Any]] = None,
         urls: Optional[List[str]] = None,
         content_ids: Optional[List[str]] = None,
         resource: Optional[str] = None,
@@ -381,6 +384,7 @@ class AiAssistance:
                         token,
                         content_ids=content_ids,
                         graph_id=graph_id,
+                        graph=graph,
                         urls=urls,
                         resource=resource,
                     )
