@@ -61,22 +61,33 @@ def process_query(current_user_id, auth_token):
             else:
                 url = list(url)
 
+        def _flatten_to_strings(value):
+            if value is None:
+                return []
+            if isinstance(value, (list, tuple, set)):
+                out = []
+                for item in value:
+                    out.extend(_flatten_to_strings(item))
+                return out
+            text = str(value).strip()
+            return [text] if text else []
+
         # Determine content_ids if resource is content and id is a list or string
         content_ids = None
         if context_id is not None:
             if isinstance(context_id, list):
-                content_ids = context_id
+                content_ids = _flatten_to_strings(context_id)
             elif isinstance(context_id, str):
                 # If it's a comma-separated string, split it
                 if context_id.strip().startswith("["):
                     try:
-                        content_ids = json.loads(context_id)
+                        content_ids = _flatten_to_strings(json.loads(context_id))
                     except Exception:
-                        content_ids = [context_id]
+                        content_ids = _flatten_to_strings([context_id])
                 else:
-                    content_ids = [
-                        cid.strip() for cid in context_id.split(",") if cid.strip()
-                    ]
+                    content_ids = _flatten_to_strings(
+                        [cid.strip() for cid in context_id.split(",") if cid.strip()]
+                    )
 
         # Handle file uploads
         upload_results = []
@@ -96,12 +107,12 @@ def process_query(current_user_id, auth_token):
                         else:
                             new_id = response.get("resource", {}).get("content_id")
                             if new_id:
-                                newly_uploaded_content_ids.append(new_id)
+                                newly_uploaded_content_ids.extend(_flatten_to_strings(new_id))
                         upload_results.append({"filename": uploaded.filename, "response": response})
             
             # Merge content_ids
             if newly_uploaded_content_ids:
-                content_ids = content_ids + newly_uploaded_content_ids if content_ids else newly_uploaded_content_ids
+                content_ids = (content_ids or []) + newly_uploaded_content_ids
 
         # Ensure query exists before processing
         if not question and not json_query:

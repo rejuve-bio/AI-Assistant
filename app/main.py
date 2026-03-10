@@ -217,6 +217,13 @@ class AiAssistance:
             f"Agent called with message: {message}, user_id: {user_id}, "
             f"content_ids: {content_ids}, graph_id: {graph_id}, urls: {urls}"
         )
+        RichLogger.log_agent_called(
+            message=message,
+            user_id=user_id,
+            content_ids=content_ids,
+            graph_id=graph_id,
+            urls=urls,
+        )
            
         try:
             initial_state = {
@@ -305,6 +312,7 @@ class AiAssistance:
                 memory = []
 
             logger.info(f"Histories of the user are: {history} and memories are {memory}")
+            RichLogger.log_history_and_memory(history, memory)
 
             prompt = conversation_prompt.format(
                 memory=memory,

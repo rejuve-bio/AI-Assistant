@@ -22,9 +22,6 @@ class RichLogger:
     
     @staticmethod
     def setup_logging():
-        """Configure standard logging to use RichHandler if desired, or keep it separate."""
-        # For now, we will use this class for specific execution events 
-        # while keeping the standard logger for debug/info messsages.
         pass
 
     @staticmethod
@@ -101,3 +98,36 @@ class RichLogger:
             title="❌ Error",
             border_style="red"
         ))
+
+    @staticmethod
+    def log_agent_called(message: str, user_id: str, content_ids: Any, graph_id: Any, urls: Any):
+        """Highlight incoming agent requests."""
+        console.print(
+            "[bold magenta]Agent Called[/bold magenta]"
+            f" [dim]user=[/dim]{user_id}"
+            f" [dim]query=[/dim]{message}"
+            f" [dim]content_ids=[/dim]{content_ids}"
+            f" [dim]graph_id=[/dim]{graph_id}"
+            f" [dim]urls=[/dim]{urls}"
+        )
+
+    @staticmethod
+    def log_classifying_query(query: str):
+        """Highlight classifier entry points."""
+        console.print(f"[bold yellow]Classifying Query[/bold yellow] [dim]{query}[/dim]")
+
+    @staticmethod
+    def log_generated_plan(execution_groups: List[Dict[str, Any]]):
+        """Highlight plan generation summary."""
+        console.print(
+            f"[bold green]Generated Plan[/bold green] "
+            f"[dim]groups={len(execution_groups)}[/dim]"
+        )
+
+    @staticmethod
+    def log_history_and_memory(history: List[Dict[str, Any]], memory: List[Any]):
+        """Highlight loaded history/memory context."""
+        console.print(
+            f"[bold cyan]Conversation Context[/bold cyan] "
+            f"[dim]history_items={len(history)} memory_items={len(memory)}[/dim]"
+        )
