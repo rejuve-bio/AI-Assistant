@@ -147,6 +147,7 @@ class AgentManager:
         content_summaries = self.get_content_summaries(user_id, content_ids)
         
         logger.info(f"Classifying query: {query}")
+        RichLogger.log_classifying_query(query)
 
         # --- STEP 1: VALIDATION (structured output) ---
         validation_prompt = VALIDATION_PROMPT.format(
@@ -239,25 +240,52 @@ class AgentManager:
         has_context_sources = bool(
             state.get("graph_id") or state.get("graph") or state.get("content_ids") or state.get("urls")
         )
-        has_retrieval_step = any(
-            step.get("agent") == "content_retrieval_agent" for step in all_steps
-        )
-        if has_context_sources and not has_retrieval_step:
-            logger.info("Injecting content_retrieval_agent as first step due to provided context")
+
+        retrieval_step = None
+        sanitized_groups = []
+        for group in execution_groups:
+            original_steps = group.get("steps", [])
+            kept_steps = []
+            for step in original_steps:
+                if step.get("agent") == "content_retrieval_agent":
+                    if retrieval_step is None:
+                        retrieval_step = dict(step)
+                    continue
+                kept_steps.append(step)
+
+            if kept_steps:
+                sanitized_group = dict(group)
+                sanitized_group["steps"] = kept_steps
+                sanitized_groups.append(sanitized_group)
+
+        # Enforce strict gating: retrieval runs iff context identifiers are present.
+        if has_context_sources:
+            if retrieval_step is None:
+                logger.info("Injecting content_retrieval_agent as first step due to provided context")
+                retrieval_step = {
+                    "id": 0,
+                    "agent": "content_retrieval_agent",
+                    "input": query,
+                    "dependency": None,
+                }
+
+            retrieval_step.setdefault("input", query)
+            retrieval_step["dependency"] = None
+
             retrieval_group = {
                 "group_id": 0,
                 "mode": "sequential",
-                "steps": [
-                    {
-                        "id": 0,
-                        "agent": "content_retrieval_agent",
-                        "input": query,
-                        "dependency": None,
-                    }
-                ],
+                "steps": [retrieval_step],
             }
-            execution_groups = [retrieval_group] + execution_groups
-            all_steps = retrieval_group["steps"] + all_steps
+            execution_groups = [retrieval_group] + sanitized_groups
+        else:
+            if retrieval_step is not None:
+                logger.info("Removing content_retrieval_agent from plan because no context sources were provided")
+            execution_groups = sanitized_groups
+
+        all_steps = []
+        for group in execution_groups:
+            all_steps.extend(group.get("steps", []))
         
         agents_to_run = [step["agent"] for step in all_steps]
         
@@ -271,6 +299,7 @@ class AgentManager:
             agents_to_run = ["rag_agent"]
 
         logger.info(f"Generated Plan with {len(execution_groups)} execution groups: {execution_groups}")
+        RichLogger.log_generated_plan(execution_groups)
         
         first_group = execution_groups[0]
         first_step = first_group["steps"][0]
@@ -479,13 +508,24 @@ class AgentManager:
         """
         Retrieve relevant content from multiple sources with source attribution
         """
+        def _flatten_to_strings(value):
+            if value is None:
+                return []
+            if isinstance(value, (list, tuple, set)):
+                out = []
+                for item in value:
+                    out.extend(_flatten_to_strings(item))
+                return out
+            text = str(value).strip()
+            return [text] if text else []
+
         query = state.get("step_input") or state.get("user_query")
         user_id = state.get("user_id")
         token = state.get("token")
         graph_id = state.get("graph_id")
         graph = state.get("graph")
         urls = state.get("urls")
-        content_ids = state.get("content_ids")
+        content_ids = _flatten_to_strings(state.get("content_ids"))
         resource = state.get("resource")
 
         logger.info(f"ContentRetrievalAgent called for user: {user_id}")
@@ -539,12 +579,13 @@ class AgentManager:
                 if rag_content:
                     rag_text = rag_content.get("text", str(rag_content)) if isinstance(rag_content, dict) else str(rag_content)
                     resources = rag_content.get("resource",{})
+                    joined_content_ids = ", ".join(content_ids)
                     content_parts.append({
-                        "source": f"content IDs: {', '.join(content_ids)}",
+                        "source": f"content IDs: {joined_content_ids}",
                         "content": rag_text,
                         "resource": resources
                     })
-                    sources.append(f"content IDs: {', '.join(content_ids)}")
+                    sources.append(f"content IDs: {joined_content_ids}")
 
             # Build response with source attribution
             if content_parts:
@@ -684,6 +725,7 @@ class AgentManager:
                         })
             elif isinstance(content_parts, str) and content_parts:
                 sources = content_resp.get("sources", ["external content"])
+                sources = [str(s) for s in sources]
                 agent_outputs.append({
                     "agent": "content_retrieval_agent",
                     "source": ", ".join(sources),
@@ -900,11 +942,28 @@ class AgentManager:
                 "json_format": None
             }
 
-    def _prepare_dependency_context(self, dep_output: str, dependency_id: int) -> str:
+    def _prepare_dependency_context(self, dep_output: Any, dependency_id: int) -> str:
         """
         Intelligently prepare context from dependency, summarizing if too long.
         This prevents token overflow while preserving important information.
         """
+        def _normalize_to_text(value: Any) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, str):
+                return value
+            if isinstance(value, dict):
+                try:
+                    return json.dumps(value, ensure_ascii=False)
+                except Exception:
+                    return str(value)
+            if isinstance(value, (list, tuple, set)):
+                parts = [_normalize_to_text(v) for v in value]
+                parts = [p for p in parts if p]
+                return "\n".join(parts)
+            return str(value)
+
+        dep_output = _normalize_to_text(dep_output)
         MAX_CHARS = 1500  # Roughly 300-400 tokens
         
         if len(dep_output) <= MAX_CHARS:
@@ -1033,10 +1092,26 @@ class AgentManager:
             
             if is_empty or (has_error_msg and not json_data):
                 error_msg = state.get("error", output_text or "Agent returned no data.")
+                
+                if agent_name == "rag_agent":
+                    error_msg = "No document found. Please upload a file first before asking document-specific questions."
+                elif agent_name == "annotation_agent":
+                    error_msg = "Could not find this gene in the database. Try checking the gene name or searching a different identifier."
+                
                 step_outputs[step_id] = f"FAILED: {error_msg}"
                 logger.error(f"Step {step_id} ({agent_name}) failed: {error_msg}")
             else:
-                step_outputs[step_id] = output_text if output_text else "[Structured Data Generated]"
+                if isinstance(output_text, str):
+                    normalized_output = output_text
+                elif output_text:
+                    try:
+                        normalized_output = json.dumps(output_text, ensure_ascii=False)
+                    except Exception:
+                        normalized_output = str(output_text)
+                else:
+                    normalized_output = ""
+
+                step_outputs[step_id] = normalized_output if normalized_output else "[Structured Data Generated]"
                 if has_error_msg and json_data:
                     logger.warning(f"  Step {step_id} ({agent_name}) had warnings but produced JSON data.")
                 else:
