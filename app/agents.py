@@ -210,25 +210,52 @@ class AgentManager:
         has_context_sources = bool(
             state.get("graph_id") or state.get("content_ids") or state.get("urls")
         )
-        has_retrieval_step = any(
-            step.get("agent") == "content_retrieval_agent" for step in all_steps
-        )
-        if has_context_sources and not has_retrieval_step:
-            logger.info("Injecting content_retrieval_agent as first step due to provided context")
+
+        retrieval_step = None
+        sanitized_groups = []
+        for group in execution_groups:
+            original_steps = group.get("steps", [])
+            kept_steps = []
+            for step in original_steps:
+                if step.get("agent") == "content_retrieval_agent":
+                    if retrieval_step is None:
+                        retrieval_step = dict(step)
+                    continue
+                kept_steps.append(step)
+
+            if kept_steps:
+                sanitized_group = dict(group)
+                sanitized_group["steps"] = kept_steps
+                sanitized_groups.append(sanitized_group)
+
+        # Enforce strict gating: retrieval runs iff context identifiers are present.
+        if has_context_sources:
+            if retrieval_step is None:
+                logger.info("Injecting content_retrieval_agent as first step due to provided context")
+                retrieval_step = {
+                    "id": 0,
+                    "agent": "content_retrieval_agent",
+                    "input": query,
+                    "dependency": None,
+                }
+
+            retrieval_step.setdefault("input", query)
+            retrieval_step["dependency"] = None
+
             retrieval_group = {
                 "group_id": 0,
                 "mode": "sequential",
-                "steps": [
-                    {
-                        "id": 0,
-                        "agent": "content_retrieval_agent",
-                        "input": query,
-                        "dependency": None,
-                    }
-                ],
+                "steps": [retrieval_step],
             }
-            execution_groups = [retrieval_group] + execution_groups
-            all_steps = retrieval_group["steps"] + all_steps
+            execution_groups = [retrieval_group] + sanitized_groups
+        else:
+            if retrieval_step is not None:
+                logger.info("Removing content_retrieval_agent from plan because no context sources were provided")
+            execution_groups = sanitized_groups
+
+        all_steps = []
+        for group in execution_groups:
+            all_steps.extend(group.get("steps", []))
         
         agents_to_run = [step["agent"] for step in all_steps]
         
