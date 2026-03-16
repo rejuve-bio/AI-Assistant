@@ -10,6 +10,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
 from .routes import main_bp
+from .routes import main_bp
 from app.main import AiAssistance
 from app.rag.rag import RAG
 from app.socket_manager import init_socketio
@@ -236,6 +237,8 @@ def create_app():
     # Register routes
     app.register_blueprint(main_bp)
     logger.info('Blueprint "main_bp" registered')
+    
+
 
     logger.info("Flask app created successfully")
     return app, socketio

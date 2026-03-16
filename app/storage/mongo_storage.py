@@ -19,6 +19,7 @@ class MongoManager:
         self.user_info_collection = None
         self.content_files_collection = None
         self.faq_collection = None
+        self.hypothesis_collection = None
         self._connect()
         self._create_indexes()
 
@@ -33,6 +34,7 @@ class MongoManager:
             self.user_info_collection = self.db["user_information"]
             self.content_files_collection = self.db["user_content_files"]
             self.faq_collection = self.db["faq_questions"]
+            self.hypothesis_collection = self.db["hypothesis_requests"]
 
             logger.info(f"MongoDB connection established to {database_name}")
         except Exception as e:
@@ -56,6 +58,10 @@ class MongoManager:
             # FAQ indexes
             self.faq_collection.create_index("question_id", unique=True)
             self.faq_collection.create_index("display_order")
+
+            # Hypothesis indexes
+            self.hypothesis_collection.create_index("id", unique=True)
+            self.hypothesis_collection.create_index("status")
 
             logger.info("MongoDB indexes created successfully")
         except Exception as e:
@@ -381,10 +387,11 @@ class MongoManager:
 
     # ==================== FAQ METHODS ====================
 
-    def get_all_faq_questions(self):
+    def get_all_faq_questions(self, context=None):
         """Get all FAQ questions ordered by display_order"""
         try:
-            cursor = self.faq_collection.find({}).sort("display_order", 1)
+            query = {"context":context}
+            cursor = self.faq_collection.find(query).sort("display_order", 1)
             return list(cursor)
         except Exception as e:
             logger.error(f"Error retrieving FAQ questions: {e}")
@@ -426,6 +433,47 @@ class MongoManager:
             
         except Exception as e:
             logger.error(f"Error seeding FAQ questions: {e}")
+
+
+    # ==================== HYPOTHESIS METHODS ====================
+
+    # Note: The methods below are currently "Dead Code" and not used by the AI Assistant.
+    # They were designed for local job tracking in MongoDB, but the current implementation 
+    # uses a direct API flow with the hypothesis server.
+
+    def create_hypothesis_request(self, data: dict):
+        """Create a new hypothesis request"""
+        try:
+            self.hypothesis_collection.insert_one(data)
+            logger.info(f"Created hypothesis request: {data.get('id')}")
+            return True
+        except Exception as e:
+            logger.error(f"Error creating hypothesis request: {e}")
+            raise
+
+    def get_hypothesis_request(self, hypothesis_id: str):
+        """Get a hypothesis request by ID"""
+        try:
+            return self.hypothesis_collection.find_one({"id": hypothesis_id})
+        except Exception as e:
+            logger.error(f"Error retrieving hypothesis request: {e}")
+            return None
+
+    def update_hypothesis_status(self, hypothesis_id: str, status: str, enrich_id: str = None):
+        """Update the status and enrich_id of a hypothesis request"""
+        try:
+            update_data = {"status": status}
+            if enrich_id:
+                update_data["enrich_id"] = enrich_id
+            
+            result = self.hypothesis_collection.update_one(
+                {"id": hypothesis_id},
+                {"$set": update_data}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"Error updating hypothesis status: {e}")
+            return False
 
 
 # Global instance

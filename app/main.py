@@ -238,7 +238,7 @@ class AiAssistance:
         graph_id: Optional[str] = None,
         graph: Optional[Dict[str, Any]] = None,
         urls: Optional[List[str]] = None,
-        resource: Optional[str] = None,
+        resource: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Main entry point for processing queries"""
         logger.info(
@@ -319,7 +319,7 @@ class AiAssistance:
         graph: Optional[Dict[str, Any]] = None,
         urls: Optional[List[str]] = None,
         content_ids: Optional[List[str]] = None,
-        resource: Optional[str] = None,
+        resource: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Main entry point for assistant responses.

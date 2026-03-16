@@ -11,6 +11,8 @@ import tempfile
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GALAXY_MCP_SERVER = os.getenv("GALAXY_MCP_SERVER")
+advanced_llm_provider = os.getenv("ADVANCED_LLM_PROVIDER")
+
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -32,7 +34,7 @@ class GalaxyHandler:
                 return self._handle_files(query=query, user_id=user_id, urls=urls)
             else:
                 logger.info("No urls provided, routing to MCP handler")
-                return self._handle_mcp_sync(query, token)
+                return self._handle_mcp(query, token)
         except Exception as e:
             logger.error(f"Galaxy handler failed: {e}")
             traceback.print_exc()
@@ -177,6 +179,18 @@ class GalaxyHandler:
             traceback.print_exc()
             return {"text": f"Error analyzing urls: {e}"}
             
+    def handle_mcp(self, query, token):
+        if advanced_llm_provider == "openai":
+            logger.info("Using async MCP path (OpenAI)")
+            return self._handle_mcp_async(query, token)
+        elif advanced_llm_provider == "gemini":
+            logger.info("Using subprocess MCP path (Gemini — avoids async conflicts)")
+            return self._handle_mcp_sync(query, token)
+        else:
+            logger.warning(f"Unknown llm_name '{self.llm}', falling back to subprocess path")
+            return self._handle_mcp_subprocess(query, token)
+
+
     def _handle_mcp_sync(self, query, token):
         """Sync wrapper - runs MCP in subprocess to avoid eventlet conflicts"""
         logger.info(f"_handle_mcp_sync called with query='{query}'")
@@ -194,7 +208,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.agents import create_agent
 
 async def run_mcp():
-    model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-001")
+    model = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
     client = MultiServerMCPClient({{
         "galaxyTools": {{
             "transport": "streamable_http",
@@ -296,3 +310,32 @@ if __name__ == "__main__":
                 logger.error(f"RAG fallback also failed: {fallback_error}")
                 traceback.print_exc()
                 return {"text": f"Error: Unable to process request. Please try again later."}
+
+
+    def _handle_mcp_async(self, query: str, token: str) -> dict:
+        """Run MCP directly via asyncio — works fine with OpenAI."""
+        try:
+            return asyncio.run(self._run_mcp_openai(query, token))
+        except Exception as e:
+            logger.error(f"Async MCP failed: {e}")
+            traceback.print_exc()
+            return self._rag_fallback(query)
+
+    async def _run_mcp_openai(self, query: str, token: str) -> dict:
+            token = os.getenv("GALAXY_DEFAULT_TOKEN")
+            from langgraph.prebuilt import create_react_agent
+            client = MultiServerMCPClient({
+            "galaxyTools": {
+            "transport": "streamable_http",
+            "url": GALAXY_MCP_SERVER,
+            "headers": {"Authorization": f"Bearer {token}"},
+            }
+            })
+
+            tools = await client.get_tools()
+            agent = create_react_agent("openai:gpt-4o", tools)
+            response = await agent.ainvoke({"messages": query})
+            logger.info(f"OpenAI MCP raw response: {response}")
+            return {"text": response}
+
+            

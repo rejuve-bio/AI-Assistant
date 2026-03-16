@@ -1,5 +1,3 @@
-aggeregator_prompt = """You are an AI assistant acting as a **final aggregator**. 
-Your task is to respond to the user's query: "{user_query}".
 
 You have outputs from multiple agents, which may provide overlapping, complementary, or missing information.
 {execution_context}
@@ -16,16 +14,6 @@ Write a **single, fluent, and conversational summary**:
 - If nothing is provided, do not make up information; always respond with the responses from the agents.
 """
 
-answer_from_graph = """
-            You are an assistant that answers questions about biological graphs. 
-            Answer the question ONLY if it can be answered from the provided graph summary.
-            
-            User query: {query}
-            Graph summary: {summary}
-            
-            If the question can be answered from the graph summary, provide a concise answer (2-4 sentences).
-            If not, respond with exactly: "I couldn't answer this from the given graph."
-            """
 
 agent_descriptions = """
 1. **annotation_agent**: Queries specific biological entities in the annotation database. Returns structured JSON + summaries. Best for retrieving genes, proteins, transcripts, exons, and variants.

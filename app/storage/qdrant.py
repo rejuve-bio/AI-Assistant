@@ -268,6 +268,8 @@ class Qdrant:
                 limit=top_k,
                 query_filter=query_filter,
                 with_payload=True,
+                score_threshold=0.5 
+                if query_filter is None else None
             )
             logger.info(f"Found {len(hits.points)} hits in collection '{collection_name}'")
             return [h.payload for h in hits.points]
