@@ -51,7 +51,8 @@ class Orchestrator:
         annotation_graph=None,
         hypothesis_generation=None,
         galaxy_handler=None,
-        biogpt=None
+        biogpt=None,
+        memory_store=None
     ) -> None:
         self.llm = llm
         self.artifacts_root = artifacts_root
@@ -60,6 +61,7 @@ class Orchestrator:
         self.hypothesis_generation = hypothesis_generation
         self.galaxy_handler = galaxy_handler
         self.biogpt = biogpt
+        self.memory_store = memory_store
         logger.info(f"Orchestrator initialized with LLM: {type(llm).__name__}")
         # Convert LLMInterface to LangChain LLM for PythonREPLTool
         self._langchain_llm = self._convert_to_langchain_llm(llm)
@@ -189,6 +191,7 @@ class Orchestrator:
         options: Optional[CodeExecOptions] = None,
         user_id: Optional[str] = None,
         token: Optional[str] = None,
+        memory_store: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """High-level orchestration using CalculatorAgent as a tool."""
         opts = options or CodeExecOptions()
@@ -213,6 +216,9 @@ class Orchestrator:
             # Step 4: Prepare context for CalculatorAgent
             if user_id:
                 emit_to_user(user=user_id, message="Preparing analysis...")
+            
+            # Use the passed-in memory store or the instance-level one
+            current_memory_store = memory_store or self.memory_store
             
             # Build file paths info (for CSV/HTML/XML - extracted tables)
             file_paths_info = []
@@ -262,10 +268,12 @@ class Orchestrator:
                 "profiles": prof.get("profiles", [])
             }
             
+            # Shared state for side-channel structural data passage (bypassing LLM string limits)
+            shared_state = {}
             
             # Step 5: Build all available tools for the Orchestrator
             from app.calculator.agent import CalculatorAgent
-            from app.tools.agent_tools import RAGTool, AnnotationTool, HypothesisTool, GalaxyTool, BioGPTTool
+            from app.tools.agent_tools import RAGTool, AnnotationTool, HypothesisTool, GalaxyTool, BioGPTTool, MemoryWriteTool, MemoryReadTool
             from langchain.tools import Tool
             
             # Get project root
@@ -305,7 +313,8 @@ class Orchestrator:
                 tools.append(AnnotationTool(
                     db_handler=self.annotation_graph,
                     token=token,
-                    user_id=user_id or "orchestrator"
+                    user_id=user_id or "orchestrator",
+                    shared_state=shared_state
                 ))
 
             # Add Hypothesis Tool (if enabled)
@@ -313,7 +322,8 @@ class Orchestrator:
                 tools.append(HypothesisTool(
                     hypothesis_instance=self.hypothesis_generation,
                     token=token,
-                    user_id=user_id or "orchestrator"
+                    user_id=user_id or "orchestrator",
+                    shared_state=shared_state
                 ))
 
             # Add Galaxy Tool (if enabled)
@@ -323,6 +333,11 @@ class Orchestrator:
             # Add BioGPT Tool (if enabled)
             if self.biogpt:
                 tools.append(BioGPTTool(biogpt_agent=self.biogpt))
+            
+            # Add Memory Tools (if available)
+            if current_memory_store:
+                tools.append(MemoryWriteTool(memory_store=current_memory_store))
+                tools.append(MemoryReadTool(memory_store=current_memory_store))
             
             # Initialize the orchestrator agent with all tools
             orchestrator = initialize_agent(
@@ -342,7 +357,13 @@ class Orchestrator:
             execution_errors = ""
             
             try:
-                result = orchestrator.run(instructions)
+                # Prepend memory context if available
+                final_instructions = instructions
+                if current_memory_store:
+                    memory_summary = current_memory_store.read_all()
+                    final_instructions = f"## SESSION MEMORY (Known Facts):\n{memory_summary}\n\n## USER REQUEST:\n{instructions}"
+                
+                result = orchestrator.run(final_instructions)
                 execution_output = str(result)
             except Exception as e:
                 logger.error(f"Orchestrator failed: {e}")
@@ -448,12 +469,17 @@ class Orchestrator:
             if execution_errors:
                 summary_lines.append(f"\nNote: {execution_errors}")
             
+            # Inject preserved graph data from side-channel
+            final_resource = {"type": "orchestrator", "id": run_id}
+            if shared_state and "resource" in shared_state:
+                final_resource = shared_state["resource"]
+            
             return {
                 "text": "\n".join(summary_lines),
                 "manifest": manifest,
                 "outputs": [{"step": 1, "description": "Orchestration", "stdout": execution_output, "stderr": execution_errors}],
                 "artifacts": artifacts_with_data if artifacts_with_data else [{"name": a.name, "format": a.format, "path": a.path_or_url} for a in artifacts_list],
-                "resource": {"type": "orchestrator", "id": run_id},
+                "resource": final_resource,
             }
             
         except Exception as e:

@@ -1,6 +1,6 @@
 from typing import Dict, Any, Tuple, Optional, List, Union
 from app.prompts.hypothesis_prompt import hypothesis_format_prompt, hypothesis_response
-from app.storage.redis import redis_manager
+# from app.storage.redis import redis_manager  # Redis disabled for testing
 from app.socket_manager import emit_to_user
 import logging
 import os
@@ -177,10 +177,12 @@ class HypothesisGeneration:
                 emit_to_user(user=user_id, message="Successfully processed query with hypothesis")
                 return data
             else:
-                cached_graph = redis_manager.get_graph_by_id(hypothesis_id)
-                if cached_graph and cached_graph.get("graph_summary"):
-                    logger.info(f"Cache hit for graph_id={hypothesis_id}")
-                    return {"text": cached_graph["graph_summary"]}
+                # ── Redis cache disabled for development/testing ─────────────────────
+                # cached_graph = redis_manager.get_graph_by_id(hypothesis_id)
+                # if cached_graph and cached_graph.get("graph_summary"):
+                #     logger.info(f"Cache hit for graph_id={hypothesis_id}")
+                #     return {"text": cached_graph["graph_summary"]}
+                # ─────────────────────────────────────────────────────────────────────
 
                 data = {
                     "hypothesis_id": hypothesis_id
@@ -192,7 +194,7 @@ class HypothesisGeneration:
                     response = requests.post(HYPOTHESIS_CHAT_ENDPOINT, json=data, headers=headers)
                     response.raise_for_status()
                     data = response.json()
-                    redis_manager.create_graph(graph_id=data['hypothesis_id'], graph_summary=data['summary'])
+                    # redis_manager.create_graph(graph_id=data['hypothesis_id'], graph_summary=data['summary']) # Redis disabled
                     return data
                 except Exception as e:
                     logger.error(f"Failed to retrieve hypothesis by ID: {str(e)}")
@@ -521,8 +523,8 @@ class HypothesisGeneration:
         summary = step4_res["summary"]
         graph = step4_res["graph"]
         
-        # Cache result
-        redis_manager.create_graph(graph_id=hypothesis_id, graph_summary=summary)
+        # Cache result - Redis disabled for testing
+        # redis_manager.create_graph(graph_id=hypothesis_id, graph_summary=summary)
 
         return {
             "text": summary,

@@ -17,6 +17,7 @@ from .storage.mongo_storage import mongo_db_manager
 from .socket_manager import emit_to_user
 from .Galaxy_integration.galaxy import GalaxyHandler
 from .orchestrator.handler import Orchestrator, CodeExecOptions
+from .memory.store import MemoryStore
 import asyncio
 import logging.handlers as loghandlers
 from dotenv import load_dotenv
@@ -181,6 +182,9 @@ class AiAssistance:
         # The Orchestrator will decide which specialized tool to use based on the query
         logger.info(f"Routing query to Orchestrator (central brain): {query}")
         
+        # Instantiate request-scoped memory store
+        request_memory = MemoryStore()
+        
         # Convert options dict to CodeExecOptions if provided
         options_dict = options or {}
         if isinstance(options_dict, dict):
@@ -201,7 +205,8 @@ class AiAssistance:
             urls=urls,
             options=exec_options,
             user_id=user_id,
-            token=token
+            token=token,
+            memory_store=request_memory
         )
         
         # Ensure response is in dict format
@@ -315,25 +320,7 @@ class AiAssistance:
             )
             return response
 
-            # if query and graph:
-            #     summary = self.graph_summarizer.summary(user_query=query,graph=graph)
-            #     self.history.create_history(user_id, query, response)
-            #     return summary
 
-            # if graph:
-            #     summary = self.graph_summarizer.summary(user_query=query,graph=graph)
-            #     self.history.create_history(user_id, query, response)
-            #     return summary
-
-            # if json_query:
-            #     logger.info(f"Executing a json query {json_query} to the annotation service")
-            #     try:
-            #         logger.info(f"Generating graph with arguments: {json_query}")  # Add this line to log the arguments
-            #         response = self.annotation_graph.generate_graph(f"",json_query,token)
-            #         return response
-            #     except Exception as e:
-            #         logger.error("Error in generating graph", exc_info=True)
-            #         return f"I couldn't generate a graph for the given format would you please try again."
 
         except:
             traceback.print_exc()

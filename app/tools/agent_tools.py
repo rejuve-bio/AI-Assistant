@@ -37,6 +37,7 @@ class AnnotationTool(BaseTool):
     db_handler: Any = None
     token: str = ""
     user_id: str = "orchestrator"
+    shared_state: Any = Field(default=None, exclude=True)
 
     def _run(self, query: str) -> str:
         try:
@@ -53,6 +54,12 @@ class AnnotationTool(BaseTool):
             
             if result.get("success", False):
                 summary = result.get("summary", "")
+                
+                # Check for graph/json data to save for frontend, bypassing the text-only LLM
+                if self.shared_state is not None:
+                    if "json_format" in result and result.get("json_format"):
+                        self.shared_state["resource"] = result["json_format"]
+                        
                 return summary if summary else "Query processed but no results found."
             else:
                 error = result.get("error", "Unknown error")
@@ -73,6 +80,7 @@ class HypothesisTool(BaseTool):
     hypothesis_instance: Any = None
     token: str = ""
     user_id: str = ""
+    shared_state: Any = Field(default=None, exclude=True)
 
     def _run(self, query: str) -> str:
         try:
@@ -85,6 +93,11 @@ class HypothesisTool(BaseTool):
                 user_query=query,
                 user_id=self.user_id
             )
+            
+            # Intercept the visual graph payload for the frontend
+            if self.shared_state is not None and isinstance(result, dict):
+                if "resource" in result:
+                    self.shared_state["resource"] = result["resource"]
             
             if isinstance(result, dict) and "text" in result:
                 return result["text"]
@@ -110,12 +123,14 @@ class GalaxyTool(BaseTool):
             return f"Error interacting with Galaxy: {str(e)}"
 
 
+
 class BioGPTTool(BaseTool):
     name: str = "biogpt_search"
     description: str = (
-        "Use this tool to answer biomedical and clinical questions using a specialized "
-        "BioGPT model. Useful for questions about diseases, proteins, genes, drugs, "
-        "and other biomedical topics. This tool is optimized for biomedical domain knowledge."
+        "LAST RESORT ONLY. Use this tool ONLY when annotation_graph and rag_search "
+        "have both been tried and failed to return a satisfactory answer. "
+        "Do NOT use this as a first choice for any question. "
+        "Suitable for general biomedical Q&A when no structured data source is available."
     )
     biogpt_agent: Any = None
 
@@ -127,3 +142,53 @@ class BioGPTTool(BaseTool):
             return "BioGPT agent not initialized."
         except Exception as e:
             return f"Error in BioGPT: {str(e)}"
+
+
+class MemoryWriteTool(BaseTool):
+    """Tool for storing important facts in memory."""
+    name: str = "memory_write"
+    description: str = (
+        "Store an important biological fact for later retrieval. "
+        "Input MUST be in the format 'key: value'. "
+        "Example: 'causal_gene: FTO' or 'p_value: 0.005'. "
+        "Use this whenever you discover a NEW biological entity, result, or conclusion."
+    )
+    memory_store: Any = Field(default=None, exclude=True)
+
+    def _run(self, input_str: str) -> str:
+        try:
+            if not self.memory_store:
+                return "Memory store not initialized."
+            
+            if ":" not in input_str:
+                return "Error: Memory write requires 'key: value' format."
+            
+            key, value = input_str.split(":", 1)
+            return self.memory_store.write(key, value)
+        except Exception as e:
+            return f"Error writing to memory: {str(e)}"
+
+    async def _arun(self, input_str: str) -> str:
+        return self._run(input_str)
+
+
+class MemoryReadTool(BaseTool):
+    """Tool for retrieving facts from memory."""
+    name: str = "memory_read"
+    description: str = (
+        "Retrieve a previously stored fact by its key. "
+        "Use this if you think you have already discovered relevant data. "
+        "Input should be the key name (e.g., 'causal_gene')."
+    )
+    memory_store: Any = Field(default=None, exclude=True)
+
+    def _run(self, key: str) -> str:
+        try:
+            if not self.memory_store:
+                return "Memory store not initialized."
+            return self.memory_store.read(key)
+        except Exception as e:
+            return f"Error reading from memory: {str(e)}"
+
+    async def _arun(self, key: str) -> str:
+        return self._run(key)

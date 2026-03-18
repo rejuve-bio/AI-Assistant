@@ -68,6 +68,60 @@ def initialize_database():
         print(f"Error initializing database: {str(e)}")
         traceback.print_exc()
 
+def populate_neo4j_if_empty():
+    """Auto-populate local Neo4j from populate_db.cypher if empty and in local mode."""
+    annotation_service_url = os.getenv("ANNOTATION_SERVICE_URL")
+    if annotation_service_url:
+        logger.info("ANNOTATION_SERVICE_URL is set - using External API mode. Skipping local Neo4j population.")
+        return
+
+    logger.info("No ANNOTATION_SERVICE_URL found - running in Local Neo4j mode. Checking if DB needs population...")
+
+    try:
+        from app.annotation_graph.neo4j_handler import Neo4jConnection
+        neo4j = Neo4jConnection(
+            uri=os.getenv("NEO4J_URI"),
+            username=os.getenv("NEO4J_USERNAME"),
+            password=os.getenv("NEO4J_PASSWORD"),
+        )
+        driver = neo4j.get_driver()
+
+        with driver.session() as session:
+            result = session.run("MATCH (n) RETURN count(n) AS total")
+            total = result.single()["total"]
+
+        if total > 0:
+            logger.info(f"Neo4j DB already has {total} nodes. Skipping population.")
+            return
+
+        logger.info("Neo4j DB is empty. Populating from populate_db.cypher...")
+
+        # Locate populate_db.cypher in the root directory (AI-Assistant)
+        cypher_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "populate_db.cypher")
+        with open(cypher_path, "r") as f:
+            content = f.read()
+
+        # Split on semicolons to get individual statements
+        statements = [
+            stmt.strip()
+            for stmt in content.split(";")
+            if stmt.strip() and not stmt.strip().startswith("//")
+        ]
+
+        with driver.session() as session:
+            for stmt in statements:
+                # Remove comment-only lines within the statement
+                clean = "\n".join(
+                    line for line in stmt.splitlines() if not line.strip().startswith("//")
+                ).strip()
+                if clean:
+                    session.run(clean)
+
+        logger.info(f"Successfully populated Neo4j with {len(statements)} Cypher statements from populate_db.cypher.")
+
+    except Exception as e:
+        logger.error(f"Failed to auto-populate Neo4j: {e}. The annotation_graph tool may not return results.")
+        traceback.print_exc()
 
 def create_app():
     """Creates and configures the Flask application."""
@@ -100,6 +154,9 @@ def create_app():
         enhanced_schema_path="./config/enhanced_schema.txt",
     )
     logger.info("SchemaHandler initialized")
+
+    # Automatically populate Neo4j if it is empty and in Local Mode
+    populate_neo4j_if_empty()
 
     # Initialize Basic LLM model
     basic_llm_provider = os.getenv("BASIC_LLM_PROVIDER")
@@ -164,50 +221,50 @@ def create_app():
                 raise e
 
         # Trigger ingestion if collection is missing OR empty
-        # if not collection_exists or is_empty:
-        #     logger.info("Starting population of SITE_INFORMATION collection...")
+        if not collection_exists or is_empty:
+            logger.info("Starting population of SITE_INFORMATION collection...")
             
-        #     with open("sample_data.json") as data:
-        #         sample_site_data = json.load(data)
+            with open("sample_data.json") as data:
+                sample_site_data = json.load(data)
 
-        #     # Initialize a RAG instance to handle the data upload
-        #     rag = RAG(
-        #         advanced_llm,
-        #         qdrant_client=qdrant_client,
-        #     )
-        #     # Upload the data to the specified collection
-        #     rag.save_doc_to_rag(
-        #         data=sample_site_data,
-        #         collection_name="SITE_INFORMATION",
-        #         is_content=False,
-        #     )
-        #     logger.info("Successfully populated SITE_INFORMATION collection.")
+            # Initialize a RAG instance to handle the data upload
+            rag = RAG(
+                advanced_llm,
+                qdrant_client=qdrant_client,
+            )
+            # Upload the data to the specified collection
+            rag.save_doc_to_rag(
+                data=sample_site_data,
+                collection_name="SITE_INFORMATION",
+                is_content=False,
+            )
+            logger.info("Successfully populated SITE_INFORMATION collection.")
 
         # --- CONTEXT SHARING TEST DATA INGESTION ---
         # Force re-ingestion for testing purposes
-        logger.info("Starting population of SITE_INFORMATION collection with TEST DATA...")
+        # logger.info("Starting population of SITE_INFORMATION collection with TEST DATA...")
         
         # Delete existing collection to ensure clean test state
-        try:
-            qdrant_client.client.delete_collection("SITE_INFORMATION")
-            logger.info("Deleted existing SITE_INFORMATION collection for testing.")
-        except Exception as e:
-            logger.warning(f"Could not delete collection (might not exist): {e}")
+        # try:
+        #     qdrant_client.client.delete_collection("SITE_INFORMATION")
+        #     logger.info("Deleted existing SITE_INFORMATION collection for testing.")
+        # except Exception as e:
+        #     logger.warning(f"Could not delete collection (might not exist): {e}")
 
-        with open("test_context_sharing_sample_data.json") as data:
-            test_data = json.load(data)
+        # with open("test_context_sharing_sample_data.json") as data:
+        #     test_data = json.load(data)
             
-        rag = RAG(
-            advanced_llm,
-            qdrant_client=qdrant_client,
-        )
+        # rag = RAG(
+        #     advanced_llm,
+        #     qdrant_client=qdrant_client,
+        # )
         
-        rag.save_doc_to_rag(
-            data=test_data,
-            collection_name="SITE_INFORMATION",
-            is_content=False,
-        )
-        logger.info("Successfully populated SITE_INFORMATION collection with TEST DATA.")
+        # rag.save_doc_to_rag(
+        #     data=test_data,
+        #     collection_name="SITE_INFORMATION",
+        #     is_content=False,
+        # )
+        # logger.info("Successfully populated SITE_INFORMATION collection with TEST DATA.")
         # -------------------------------------------
 
     except Exception as e:
