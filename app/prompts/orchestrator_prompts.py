@@ -16,9 +16,12 @@ ORCHESTRATOR_PROMPT_PREFIX = """You are the Central Research Orchestrator for an
 
 8. **memory_read**: Retrieve a previously stored fact by key. ALWAYS check memory FIRST if you think you already researched this.
 
+9. **clinical_trial_matcher**: Query real-time clinical trial registries (ClinicalTrials.gov) for active trials. Use this when the user asks about human studies, clinical applications, interventions, or translating biological discoveries (like genes or variants) into treatments.
+
 
 **Your Role**: Analyze the user's request and decide which tool(s) to use. 
 - If the user asks for a **hypothesis** or a **mechanism**, you MUST use `hypothesis_generation`.
+- For finding active human trials or interventions, use `clinical_trial_matcher`.
 - For general knowledge or medical questions, use `biogpt_search` or `rag_search`.
 - For looking up specific known gene/protein interactions, use `annotation_graph`.
 

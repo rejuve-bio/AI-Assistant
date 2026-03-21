@@ -3,7 +3,7 @@
 from langchain.tools import BaseTool
 from typing import Optional, Any
 from pydantic import Field
-
+import requests
 
 class RAGTool(BaseTool):
     """Tool for retrieving information using RAG."""
@@ -21,6 +21,34 @@ class RAGTool(BaseTool):
         except Exception as e:
             return f"Error in RAG search: {str(e)}"
     
+    async def _arun(self, query: str) -> str:
+        """Async version."""
+        return self._run(query)
+
+
+
+
+class TrialMatcherTool(BaseTool):
+    """Tool for fetching clinical trials from ClinicalTrials.gov."""
+    name: str = "clinical_trial_matcher"
+    description: str = (
+        "Query real-time clinical trial registries (ClinicalTrials.gov) "
+        "for active, recruiting, or completed trials. Best used for finding "
+        "interventions, treatments, or research studies related to a specific "
+        "disease, drug target (gene/protein), or genetic variant. "
+        "Input should be a concise search query (e.g., 'FTO obesity' or 'SIRT1')."
+    )
+    matcher_agent: Any = None
+
+    def _run(self, query: str) -> str:
+        """Execute ClinicalTrials.gov search via the dedicated agent."""
+        try:
+            if not self.matcher_agent:
+                return "Clinical Trial Matcher agent not initialized."
+            return self.matcher_agent.find_trials(query)
+        except Exception as e:
+            return f"Error in Clinical Trial Matcher Tool: {str(e)}"
+
     async def _arun(self, query: str) -> str:
         """Async version."""
         return self._run(query)

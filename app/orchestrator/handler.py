@@ -62,6 +62,11 @@ class Orchestrator:
         self.galaxy_handler = galaxy_handler
         self.biogpt = biogpt
         self.memory_store = memory_store
+        
+        # Initialize Clinical Trial Matcher natively
+        from app.clinical_trial_matcher import ClinicalTrialMatcherAgent
+        self.clinical_trial_matcher = ClinicalTrialMatcherAgent()
+        
         logger.info(f"Orchestrator initialized with LLM: {type(llm).__name__}")
         # Convert LLMInterface to LangChain LLM for PythonREPLTool
         self._langchain_llm = self._convert_to_langchain_llm(llm)
@@ -273,7 +278,7 @@ class Orchestrator:
             
             # Step 5: Build all available tools for the Orchestrator
             from app.calculator.agent import CalculatorAgent
-            from app.tools.agent_tools import RAGTool, AnnotationTool, HypothesisTool, GalaxyTool, BioGPTTool, MemoryWriteTool, MemoryReadTool
+            from app.tools.agent_tools import RAGTool, AnnotationTool, HypothesisTool, GalaxyTool, BioGPTTool, MemoryWriteTool, MemoryReadTool, TrialMatcherTool
             from langchain.tools import Tool
             
             # Get project root
@@ -333,6 +338,9 @@ class Orchestrator:
             # Add BioGPT Tool (if enabled)
             if self.biogpt:
                 tools.append(BioGPTTool(biogpt_agent=self.biogpt))
+
+            # Add Clinical Trial Matcher Tool
+            tools.append(TrialMatcherTool(matcher_agent=self.clinical_trial_matcher))
             
             # Add Memory Tools (if available)
             if current_memory_store:
