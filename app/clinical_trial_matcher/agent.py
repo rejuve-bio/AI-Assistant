@@ -1,3 +1,4 @@
+import os
 import requests
 import logging
 
@@ -7,7 +8,7 @@ class ClinicalTrialMatcherAgent:
     """Agent responsible for querying ClinicalTrials.gov for active trials."""
     
     def __init__(self):
-        self.api_url = "https://clinicaltrials.gov/api/v2/studies"
+        self.api_url = os.getenv("CLINICAL_TRIALS_API_URL", "https://clinicaltrials.gov/api/v2/studies")
         
     def find_trials(self, query: str) -> str:
         """Execute ClinicalTrials.gov search and return formatted string."""
