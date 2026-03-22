@@ -10,17 +10,13 @@ from typing import TypedDict, List, Annotated, Any, Dict, Optional
 from flask_socketio import emit
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
-import asyncio
-import traceback
-import json
 import os
-import operator
 import logging
 import logging.handlers as loghandlers
-import time
 from .agents import AgentManager, AgentState
+from .utils import RichLogger
 
 logger = logging.getLogger(__name__)
 log_dir = "/AI-Assistant/logfiles"
@@ -73,43 +69,43 @@ class AiAssistance:
         self.app = self.workflow.compile()
 
     def _create_workflow(self) -> StateGraph:
-        """Create the LangGraph workflow with iterative execution"""
-        logger.info("Creating LangGraph workflow with iterative execution")
+        """Create the LangGraph workflow with parallel + sequential execution support"""
+        logger.info("Creating LangGraph workflow with parallel + sequential execution")
 
         workflow = StateGraph(AgentState)
 
         workflow.add_node("classifier", self.agents.classify_query)
         workflow.add_node("increment_step", self.increment_step)
-        
+
         workflow.add_node("annotation_agent", self.agents.annotation_agent)
         workflow.add_node("rag_agent", self.agents.rag_agent)
         workflow.add_node("galaxy_agent", self.agents.galaxy_agent)
         workflow.add_node("biogpt_agent", self.agents.biogpt_agent)
         workflow.add_node("content_retrieval_agent", self.agents.content_retrieval_agent)
         workflow.add_node("_hypothesis_agent", self.agents.hypothesis_agent)
-        
+
         workflow.add_node("aggregator", self.agents.aggregate_responses)
-        # workflow.add_node("clarifying_questions", self.agents.generate_clarifying_questions) # Removed
         workflow.add_node("finalizer", self.agents.finalize_response)
-        
+
         workflow.set_entry_point("classifier")
-        
-        # Router logic from classifier and after each step
+
+        agent_nodes = [
+            "annotation_agent",
+            "rag_agent",
+            "galaxy_agent",
+            "biogpt_agent",
+            "content_retrieval_agent",
+            "_hypothesis_agent",
+            "aggregator",
+            "finalizer"
+        ]
+
         workflow.add_conditional_edges(
             "classifier",
             self._route_to_agents,
-            [
-                "annotation_agent", 
-                "rag_agent", 
-                "galaxy_agent", 
-                "biogpt_agent", 
-                "content_retrieval_agent",
-                "_hypothesis_agent",
-                "aggregator",
-                "finalizer"
-            ]
+            agent_nodes
         )
-        
+
         # Agents route to increment_step
         workflow.add_edge("annotation_agent", "increment_step")
         workflow.add_edge("rag_agent", "increment_step")
@@ -117,73 +113,94 @@ class AiAssistance:
         workflow.add_edge("biogpt_agent", "increment_step")
         workflow.add_edge("content_retrieval_agent", "increment_step")
         workflow.add_edge("_hypothesis_agent", "increment_step")
-        
+
         # Loop back to router logic
         workflow.add_conditional_edges(
             "increment_step",
             self._route_to_agents,
-             [
-                "annotation_agent", 
-                "rag_agent", 
-                "galaxy_agent", 
-                "biogpt_agent", 
-                "content_retrieval_agent",
-                "_hypothesis_agent",
-                "aggregator",
-                "finalizer"
-            ]
+            agent_nodes
         )
-        
+
         workflow.add_edge("aggregator", "finalizer")
-        # workflow.add_edge("aggregator", "clarifying_questions")
-        # workflow.add_edge("clarifying_questions", "finalizer")
-        workflow.add_edge("finalizer", END)
         
+        workflow.add_edge("finalizer", END)
+
         return workflow
 
     def increment_step(self, state: AgentState) -> Dict[str, Any]:
         """Wrap the step update"""
         return self.agents.update_step_state(state)
 
-    def _route_to_agents(self, state: AgentState) -> str:
+    def _route_to_agents(self, state: AgentState):
         """
-        Determine which agent to run next based on the plan and current step.
+        Group-aware router. Determines which agent(s) to run next.
+        - For PARALLEL groups: returns a LIST of agent names (LangGraph runs them concurrently)
+        - For SEQUENTIAL groups: returns a single agent name
+        - When all groups are done: routes to aggregator
         """
-        plan = state.get("plan", [])
-        current_index = state.get("current_step_index", 0)
+        execution_groups = state.get("execution_groups", [])
         
-        # Enhanced logging
-        logger.info(f"🎯 Router called: index={current_index}, plan_length={len(plan)}")
+        current_group_idx = state.get("current_group_index", 0)
+        current_step_in_group = state.get("current_step_in_group", 0)
         
-        # Case: Invalid query (refusal)
-        if not plan:
-             # If response text exists (refusal) and no plan, go to finalizer.
-             # If completely empty default to AGGREGATOR (which might handle "no info")
-             if state.get("response", {}).get("text"):
-                  logger.info("❌ No plan (query was rejected). Routing to finalizer.")
-                  return "finalizer"
-             logger.info("⚠️  No plan and no response. Routing to aggregator.")
-             return "aggregator"
+        if current_group_idx == 0 and current_step_in_group == 0:
+            plan = state.get("plan", [])
+            if plan:
+                RichLogger.log_plan(plan)
 
-        # Case: Plan execution done
-        if current_index >= len(plan):
-            logger.info(f"✅ Plan execution completed ({len(plan)} steps). Routing to aggregator.")
+        if current_group_idx >= len(execution_groups):
+            if state.get("response", {}).get("text"):
+                logger.info("No plan (query was rejected). Routing to finalizer.")
+                return "finalizer"
+            logger.info("All groups done. Routing to aggregator.")
             return "aggregator"
         
-        current_step = plan[current_index]
-        agent_name = current_step.get("agent")
+        current_group = execution_groups[current_group_idx]
+        mode = current_group.get("mode", "sequential")
+        group_steps = current_group.get("steps", [])
         
-        logger.info(f"➡️  Routing to step {current_index + 1}/{len(plan)}: {agent_name}")
-    
-        # Check if valid node
-        if agent_name in [
-            "annotation_agent", "rag_agent", "galaxy_agent", 
-            "biogpt_agent", "content_retrieval_agent", "_hypothesis_agent"
-        ]:
-            return agent_name
+        if not group_steps:
+            logger.warning("Empty group, routing to aggregator")
+            return "aggregator"
+        
+        if mode == "parallel":
+            # Return ALL agent names in this group — LangGraph runs them concurrently
+            agent_names = []
+            for step in group_steps:
+                agent_name = step.get("agent")
+                if agent_name in [
+                    "annotation_agent", "rag_agent", "galaxy_agent",
+                    "biogpt_agent", "content_retrieval_agent", "_hypothesis_agent"
+                ]:
+                    agent_names.append(agent_name)
+                else:
+                    logger.warning(f" Unknown agent in parallel group: {agent_name}")
             
-        logger.warning(f"⚠️  Unknown agent in plan: {agent_name}, skipping to aggregator")
-        return "aggregator"
+            if not agent_names:
+                logger.warning("No valid agents in parallel group, routing to aggregator")
+                return "aggregator"
+            
+            RichLogger.log_router_decision(f"{len(agent_names)} Agents (Parallel)", str(agent_names))
+            return agent_names
+        else:
+            if current_step_in_group >= len(group_steps):
+                logger.info(" Sequential group exhausted, routing to aggregator")
+                return "aggregator"
+            
+            step = group_steps[current_step_in_group]
+            agent_name = step.get("agent")
+            
+            if agent_name in [
+                "annotation_agent", "rag_agent", "galaxy_agent",
+                "biogpt_agent", "content_retrieval_agent", "_hypothesis_agent"
+            ]:
+                RichLogger.log_router_decision(agent_name, "Sequential Step")
+                return agent_name
+            
+            logger.warning(f"Unknown agent: {agent_name}, routing to aggregator")
+            return "aggregator"
+
+
 
     def agent(
         self,
@@ -199,6 +216,13 @@ class AiAssistance:
         logger.info(
             f"Agent called with message: {message}, user_id: {user_id}, "
             f"content_ids: {content_ids}, graph_id: {graph_id}, urls: {urls}"
+        )
+        RichLogger.log_agent_called(
+            message=message,
+            user_id=user_id,
+            content_ids=content_ids,
+            graph_id=graph_id,
+            urls=urls,
         )
            
         try:
@@ -223,6 +247,9 @@ class AiAssistance:
                 "agents_to_run": [],
                 "agents_completed": [],
                 "suggested_questions": None,
+                "execution_groups": [],
+                "current_group_index": 0,
+                "current_step_in_group": 0,
             }
 
             result = self.app.invoke(initial_state)
@@ -268,12 +295,8 @@ class AiAssistance:
         Routes to agent execution system.
         """
         try:
-            logger.info(
-                f"Assistant response called with query={query}, user_id={user_id}, "
-                f"graph_id={graph_id}, content_ids={content_ids}, urls={urls}"
-            )
+            RichLogger.log_workflow_start(query)
             
-            # Get conversation history and memory
             try:
                 user_information = self.store.get_context_and_memory(user_id)
                 history = []
@@ -289,8 +312,8 @@ class AiAssistance:
                 memory = []
 
             logger.info(f"Histories of the user are: {history} and memories are {memory}")
+            RichLogger.log_history_and_memory(history, memory)
 
-            # Generate LLM response to decide routing
             prompt = conversation_prompt.format(
                 memory=memory,
                 query=query,
@@ -302,12 +325,10 @@ class AiAssistance:
             emit_to_user(user=user_id, message="Analyzing...")
             
             if response:
-                # Case 1: Direct response (no agent needed)
                 if "response:" in response:
                     result = response.split("response:")[1].strip()
                     final_response = result.strip('"')
                     
-                    # ✅ Save history with all available info
                     self.store.create_history(
                         user_id=user_id,
                         user_message=query,
@@ -315,17 +336,15 @@ class AiAssistance:
                         graph_id_referenced=graph_id,
                         content_ids=content_ids,
                         urls=urls,
-                        agents_used=[],  # No agents used for direct response
+                        agents_used=[],  
                     )
                     
                     emit_to_user(user=user_id, message=final_response, status="completed")
                     return {"text": final_response}
 
-                # Case 2: Agent response (needs processing)
                 elif "question:" in response:
                     refactored_question = response.split("question:")[1].strip()
                     
-                    # Call agent with all parameters
                     agent_response = self.agent(
                         refactored_question,
                         user_id,
@@ -336,27 +355,22 @@ class AiAssistance:
                         resource=resource,
                     )
                     
-                    # Normalize response to dict
                     if isinstance(agent_response, str):
                         agent_response = {"text": agent_response, "agents_completed": []}
                     elif not isinstance(agent_response, dict):
                         agent_response = {"text": str(agent_response), "agents_completed": []}
 
-                    # Log resource type if available
                     resource_type = agent_response.get("resource", {}).get("type")
                     if resource_type:
                         logger.info(f"Resource successfully created: {resource_type}")
 
-                    # Extract answer
                     assistant_answer = agent_response.get("text", str(agent_response))
                     
-                    # Extract agents that were used
                     agents_used = agent_response.get("agents_completed", [])
                     
-                    # ✅ Save complete history with ALL information
                     self.store.create_history(
                         user_id=user_id,
-                        user_message=query,  # Original query, not refactored
+                        user_message=query,  
                         assistant_answer=assistant_answer,
                         graph_id_referenced=graph_id,
                         content_ids=content_ids,
@@ -368,11 +382,9 @@ class AiAssistance:
                     return agent_response
                     
             else:
-                # No response generated
                 logger.error("No response generated from LLM")
                 error_msg = "I apologize, but I encountered an error while processing your request."
                 
-                # ✅ Save the error attempt
                 self.store.create_history(
                     user_id=user_id,
                     user_message=query,
@@ -390,7 +402,6 @@ class AiAssistance:
             logger.error(f"Error in assistant_response: {e}", exc_info=True)
             error_msg = "I apologize, but I encountered an error while processing your request."
             
-            # ✅ Try to save error history
             try:
                 self.store.create_history(
                     user_id=user_id,
