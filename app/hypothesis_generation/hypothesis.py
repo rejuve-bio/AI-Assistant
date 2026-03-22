@@ -1,23 +1,6 @@
 from typing import Dict, Any, Tuple, Optional, List, Union
 from app.prompts.hypothesis_prompt import hypothesis_format_prompt, hypothesis_response
-from app.storage.redis import redis_manager
-from app.socket_manager import emit_to_user
-import logging
-import os
-import difflib
-import requests
-import time
-
-# Configure logging with more detailed format
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-from typing import Dict, Any, Tuple, Optional, List, Union
-from app.prompts.hypothesis_prompt import hypothesis_format_prompt, hypothesis_response
-from app.storage.redis import redis_manager
+# from app.storage.redis import redis_manager  # Redis disabled for testing
 from app.socket_manager import emit_to_user
 import logging
 import os
@@ -102,7 +85,6 @@ class HypothesisGeneration:
     def _step_1_enrich(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Step 1: Start Enrichment"""
         logger.info(f"Step 1: Starting enrichment with params: {params}")
-        logger.info(f"Step 1: Starting enrichment with params: {params}")
         url = f"{HYPOTHESIS_DATA_API}/enrich"
         response = self._make_api_request("POST", url, token, data=params)
         
@@ -118,11 +100,8 @@ class HypothesisGeneration:
         
         # Retry configuration: 6 attempts * 10 seconds = 60 seconds max wait
         max_retries = 6
-        retry_delay = 10 
-        
-        max_retries = 6
-        retry_delay = 10 
-        
+        retry_delay = 10
+
         url = f"{HYPOTHESIS_MAIN_ENDPOINT}/hypothesis"
         
         for attempt in range(max_retries):
@@ -156,9 +135,7 @@ class HypothesisGeneration:
     def _step_3_get_results(self, token: str, enrich_id: str) -> Dict[str, Any]:
         """Step 3: Get Enrichment Results"""
         logger.info(f"Step 3: Fetching results for enrich ID: {enrich_id}")
-        logger.info(f"Step 3: Fetching results for enrich ID: {enrich_id}")
         url = f"{HYPOTHESIS_DATA_API}/enrich"
-        response = self._make_api_request("GET", url, token, params={"id": enrich_id})
         response = self._make_api_request("GET", url, token, params={"id": enrich_id})
         
         valid, error = self._validate_response(response, required_keys=["GO_terms", "causal_gene"])
@@ -179,56 +156,6 @@ class HypothesisGeneration:
             
         return response
 
-    def get_by_hypothesis_id(self, token: str, hypothesis_id: str, user_id, query=None) -> Dict[str, Any]:
-        """
-        Retrieve hypothesis information by ID.
-        """
-        logger.info(f"Retrieving hypothesis by ID: {hypothesis_id}")
-        emit_to_user(user=user_id,message=f"Retrieving hypothesis by ID: {hypothesis_id}")
-        
-        try:   
-            if query: 
-                emit_to_user(user=user_id,message=f"Processing query with existing hypothesis...")
-                data = {
-                    "query": query,
-                    "hypothesis_id": hypothesis_id}
-                headers = {
-                    "Authorization": f"Bearer {token}"
-                }
-                # Use json=data
-                response = requests.post(HYPOTHESIS_CHAT_ENDPOINT, json=data, headers=headers)
-                response.raise_for_status()
-                data = response.json()
-                emit_to_user(user=user_id,message="Successfully processed query with hypothesis")
-                return data
-            else:
-                cached_graph = redis_manager.get_graph_by_id(hypothesis_id)
-                if cached_graph and cached_graph.get("graph_summary"):
-                    logger.info(f"Cache hit for graph_id={hypothesis_id} {cached_graph}")
-                    return {"text": cached_graph["graph_summary"]}
-
-                data = {
-                    "hypothesis_id": hypothesis_id
-                }
-
-                headers = {
-                    "Authorization": f"Bearer {token}"
-                }
-                try:
-                    # Use json=data
-                    response = requests.post(HYPOTHESIS_CHAT_ENDPOINT, json=data, headers=headers)
-                    response.raise_for_status()
-                    data = response.json()
-                    redis_manager.create_graph(graph_id=data['hypothesis_id'], graph_summary=data['summary'])
-                    logger.info(f"Cached generated graph for graph id {data['resource']['id']}")
-                    return data
-                except Exception as e:
-                    logger.error(f"Failed to retrieve hypothesis by ID: {response}")
-                    emit_to_user(user=user_id,message=f"Failed to retrieve hypothesis")
-                    return "NO summaries provided"
-        except Exception as e:
-            emit_to_user(user=user_id,message="Error retrieving hypothesis")
-            return None
 
     def get_by_hypothesis_id(self, token: str, hypothesis_id: str, user_id, query=None) -> Dict[str, Any]:
         """
@@ -253,10 +180,13 @@ class HypothesisGeneration:
                 emit_to_user(user=user_id,message="Successfully processed query with hypothesis")
                 return data
             else:
-                cached_graph = redis_manager.get_graph_by_id(hypothesis_id)
-                if cached_graph and cached_graph.get("graph_summary"):
-                    logger.info(f"Cache hit for graph_id={hypothesis_id} {cached_graph}")
-                    return {"text": cached_graph["graph_summary"]}
+                # ── Redis cache disabled for development/testing ─────────────────────
+                # Uncomment to re-enable caching in production:
+                # cached_graph = redis_manager.get_graph_by_id(hypothesis_id)
+                # if cached_graph and cached_graph.get("graph_summary"):
+                #     logger.info(f"Cache hit for graph_id={hypothesis_id} {cached_graph}")
+                #     return {"text": cached_graph["graph_summary"]}
+                # ─────────────────────────────────────────────────────────────────────
 
                 data = {
                     "hypothesis_id": hypothesis_id
@@ -270,8 +200,8 @@ class HypothesisGeneration:
                     response = requests.post(HYPOTHESIS_CHAT_ENDPOINT, json=data, headers=headers)
                     response.raise_for_status()
                     data = response.json()
-                    redis_manager.create_graph(graph_id=data['hypothesis_id'], graph_summary=data['summary'])
-                    logger.info(f"Cached generated graph for graph id {data['resource']['id']}")
+                    # redis_manager.create_graph(graph_id=data['hypothesis_id'], graph_summary=data['summary'])  # Redis disabled for testing
+                    # logger.info(f"Cached generated graph for graph id {data['resource']['id']}")
                     return data
                 except Exception as e:
                     logger.error(f"Failed to retrieve hypothesis by ID: {response}")
@@ -286,40 +216,48 @@ class HypothesisGeneration:
         Format user query using the LLM to extract relevant parameters.
         """
         logger.info(f"Formatting user query: {query}")
-        
+
         try:
             prompt = hypothesis_format_prompt.format(question=query)
             response = self.llm.generate(prompt)
-            
+
             if not response:
                 logger.warning("LLM returned empty response for query formatting")
-                emit_to_user(user=user_id,message="Warning: Empty response from query formatting")
-            else:
-                logger.info(f"Successfully formatted query with {len(response)} parameters")
-            
+                emit_to_user(user=user_id, message="Warning: Empty response from query formatting")
+                return {}
+
+            # Guard: ensure the LLM returned a dict, not a raw string
+            if isinstance(response, str):
+                logger.warning(f"LLM returned a string instead of a dict: {response}")
+                emit_to_user(user=user_id, message="Warning: Could not parse extraction response")
+                return {}
+
+            logger.info(f"Successfully formatted query with {len(response)} parameters")
+
             # POST-PROCESSING VALIDATION: Override LLM if it hallucinated the variant
             import re
-            # Extract all rs numbers from the original query (e.g., rs1421085, rs9999999)
             regex_variants = re.findall(r'\brs\d+\b', query, re.IGNORECASE)
-            
+
             if regex_variants:
-                # User explicitly mentioned a variant
-                user_variant = regex_variants[0]  # Use the first one
+                user_variant = regex_variants[0]
                 llm_variant = response.get("variant")
-                
+
                 if llm_variant and llm_variant.lower() != user_variant.lower():
-                    logger.warning(f"LLM hallucination detected! User said '{user_variant}' but LLM extracted '{llm_variant}'. Overriding.")
+                    logger.warning(
+                        f"LLM hallucination detected! User said '{user_variant}' but LLM extracted "
+                        f"'{llm_variant}'. Overriding."
+                    )
                     response["variant"] = user_variant
                     emit_to_user(user=user_id, message=f"Corrected variant extraction to {user_variant}")
                 elif not llm_variant:
-                    # LLM missed the variant entirely
                     logger.warning(f"LLM missed variant. Found '{user_variant}' via regex.")
                     response["variant"] = user_variant
-                
+
             return response
+
         except Exception as e:
             logger.error(f"Error formatting user query: {str(e)}")
-            emit_to_user(user=user_id,message=f"Error formatting query")
+            emit_to_user(user=user_id, message="Error formatting query")
             return {}
 
     def get_user_projects(self, token: str) -> List[Dict[str, Any]]:
@@ -363,10 +301,12 @@ class HypothesisGeneration:
         # Track which projects contain each component
         variant_found_in = []  # List of {project_id, project_name, variants, tissues}
         tissue_found_in = []   # List of {project_id, project_name, variants, tissues}
+        searched_project_names = [] # Names of all projects searched
             
         for project in projects:
             project_id = project.get("id")
             project_name = project.get("name")
+            searched_project_names.append(project_name)
             
             # Fetch project details
             url = f"{HYPOTHESIS_DATA_API}/projects"
@@ -443,7 +383,8 @@ class HypothesisGeneration:
                 "error_type": "variant_not_found",
                 "variant": variant,
                 "tissue": tissue,
-                "all_variants": all_variants
+                "all_variants": all_variants,
+                "searched_projects": searched_project_names
             }
         
         # Scenario 3: Mismatch (variant and tissue exist, but in different projects)
@@ -472,6 +413,12 @@ class HypothesisGeneration:
              # Fallback or ask for clarification? For now, error.
              pass
 
+        # Log the extracted parameters so they are visible in the Docker logs
+        logger.info(
+            f"Extracted parameters: variant='{params.get('variant')}', "
+            f"tissue='{params.get('tissue_name')}'"
+        )
+
         # Validate Project Context (Phase 3)
         validated_project_id, error_details = self.validate_project_context(token, params["variant"], params["tissue_name"])
         
@@ -495,11 +442,13 @@ class HypothesisGeneration:
              
              # Scenario 2: Variant not found anywhere
              elif error_type == "variant_not_found":
+                 searched_projects = ", ".join(error_details.get("searched_projects", []))
                  all_variants = error_details.get("all_variants", [])
                  variant_list = "\n".join([f"- {v['variant']} ({v['project_name']})" for v in all_variants])
                  
                  error_message = (
-                     f"No hypothesis is generated: Variant **{variant}** not found in any project.\n\n"
+                     f"No hypothesis is generated: I searched your projects ({searched_projects if searched_projects else 'none'}), "
+                     f"but variant **{variant}** was not found.\n\n"
                      f"**Available variants:**\n{variant_list if variant_list else '(none)'}"
                  )
                  return {"text": error_message}
@@ -576,8 +525,8 @@ class HypothesisGeneration:
         summary = step4_res["summary"]
         graph = step4_res["graph"]
         
-        # Cache result
-        redis_manager.create_graph(graph_id=hypothesis_id, graph_summary=summary)
+        # Cache result - Redis disabled for testing
+        # redis_manager.create_graph(graph_id=hypothesis_id, graph_summary=summary)
 
         return {
             "text": summary,
