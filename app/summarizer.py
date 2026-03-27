@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import Counter, defaultdict
 import re
 import traceback
 import json
@@ -7,7 +7,14 @@ import logging
 import os
 import requests
 from dotenv import load_dotenv
-from app.prompts.summarizer_prompts import SUMMARY_PROMPT, SUMMARY_PROMPT_BASED_ON_USER_QUERY,SUMMARY_PROMPT_CHUNKING,SUMMARY_PROMPT_CHUNKING_USER_QUERY
+from app.prompts.summarizer_prompts import (
+    GRAPH_BIOLOGICAL_INSIGHT_PROMPT,
+    GRAPH_ID_BIOLOGICAL_QA_PROMPT,
+    SUMMARY_PROMPT,
+    SUMMARY_PROMPT_BASED_ON_USER_QUERY,
+    SUMMARY_PROMPT_CHUNKING,
+    SUMMARY_PROMPT_CHUNKING_USER_QUERY,
+)
 from app.storage.redis import redis_manager
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -138,6 +145,179 @@ class Graph_Summarizer:
         if self.current_batch:
             grouped_batched_descriptions.append(self.current_batch)
         return grouped_batched_descriptions
+
+    @staticmethod
+    def _norm_text(value):
+        if value is None:
+            return "unknown"
+        text = str(value).strip().lower()
+        return text if text else "unknown"
+
+    @staticmethod
+    def _node_data(node):
+        if isinstance(node, dict):
+            payload = node.get("data", node)
+            return payload if isinstance(payload, dict) else {}
+        return {}
+
+    @staticmethod
+    def _edge_data(edge):
+        if isinstance(edge, dict):
+            payload = edge.get("data", edge)
+            return payload if isinstance(payload, dict) else {}
+        return {}
+
+    @staticmethod
+    def _category_name(raw_type):
+        aliases = {
+            "gene": "gene",
+            "transcript": "transcript",
+            "mrna": "transcript",
+            "rna": "transcript",
+            "protein": "protein",
+            "polypeptide": "protein",
+            "variant": "variant",
+            "snp": "variant",
+            "exon": "exon",
+        }
+        return aliases.get(Graph_Summarizer._norm_text(raw_type), Graph_Summarizer._norm_text(raw_type))
+
+    @staticmethod
+    def _sample_ids(ids, max_ids=3):
+        out = []
+        seen = set()
+        for item in ids:
+            sid = str(item).strip()
+            if sid and sid not in seen:
+                out.append(sid)
+                seen.add(sid)
+            if len(out) >= max_ids:
+                break
+        return out
+
+    @staticmethod
+    def _top_items(counter_like, top_n=5):
+        return sorted(counter_like.items(), key=lambda x: x[1], reverse=True)[:top_n]
+
+    def _normalize_graph_payload(self, raw_graph):
+        if raw_graph is None:
+            return {"nodes": [], "edges": []}
+
+        if isinstance(raw_graph, str):
+            try:
+                raw_graph = json.loads(raw_graph)
+            except json.JSONDecodeError:
+                raise ValueError("graph must be a dict or a valid JSON string")
+
+        if not isinstance(raw_graph, dict):
+            raise ValueError("graph must be a dict")
+
+        payload = raw_graph.get("graph", raw_graph)
+        if not isinstance(payload, dict):
+            payload = raw_graph
+
+        nodes = payload.get("nodes", []) or []
+        edges = payload.get("edges", []) or []
+        return {"nodes": nodes, "edges": edges}
+
+    def parse_graph_by_categories(self, raw_graph):
+        payload = self._normalize_graph_payload(raw_graph)
+        nodes = payload.get("nodes", [])
+        edges = payload.get("edges", [])
+
+        node_category_by_id = {}
+        node_ids_by_category = defaultdict(list)
+        subtype_breakdown = defaultdict(Counter)
+
+        for node in nodes:
+            d = self._node_data(node)
+            nid = str(d.get("id") or "").strip()
+            if not nid:
+                continue
+
+            category = self._category_name(d.get("type") or d.get("label") or "unknown")
+            node_category_by_id[nid] = category
+            node_ids_by_category[category].append(nid)
+
+            for key, value in d.items():
+                key_norm = self._norm_text(key)
+                if key_norm.endswith("_type") or "biotype" in key_norm:
+                    subtype_breakdown[f"{category}.{key_norm}"][self._norm_text(value)] += 1
+
+        relationship_counts = Counter()
+        motif_counts = Counter()
+        outgoing_by_category = defaultdict(Counter)
+
+        for edge in edges:
+            d = self._edge_data(edge)
+            src = str(d.get("source") or "").strip()
+            tgt = str(d.get("target") or "").strip()
+            rel = self._norm_text(d.get("label") or d.get("type") or d.get("relationship") or "related_to")
+
+            src_cat = node_category_by_id.get(src, "unknown")
+            tgt_cat = node_category_by_id.get(tgt, "unknown")
+
+            relationship_counts[rel] += 1
+            motif_counts[(src_cat, rel, tgt_cat)] += 1
+            outgoing_by_category[src_cat][rel] += 1
+
+        category_profiles = {}
+        for category in sorted(node_ids_by_category.keys()):
+            category_profiles[category] = {
+                "count": len(node_ids_by_category[category]),
+                "sample_ids": self._sample_ids(node_ids_by_category[category], max_ids=3),
+                "top_outgoing_relationships": self._top_items(outgoing_by_category[category], top_n=5),
+            }
+
+        top_motifs = [
+            {
+                "source_category": src,
+                "relationship": rel,
+                "target_category": tgt,
+                "support": support,
+            }
+            for (src, rel, tgt), support in motif_counts.most_common(12)
+        ]
+
+        return {
+            "categories": sorted(node_ids_by_category.keys()),
+            "category_profiles": category_profiles,
+            "top_relationship_labels": [name for name, _ in relationship_counts.most_common(10)],
+            "top_motifs": top_motifs,
+            "subtype_breakdown": {
+                key: self._top_items(value, top_n=8) for key, value in subtype_breakdown.items()
+            },
+            "exploration_starts": self._sample_ids(
+                node_ids_by_category.get("transcript", [])
+                or node_ids_by_category.get("gene", [])
+                or sum(
+                    [
+                        ids
+                        for _, ids in sorted(
+                            node_ids_by_category.items(),
+                            key=lambda x: len(x[1]),
+                            reverse=True,
+                        )
+                    ],
+                    [],
+                ),
+                max_ids=3,
+            ),
+        }
+
+    def generate_biological_insight_from_graph(self, graph, user_query=None):
+        parsed_graph = self.parse_graph_by_categories(graph)
+        prompt = GRAPH_BIOLOGICAL_INSIGHT_PROMPT.format(
+            user_query=user_query or "Explain this graph biologically for a researcher.",
+            parsed_graph_json=json.dumps(parsed_graph, indent=2),
+        )
+        text = self.llm.generate(prompt)
+        return {
+            "text": text,
+            "summary": text,
+            "parsed_graph": parsed_graph,
+            "method": "direct_graph_biological_insight",
+        }
 
     def graph_description(self, graph, limited_nodes=100):
         if not graph:
@@ -279,13 +459,12 @@ class Graph_Summarizer:
                 text = None
                 if query:
                     text = self.llm.generate(
-                        f"Based on this graph data:\n"
-                        f"Summary: {summary}\n"
-                        f"Total nodes: {node_count}\n"
-                        f"Total edges: {edge_count}\n"
-                        f"Node types: {node_count_by_label}\n"
-                        f"Edge types: {edge_count_by_label}\n\n"
-                        f"Question: {query}\nAnswer:"
+                        GRAPH_ID_BIOLOGICAL_QA_PROMPT.format(
+                            graph_summary=summary,
+                            node_count_by_label=json.dumps(node_count_by_label),
+                            edge_count_by_label=json.dumps(edge_count_by_label),
+                            user_query=query,
+                        )
                     )
                 return {"summary": enhanced_summary, "text": text}
             else:
@@ -307,6 +486,15 @@ class Graph_Summarizer:
                     graph_id=graph_id, query=user_query, token=token
                 )
                 logger.info(f"summary of the graph {graph_id} is {result}")
+                return result
+
+            # Parallel path for direct graph payloads (without graph_id)
+            if graph:
+                result = self.generate_biological_insight_from_graph(
+                    graph=graph,
+                    user_query=user_query,
+                )
+                logger.info("Generated biological insight summary from direct graph payload")
                 return result
 
             if graph:
@@ -340,5 +528,9 @@ class Graph_Summarizer:
                 return {"text": prev_summery}
                 # cleaned_desc = self.clean_and_format_response(prev_summery)
                 # return cleaned_desc
-        except:
+        except Exception:
             traceback.print_exc()
+            return {
+                "summary": None,
+                "text": "Failed to summarize the graph.",
+            }

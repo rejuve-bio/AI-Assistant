@@ -50,6 +50,9 @@ def process_query(current_user_id, auth_token):
         resource = context.get("resource", "annotation")
         url = context.get("url",None)
         graph = data.get("graph", None)
+        if not graph and "graph" in request.files:
+            graph = request.files["graph"].read().decode("utf-8")
+            
         json_query = data.get("json_query", None)
 
 
@@ -133,6 +136,7 @@ def process_query(current_user_id, auth_token):
             user_id=user_id,
             token=auth_token,
             graph_id=graph_id,
+            graph=graph,
             resource=resource,
             content_ids=content_ids,
             urls=url

@@ -62,6 +62,7 @@ class AgentState(TypedDict):
     error: str
     content_ids: Optional[List[str]]
     graph_id: Optional[str]
+    graph: Optional[Dict[str, Any]]
     urls: Optional[List[str]]
     resource: Optional[Any]
     pipeline_details: Dict[str, Any]
@@ -201,6 +202,7 @@ class AiAssistance:
         user_id = state["user_id"]
         content_ids = state.get("content_ids")
         graph_id = state.get("graph_id")
+        graph = state.get("graph")
         urls = state.get("urls")
 
         # Fetch content summaries
@@ -249,7 +251,7 @@ class AiAssistance:
         agents_to_run = []
         
         # Add content retrieval agent if any content references exist
-        if content_ids or urls or graph_id:
+        if content_ids or urls or graph_id or graph:
             agents_to_run.append("content_retrieval_agent")
 
         # Map query types to agent routes
@@ -499,6 +501,7 @@ class AiAssistance:
         user_id = state.get("user_id")
         token = state.get("token")
         graph_id = state.get("graph_id")
+        graph = state.get("graph")
         urls = state.get("urls")
         content_ids = state.get("content_ids")
         resource = state.get("resource")
@@ -511,22 +514,26 @@ class AiAssistance:
 
         try:
             # Graph summary
-            if graph_id:
-                logger.info(f"Retrieving graph summary for graph_id: {graph_id}")
+            if graph_id or graph:
+                logger.info(
+                    "Retrieving graph summary for %s",
+                    f"graph_id: {graph_id}" if graph_id else "direct graph payload",
+                )
                 graph_summary = self.answer_from_graph_summaries(
                     query=query, 
                     user_id=user_id,
+                    resource=resource,
+                    token=token,
                     graph_id=graph_id, 
-                    token=token, 
-                    resource=resource
+                    graph=graph
                 )
                 if graph_summary:
                     graph_text = graph_summary.get("text", str(graph_summary)) if isinstance(graph_summary, dict) else str(graph_summary)
                     content_parts.append({
-                        "source": f"graph:{graph_id}",
+                        "source": f"graph:{graph_id}" if graph_id else "graph:direct",
                         "content": graph_text
                     })
-                    sources.append(f"graph:{graph_id}")
+                    sources.append(f"graph:{graph_id}" if graph_id else "graph:direct")
 
             # Galaxy urls
             if urls:
@@ -813,6 +820,7 @@ class AiAssistance:
         token: str,
         content_ids: Optional[List[str]] = None,
         graph_id: Optional[str] = None,
+        graph: Optional[Dict[str, Any]] = None,
         urls: Optional[List[str]] = None,
         resource: Optional[Any] = None,
     ) -> Dict[str, Any]:
@@ -835,6 +843,7 @@ class AiAssistance:
                 "error": "",
                 "content_ids": content_ids,
                 "graph_id": graph_id,
+                "graph": graph,
                 "urls": urls,
                 "resource": resource,
                 "pipeline_details": {},
@@ -883,6 +892,7 @@ class AiAssistance:
         user_id: str, 
         token: str, 
         graph_id: Optional[str] = None,
+        graph: Optional[Dict[str, Any]] = None,
         urls: Optional[List[str]] = None,
         content_ids: Optional[List[str]] = None,
         resource: Optional[Any] = None,
@@ -956,6 +966,7 @@ class AiAssistance:
                         token,
                         content_ids=content_ids,
                         graph_id=graph_id,
+                        graph=graph,
                         urls=urls,
                         resource=resource,
                     )
@@ -1035,7 +1046,7 @@ class AiAssistance:
                 "json_format": None
             }
 
-    def answer_from_graph_summaries(self, query, user_id, resource, token, graph_id):
+    def answer_from_graph_summaries(self, query, user_id, resource, token, graph_id=None, graph=None):
         """Legacy method for backward compatibility"""
         logger.info(
             f"Answer from graph summaries called with query: {query}, user_id: {user_id}, "
@@ -1045,7 +1056,7 @@ class AiAssistance:
         try:
             if resource == "annotation":
                 summary_result = self.graph_summarizer.summary(
-                    token=token, graph_id=graph_id, user_query=query
+                    token=token, graph_id=graph_id, graph=graph, user_query=query
                 )
                 summary_text = summary_result.get('text', '') if isinstance(summary_result, dict) else summary_result
                 emit_to_user(user=user_id, message="Analyzing...")
