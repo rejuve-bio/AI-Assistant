@@ -529,7 +529,10 @@ By setting the `"resource"` field to `"orchestrator"`, we ensure the central bra
 
 As the AI Assistant matures, the next phase of development focuses on moving from **data analysis** to **translational impact and proactive discovery**. This section outlines the planned addition of two high-impact agents designed specifically to empower Rejuve Biotech researchers: the **Clinical Trial Matcher Agent** and the **Literature Monitor Agent**.
 
-### 4.1 Clinical Trial Matcher Agent
+### 4.1 Clinical Trial Matcher Agent 
+> [!NOTE]
+> **Status: Implemented.** You can view the code for this agent here: [Clinical Trial Matcher Agent Branch](https://github.com/kirubel-Nigussie/AI-Assistant/tree/Clinical-Trial-Matcher-Agent)
+
 **Type:** Orchestrator-Integrated Tool (Synchronous LLM Agent)
 
 #### What It Does
