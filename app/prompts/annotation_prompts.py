@@ -39,6 +39,22 @@ Let's think step by step to extract the relevant information needed to build the
   - "Find transcript ENST00000441515" → NO relationships needed (just the transcript)
   - "Show me exons of transcript ENST00000441515" → ADD includes relationship
 
+### CRITICAL ID vs PROPERTIES RULES:
+- **Database ID**: If the query asks for a specific database ID (like "ensg00000186092"), put it in the `id` field
+- **Property Value**: If the query asks for a name/identifier (like "BRCA1", "ENST00000441515"), put it in `properties`
+- **Examples:**
+  - "Find gene BRCA1" → `id: ""`, `properties: {{"gene_name": "BRCA1"}}`
+  - "Find gene with ID ensg00000186092" → `id: "ensg00000186092"`, `properties: {{}}`
+  - "Find transcript ENST00000441515" → `id: ""`, `properties: {{"transcript_id": "ENST00000441515"}}`
+
+### RELATIONSHIP INFERENCE RULES:
+- **Only add relationships when the query explicitly asks for connected information**
+- **Examples:**
+  - "Find gene BRCA1" → NO relationships needed (just the gene)
+  - "Show me transcripts of gene BRCA1" → ADD transcribed_to relationship
+  - "Find transcript ENST00000441515" → NO relationships needed (just the transcript)
+  - "Show me exons of transcript ENST00000441515" → ADD includes relationship
+
 ### RESPONSE FORMAT:
 Provide your response in the following format:
 

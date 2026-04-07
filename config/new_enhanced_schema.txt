@@ -1,0 +1,60 @@
+### Schema:
+
+#### Node Properties:
+- **gene**
+  - `id`: STRING (Database ID, e.g., "ensg00000290825") - ONLY use when querying by database ID
+  - `label`: STRING Example: "gene"
+  - `gene_type`: STRING Example: "lncRNA"
+  - `chr`: STRING Example: "chr1"
+  - `start`: STRING Example: "11869"
+  - `end`: STRING Example: "14409"
+  - `gene_name`: STRING Example: "DDX11L2" - Use for querying by gene name
+  - `synonyms`: STRING Example: "["HGNC:37102", "DEAD/H (Asp-Glu-Ala-Asp/His) box p"]"
+
+- **transcript**
+  - `id`: STRING (Database ID, e.g., "enst00000456328") - ONLY use when querying by database ID
+  - `label`: STRING Example: "transcript"
+  - `transcript_id`: STRING Example: "ENST00000456328.2" - Use for querying by transcript ID
+  - `transcript_name`: STRING Example: "DDX11L2-202" - Use for querying by transcript name
+  - `transcript_type`: STRING Example: "lncRNA"
+  - `chr`: STRING Example: "chr1"
+  - `start`: STRING Example: "11869"
+  - `end`: STRING Example: "14409"
+  - `gene_name`: STRING Example: "DDX11L2"
+
+- **exon**
+  - `id`: STRING (Database ID, e.g., "ense00003521162") - ONLY use when querying by database ID
+  - `label`: STRING Example: "exon"
+  - `gene_id`: STRING Example: "ENSG00000127054"
+  - `exon_id`: STRING Example: "ENSE00003521162" - Use for querying by exon ID
+  - `exon_number`: STRING Example: "13" - Use for querying by exon number
+  - `chr`: STRING Example: "chr1"
+  - `transcript_id`: STRING Example: "ENST00000540437"
+  - `start`: STRING Example: "1313035"
+  - `end`: STRING Example: "1313124"
+
+#### Relationships:
+(:gene)-[:transcribed_to]->(:transcript)
+(:transcript)-[:transcribed_from]->(:gene)
+(:transcript)-[:includes]->(:exon)
+
+#### Important Rules:
+1. **Database ID vs Property Value:**
+   - `id` field: ONLY use for actual database identifiers (lowercase, like "ensg00000290825")
+   - `properties`: Use for searchable values (like gene names, transcript IDs, exon numbers)
+
+2. **When to Use Each:**
+   - Query by database ID: Put the ID in `id` field, leave `properties` empty
+   - Query by name/identifier: Put the value in `properties`, leave `id` empty
+
+3. **Examples:**
+   - "Find gene BRCA1" → `properties: {"gene_name": "BRCA1"}`, `id: ""`
+   - "Find gene with ID ensg00000186092" → `id: "ensg00000186092"`, `properties: {}`
+   - "Find transcript ENST00000441515" → `properties: {"transcript_id": "ENST00000441515"}`, `id: ""`
+
+#### Notes:
+- All relationships are directional and have no properties
+- Gene types include: lncRNA, protein_coding, miRNA, pseudogene, snRNA, etc.
+- Transcript types include: lncRNA, protein_coding, miRNA, pseudogene, processed_transcript, etc.
+- Exons are numbered and belong to specific transcripts
+- Genes can have multiple transcripts, and transcripts can have multiple exons

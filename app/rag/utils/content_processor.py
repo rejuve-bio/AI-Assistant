@@ -1,5 +1,5 @@
 import fitz  # PyMuPDF
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters.character import RecursiveCharacterTextSplitter
 import trafilatura
 import requests
 from bs4 import BeautifulSoup

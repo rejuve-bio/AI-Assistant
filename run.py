@@ -1,13 +1,30 @@
 import eventlet
 eventlet.monkey_patch()
 
-from app import create_app
-from dotenv import load_dotenv
+
 import os
 import logging
+from logging.handlers import TimedRotatingFileHandler
+from app import create_app
+from dotenv import load_dotenv
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Creating log directory 
+log_dir = "/AI-Assistant/logfiles"
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, "Assistant.log")
+
+handler = TimedRotatingFileHandler(
+    filename=log_file,
+    when="midnight",
+    interval=1,
+    backupCount=7
+)
+formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+handler.setFormatter(formatter)
+
+logger = logging.getLogger()
+logger.setLevel(logging.DEBUG)
+logger.addHandler(handler)
 
 load_dotenv()
 port = int(os.getenv('FLASK_PORT', 5003))

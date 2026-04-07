@@ -1,6 +1,5 @@
 from app.prompts.rag_prompts import RETRIEVE_PROMPT
 from app.storage.memory_layer import MemoryManager
-from app.storage.history_manager import HistoryManager
 import traceback
 import os
 import logging
@@ -19,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION", "SITE_INFORMATION")
+VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION")
 USER_COLLECTION = os.getenv("USER_COLLECTION", "CHAT_MEMORY")
 CONTENT_LIMIT = 10  # Total content limit (PDFs + web content)
 
@@ -35,7 +34,7 @@ class RAG:
         self.llm = llm
         self.client = qdrant_client
         self.content_processor = ContentProcessor()
-        self.content_analyzer = ContentAnalyzer()
+        self.content_analyzer = ContentAnalyzer(self.llm)
         logger.info(
             "RAG initialized with LLM and shared Qdrant client/embedding model."
         )
@@ -128,10 +127,12 @@ class RAG:
             return_response = {"text": None, "resource": {}}
 
             # Check for duplicate files
+            logger.info("checking if user files is already saved")
             pdf_files = mongo_db_manager.get_user_content_files(user_id, "pdf")
             if any(f.get("filename") == file.filename for f in pdf_files):
                 return_response["text"] = "PDF already exists."
                 return_response["resource"]["filename"] = file.filename
+                logger.info("file is found from the mongodb data")
                 return return_response
 
             # Check quota
@@ -145,7 +146,7 @@ class RAG:
                 return return_response
 
             content_id = str(uuid.uuid4())
-            upload_folder = "storage/pdfs"
+            upload_folder = "pdfs_uploaded/pdfs"
             os.makedirs(upload_folder, exist_ok=True)
             pdf_path = os.path.join(upload_folder, f"{content_id}.pdf")
             file.save(pdf_path)
@@ -170,6 +171,7 @@ class RAG:
             full_text = self.content_processor.extract_text_from_pdf(pdf_path)
             analysis = self.content_analyzer.analyze_content(full_text, "pdf")
 
+            logger.info("Analyzing content for keywords, summary adn suggested questions")
             file_analysis = {
                 "content_id": content_id,
                 "filename": file.filename,
@@ -183,7 +185,7 @@ class RAG:
             }
 
             # Store in Qdrant using custom chunking logic
-            self.save_doc_to_rag(
+            saved = self.save_doc_to_rag(
                 data=None,
                 collection_name=user_id,
                 is_content=True,
@@ -192,27 +194,29 @@ class RAG:
                 user_id=user_id,
                 content_id=content_id,
             )
-
-            # Add PDF metadata to the database using unified table
-            mongo_db_manager.add_content_file(
-                user_id=user_id,
-                content_id=content_id,
-                content_type="pdf",
-                filename=file.filename,
-                num_pages=num_pages,
-                file_size=file_size,
-                upload_time=upload_time,
-                summary=analysis.get("summary"),
-                keywords=str(analysis.get("keywords", [])),
-                topics=str(analysis.get("topics", [])),
-                suggested_questions=str(analysis.get("suggested_questions", [])),
-            )
+            
+            if saved:
+                logger.info("content saved to Qdrant")
+                # Add PDF metadata to the database using unified table
+                mongo_db_manager.add_content_file(
+                    user_id=user_id,
+                    content_id=content_id,
+                    content_type="pdf",
+                    filename=file.filename,
+                    num_pages=num_pages,
+                    file_size=file_size,
+                    upload_time=upload_time,
+                    summary=analysis.get("summary"),
+                    keywords=str(analysis.get("keywords", [])),
+                    topics=str(analysis.get("topics", [])),
+                    suggested_questions=str(analysis.get("suggested_questions", [])),
+                )
 
             # Add memory for the upload
             MemoryManager(self.llm).add_memory(f"pdf file : {file.filename}", user_id)
 
             # Add a history entry for the PDF upload
-            HistoryManager().create_history(
+            mongo_db_manager.create_history(
                 user_id=user_id,
                 user_message=f"Uploaded PDF: {file.filename}",
                 assistant_answer=f"PDF '{file.filename}' uploaded successfully.",
@@ -281,7 +285,7 @@ class RAG:
             }
 
             # Store in Qdrant using custom chunking logic
-            self.save_doc_to_rag(
+            saved = self.save_doc_to_rag(
                 data=None,
                 collection_name=user_id,
                 is_web=True,
@@ -290,28 +294,30 @@ class RAG:
                 content_id=content_id,
             )
 
-            # Add web content metadata to the database
-            mongo_db_manager.add_content_file(
-                user_id=user_id,
-                content_id=content_id,
-                content_type="web",
-                url=url,
-                title=web_content["metadata"].get("title") or None,
-                author=web_content["metadata"].get("author") or None,
-                publish_date=None,
-                file_size=None,
-                upload_time=upload_time,
-                summary=analysis.get("summary"),
-                keywords=str(analysis.get("keywords", [])),
-                topics=str(analysis.get("topics", [])),
-                suggested_questions=str(analysis.get("suggested_questions", [])),
-            )
+            if saved:
+                logger.info("content saved to Qdrant")
+                # Add web content metadata to the database
+                mongo_db_manager.add_content_file(
+                    user_id=user_id,
+                    content_id=content_id,
+                    content_type="web",
+                    url=url,
+                    title=web_content["metadata"].get("title") or None,
+                    author=web_content["metadata"].get("author") or None,
+                    publish_date=None,
+                    file_size=None,
+                    upload_time=upload_time,
+                    summary=analysis.get("summary"),
+                    keywords=str(analysis.get("keywords", [])),
+                    topics=str(analysis.get("topics", [])),
+                    suggested_questions=str(analysis.get("suggested_questions", [])),
+                )
 
             # Add memory for the upload
             MemoryManager(self.llm).add_memory(f"web content : {url}", user_id)
 
             # Add a history entry for the web content upload
-            HistoryManager().create_history(
+            mongo_db_manager.create_history(
                 user_id=user_id,
                 user_message=f"Added web content: {url}",
                 assistant_answer=f"Web content from '{url}' added successfully.",
@@ -331,7 +337,7 @@ class RAG:
         self,
         query_str: str,
         user_id=None,
-        filter=None,
+        filter=False,
         content_ids=None,
     ):
         """
@@ -376,13 +382,46 @@ class RAG:
         """
         try:
             logger.info("Generating result for the query.")
-            result1 = self.query(query_str=query_str, user_id=user_id)
-            result2 = self.query(
-                query_str=query_str,
-                user_id=user_id,
-                filter=True,
-                content_ids=content_ids,
-            )
+                
+            result1 = []  # Initialize as empty
+            result2 = []
+            content_sources = []
+            
+            if content_ids:
+                # Only query user collection with content_ids
+                logger.info(f"Generating result for the query from the specified content {content_ids}.")
+                result2 = self.query(
+                    query_str=query_str,
+                    user_id=user_id,
+                    filter=True,
+                    content_ids=content_ids,
+                )
+                
+                if not isinstance(content_ids, list):
+                    content_ids = [content_ids]
+
+                for content_id in content_ids:
+                    doc = mongo_db_manager.get_content_file_by_id(
+                        user_id=user_id,
+                        content_id=content_id
+                    )
+
+                    if not doc:
+                        continue
+
+                    content_sources.append({
+                        "content_id": content_id,
+                        "filename": doc.get("filename"),
+                        "summary": doc.get("summary"),
+                        "topics": doc.get("topics", ""),
+                        "suggested_questions": doc.get("suggested_questions", "")
+                    })
+            else:
+                # No content_ids - query general
+                result1 = self.query(query_str=query_str, user_id=user_id)
+
+                  
+            logger.info(f"Query executed successfully. result1 and result2 obtained. {result1} {result2}")
             # Combine both results (general + user content)
             combined_results = []
             if isinstance(result1, list):
@@ -426,7 +465,7 @@ class RAG:
             )
 
             prompt = RETRIEVE_PROMPT.format(
-                query=query_str, retrieved_content=retrieved_blob
+                query=query_str, retrieved_content=combined_results
             )
             result = self.llm.generate(prompt)
             logger.info("Result generated successfully.")
