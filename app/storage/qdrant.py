@@ -272,7 +272,7 @@ class Qdrant:
                 if query_filter is None else None
             )
             logger.info(f"Found {len(hits.points)} hits in collection '{collection_name}'")
-            return [h.payload for h in hits.points]
+            return [{"payload": h.payload, "score": h.score} for h in hits.points]
 
         except Exception as e:
             logger.error(

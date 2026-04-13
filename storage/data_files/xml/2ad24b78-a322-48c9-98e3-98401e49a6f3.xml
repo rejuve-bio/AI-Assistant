@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<data>
+    <records>
+        <record>
+            <name>Alice</name>
+            <age>25</age>
+            <score>85</score>
+            <revenue>10000</revenue>
+        </record>
+        <record>
+            <name>Bob</name>
+            <age>30</age>
+            <score>92</score>
+            <revenue>12000</revenue>
+        </record>
+        <record>
+            <name>Charlie</name>
+            <age>28</age>
+            <score>78</score>
+            <revenue>15000</revenue>
+        </record>
+        <record>
+            <name>David</name>
+            <age>35</age>
+            <score>95</score>
+            <revenue>18000</revenue>
+        </record>
+        <record>
+            <name>Eva</name>
+            <age>22</age>
+            <score>88</score>
+            <revenue>11000</revenue>
+        </record>
+    </records>
+</data>

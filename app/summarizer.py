@@ -28,7 +28,11 @@ class Graph_Summarizer:
             self.max_token = 2000
         elif self.llm.__class__.__name__ == "OpenAIModel":
             self.max_token = 100000
-        self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        try:
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        except Exception as e:
+            logger.warning(f"Failed to initialize tiktoken tokenizer: {e}. Using fallback token estimation.")
+            self.tokenizer = None
         self.kg_service_url = os.getenv('ANNOTATION_SERVICE_URL')
 
     def clean_and_format_response(self, desc):
@@ -122,12 +126,19 @@ class Graph_Summarizer:
 
     def num_tokens_from_string(self, encoding_name: str):
         """Calculates the number of tokens in each description and groups them into batches under a token limit."""
-        encoding = tiktoken.get_encoding(encoding_name)
         accumulated_tokens = 0
         grouped_batched_descriptions = []
         self.current_batch = []
+
         for i, desc in enumerate(self.description):
-            desc_tokens = len(encoding.encode(desc))
+            if self.tokenizer:
+                try:
+                    desc_tokens = len(self.tokenizer.encode(desc))
+                except Exception:
+                    desc_tokens = len(desc) // 4  # Fallback estimate
+            else:
+                desc_tokens = len(desc) // 4  # Fallback estimate
+                
             if accumulated_tokens + desc_tokens <= self.max_token:
                 self.current_batch.append(desc)
                 accumulated_tokens += desc_tokens

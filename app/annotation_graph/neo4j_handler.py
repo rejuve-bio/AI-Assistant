@@ -45,28 +45,54 @@ class Neo4jConnection:
         Returns:
             List[Tuple[str, float]]: List of tuples containing distinct similar property values and their similarity scores
         """
-        logger.info(f"Searching for similar values for '{search_value}' in label '{label}' with property key '{property_key}'.")
+        # logger.info(f"Searching for similar values for '{search_value}' in label '{label}' with property key '{property_key}'.")
 
+        # --- OPTION A: APOC Fuzzy Matching (Requires APOC Plugin) ---
+        # query = f"""
+        # MATCH (n:{label})
+        # WITH DISTINCT n.{property_key} as value
+        # WHERE value IS NOT NULL
+        # WITH collect(value) as all_values
+        # UNWIND all_values as value
+        # WITH DISTINCT value, apoc.text.levenshteinSimilarity(
+        #     LOWER(value), 
+        #     LOWER($search_value)
+        # ) AS similarity
+        # WHERE similarity > $threshold
+        # RETURN value, similarity
+        # ORDER BY similarity DESC
+        # LIMIT {top_k}
+        # """
+
+        # --- OPTION B: Standard Cypher Matching (No Plugin Required) ---
+        # Fallback to simple substring matching if APOC is not available.
+        # This is less "fuzzy" (won't catch 'BRAC1' for 'BRCA1') but works on all Neo4j instances.
+        logger.info(f"Searching for values containing '{search_value}' in label '{label}' with property key '{property_key}'.")
+        
         query = f"""
         MATCH (n:{label})
-        WITH DISTINCT n.{property_key} as value
-        WHERE value IS NOT NULL
-        WITH collect(value) as all_values
-        UNWIND all_values as value
-        WITH DISTINCT value, apoc.text.levenshteinSimilarity(
-            LOWER(value), 
-            LOWER($search_value)
-        ) AS similarity
-        WHERE similarity > $threshold
-        RETURN value, similarity
-        ORDER BY similarity DESC
+        WHERE toLower(n.{property_key}) CONTAINS toLower($search_value)
+        RETURN DISTINCT n.{property_key} as value, 1.0 as similarity
         LIMIT {top_k}
         """
         
         try:
             driver = self.get_driver()
             with driver.session() as session:
-                logger.debug("Executing Neo4j query...")
+                # Debug: Check if any nodes with this label exist
+                count_query = f"MATCH (n:{label}) RETURN count(n) as node_count"
+                count_res = session.run(count_query)
+                node_count = count_res.single()["node_count"]
+                logger.info(f"DEBUG: Total nodes with label '{label}': {node_count}")
+
+                if node_count > 0:
+                    # Debug: Sample some values
+                    sample_query = f"MATCH (n:{label}) WHERE n.{property_key} IS NOT NULL RETURN n.{property_key} as val LIMIT 3"
+                    sample_res = session.run(sample_query)
+                    samples = [r["val"] for r in sample_res]
+                    logger.info(f"DEBUG: Sample values for '{property_key}': {samples}")
+
+                logger.debug(f"Executing Neo4j query: {query}")
                 result = session.run(
                     query,
                     search_value=search_value,

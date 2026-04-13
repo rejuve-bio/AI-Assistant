@@ -1,0 +1,35 @@
+{
+  "run_id": "aa314f97938b4146bb60235dc743c572",
+  "inputs": {
+    "files": [
+      "storage/data_files/csv/29d419f9-685f-4611-a5c5-1956b29b980b.csv"
+    ],
+    "urls": [],
+    "instructions": "Compute correlation heatmap and summary statistics for all numeric columns"
+  },
+  "params": {
+    "timeout": 120,
+    "max_memory_mb": 2048
+  },
+  "environment": {
+    "limits": {
+      "timeout": 120,
+      "max_memory_mb": 2048
+    },
+    "llm": "GeminiModel"
+  },
+  "artifacts": [
+    {
+      "id": "e1af80e3-960b-4be9-9ecc-616980b49af5",
+      "type": "figure",
+      "name": "heatmap",
+      "format": "png",
+      "path_or_url": "tmp/artifacts/aa314f97938b4146bb60235dc743c572/figures/heatmap.png",
+      "bytes_size": 61632,
+      "metadata": {
+        "step": "generated",
+        "filename": "heatmap.png"
+      }
+    }
+  ]
+}

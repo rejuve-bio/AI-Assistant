@@ -10,6 +10,9 @@ data
 test.py
 rag_user_pdf.json
 *.lock
+tmp/
+storage/data_files/
+doc/
 pdfs_uploaded
 *.env
 .infisical.json

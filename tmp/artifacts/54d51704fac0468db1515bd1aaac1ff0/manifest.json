@@ -1,0 +1,35 @@
+{
+  "run_id": "54d51704fac0468db1515bd1aaac1ff0",
+  "inputs": {
+    "files": [],
+    "urls": [
+      "https://en.wikipedia.org/wiki/List_of_countries_by_population"
+    ],
+    "instructions": "Extract all tables from this webpage and compute mean of numeric columns. Plot a bar chart of the top 10 countries by population."
+  },
+  "params": {
+    "timeout": 120,
+    "max_memory_mb": 2048
+  },
+  "environment": {
+    "limits": {
+      "timeout": 120,
+      "max_memory_mb": 2048
+    },
+    "llm": "GeminiModel"
+  },
+  "artifacts": [
+    {
+      "id": "ff83c9a6-706d-47ff-8362-35ad07bf7d02",
+      "type": "figure",
+      "name": "top_10_population",
+      "format": "png",
+      "path_or_url": "tmp/artifacts/54d51704fac0468db1515bd1aaac1ff0/figures/top_10_population.png",
+      "bytes_size": 34240,
+      "metadata": {
+        "step": "generated",
+        "filename": "top_10_population.png"
+      }
+    }
+  ]
+}

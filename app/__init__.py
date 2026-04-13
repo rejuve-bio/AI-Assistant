@@ -70,6 +70,60 @@ def initialize_database():
         print(f"Error initializing database: {str(e)}")
         traceback.print_exc()
 
+def populate_neo4j_if_empty():
+    """Auto-populate local Neo4j from populate_db.cypher if empty and in local mode."""
+    annotation_service_url = os.getenv("ANNOTATION_SERVICE_URL")
+    if annotation_service_url:
+        logger.info("ANNOTATION_SERVICE_URL is set - using External API mode. Skipping local Neo4j population.")
+        return
+
+    logger.info("No ANNOTATION_SERVICE_URL found - running in Local Neo4j mode. Checking if DB needs population...")
+
+    try:
+        from app.annotation_graph.neo4j_handler import Neo4jConnection
+        neo4j = Neo4jConnection(
+            uri=os.getenv("NEO4J_URI"),
+            username=os.getenv("NEO4J_USERNAME"),
+            password=os.getenv("NEO4J_PASSWORD"),
+        )
+        driver = neo4j.get_driver()
+
+        with driver.session() as session:
+            result = session.run("MATCH (n) RETURN count(n) AS total")
+            total = result.single()["total"]
+
+        if total > 0:
+            logger.info(f"Neo4j DB already has {total} nodes. Skipping population.")
+            return
+
+        logger.info("Neo4j DB is empty. Populating from populate_db.cypher...")
+
+        # Locate populate_db.cypher in the root directory (AI-Assistant)
+        cypher_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "populate_db.cypher")
+        with open(cypher_path, "r") as f:
+            content = f.read()
+
+        # Split on semicolons to get individual statements
+        statements = [
+            stmt.strip()
+            for stmt in content.split(";")
+            if stmt.strip() and not stmt.strip().startswith("//")
+        ]
+
+        with driver.session() as session:
+            for stmt in statements:
+                # Remove comment-only lines within the statement
+                clean = "\n".join(
+                    line for line in stmt.splitlines() if not line.strip().startswith("//")
+                ).strip()
+                if clean:
+                    session.run(clean)
+
+        logger.info(f"Successfully populated Neo4j with {len(statements)} Cypher statements from populate_db.cypher.")
+
+    except Exception as e:
+        logger.error(f"Failed to auto-populate Neo4j: {e}. The annotation_graph tool may not return results.")
+        traceback.print_exc()
 
 def create_app():
     """Creates and configures the Flask application."""
@@ -80,6 +134,12 @@ def create_app():
     config = load_config()
     app.config.update(config)
     logger.info("App config updated with loaded configuration")
+
+    # Code execution defaults from environment with safe fallbacks
+    app.config["CODE_EXEC_TIMEOUT"] = int(os.getenv("CODE_EXEC_TIMEOUT", "60"))
+    app.config["CODE_EXEC_MAX_MEM_MB"] = int(os.getenv("CODE_EXEC_MAX_MEM_MB", "1024"))
+    app.config["CODE_EXEC_ALLOW_NETWORK"] = os.getenv("CODE_EXEC_ALLOW_NETWORK", "false").lower() == "true"
+    app.config["ARTIFACT_TTL_MINUTES"] = int(os.getenv("ARTIFACT_TTL_MINUTES", "120"))
 
     # Apply rate limiting to the entire app (200 requests per minute)
     limiter = Limiter(
@@ -96,6 +156,9 @@ def create_app():
         enhanced_schema_path="./config/new_enhanced_schema.txt",
     )
     logger.info("SchemaHandler initialized")
+
+    # Automatically populate Neo4j if it is empty and in Local Mode
+    populate_neo4j_if_empty()
 
     # Initialize Basic LLM model
     basic_llm_provider = os.getenv("BASIC_LLM_PROVIDER")
@@ -119,26 +182,18 @@ def create_app():
     )
     logger.info("ADVANCED LLM model initialized successfully")
 
-    embedding = os.getenv("EMBEDDING_MODEL","sentence_transformer")
-    if embedding=="openai":
-        openai_api_key = os.getenv("OPENAI_API_KEY")
-        if not openai_api_key:
-            raise ValueError("OpenAI API key not found")
-        else:
-            embedding_model = openai_embedding_model
-            vector_size = get_embedding_vector_size(embedding_model)
+    # Initialize Embedding Model
+    embedding_provider = os.getenv("EMBEDDING_PROVIDER", "local").lower()
+    logger.info(f"Initializing embedding model with provider: {embedding_provider}")
 
-    elif embedding=="gemini":
-        gemini_api_key = os.getenv("GEMINI_API_KEY")
-        if not gemini_api_key:
-            raise ValueError("OpenAI API key not found")
-        else:
-            embedding_model = gemini_embedding_model
-            vector_size = get_embedding_vector_size(embedding_model)
-    elif embedding =="sentence_transformer":
+    if embedding_provider == "openai":
+        embedding_model = openai_embedding_model
+    elif embedding_provider == "gemini":
+        embedding_model = gemini_embedding_model
+    else:
         embedding_model = sentence_transformer_embedding_model
-        vector_size = get_embedding_vector_size(embedding_model)
 
+    vector_size = get_embedding_vector_size(embedding_model)
     qdrant_client = Qdrant(embedding_model=embedding_model, vector_size=vector_size)
     app.config["qdrant_client"] = qdrant_client
     app.config["embedding_model"] = embedding_model
@@ -146,39 +201,79 @@ def create_app():
 
     # Check for SITE_INFORMATION collection and upload sample data if needed
     try:
+        # Check if collection exists and has data
+        collection_exists = False
+        is_empty = True
+        
         try:
-            collection = os.getenv("VECTOR_COLLECTION")
-            qdrant_client.client.get_collection(collection_name=collection)
-            logger.info(
-                "collection already exists, skipping population data"
-            )
-        except Exception as e:
-            # Check if the error is because the collection does not exist
-            if "not found" in str(e).lower() or "404" in str(e):
+            collection_info = qdrant_client.client.get_collection("SITE_INFORMATION")
+            collection_exists = True
+            if collection_info.points_count > 0:
+                is_empty = False
                 logger.info(
-                    "collection not found, uploading sample web data to qdrant db"
+                    f"SITE_INFORMATION collection exists with {collection_info.points_count} points. Skipping population."
                 )
-                with open("sample_data.json") as data:
-                    sample_site_data = json.load(data)
-
-                # Initialize a RAG instance to handle the data upload
-                rag = RAG(
-                    advanced_llm,
-                    qdrant_client=qdrant_client,
-                )
-                # Upload the data to the specified collection
-                rag.save_doc_to_rag(
-                    data=sample_site_data,
-                    collection_name=collection,
-                    is_content=False,
-                )
-                logger.info("Successfully populated SITE INFORMATION collection.")
             else:
-                # Log any other unexpected errors during collection check
-                logger.error(
-                    f"An unexpected error occurred when checking for SITE INFORMATION collection: {e}",
-                    exc_info=True,
-                )
+                logger.info("SITE_INFORMATION collection exists but is empty.")
+        except Exception as e:
+            if "not found" in str(e).lower() or "404" in str(e):
+                logger.info("SITE_INFORMATION collection not found.")
+            else:
+                logger.error(f"Error checking collection status: {e}")
+                raise e
+
+        # Trigger ingestion if collection is missing OR empty
+        if not collection_exists or is_empty:
+            logger.info("Starting population of SITE_INFORMATION collection...")
+            
+            with open("sample_data.json") as data:
+                sample_site_data = json.load(data)
+
+            # Initialize a RAG instance to handle the data upload
+            rag = RAG(
+                advanced_llm,
+                qdrant_client=qdrant_client,
+            )
+            # Upload the data to the specified collection
+            rag.save_doc_to_rag(
+                data=sample_site_data,
+                collection_name="SITE_INFORMATION",
+                is_content=False,
+            )
+            logger.info("Successfully populated SITE_INFORMATION collection.")
+
+        # --- CONTEXT SHARING TEST DATA INGESTION ---
+        # Force re-ingestion for testing purposes
+        # logger.info("Starting population of SITE_INFORMATION collection with TEST DATA...")
+        
+        # Delete existing collection to ensure clean test state
+        # try:
+        #     qdrant_client.client.delete_collection("SITE_INFORMATION")
+        #     logger.info("Deleted existing SITE_INFORMATION collection for testing.")
+        # except Exception as e:
+        #     logger.warning(f"Could not delete collection (might not exist): {e}")
+
+        # with open("test_context_sharing_sample_data.json") as data:
+        #     test_data = json.load(data)
+            
+        # rag = RAG(
+        #     advanced_llm,
+        #     qdrant_client=qdrant_client,
+        # )
+        
+        # rag.save_doc_to_rag(
+        #     data=test_data,
+        #     collection_name="SITE_INFORMATION",
+        #     is_content=False,
+        # )
+        # logger.info("Successfully populated SITE_INFORMATION collection with TEST DATA.")
+        # -------------------------------------------
+
+    except Exception as e:
+        logger.error(
+            f"An error occurred during the application setup for SITE_INFORMATION: {e}",
+            exc_info=True,
+        )
 
     except Exception as e:
         logger.error(

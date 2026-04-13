@@ -7,6 +7,7 @@ import os
 import difflib
 import requests
 import time
+import re
 
 # Configure logging with more detailed format
 logging.basicConfig(
@@ -53,7 +54,7 @@ class HypothesisGeneration:
         try:
             logger.debug(f"Making {method} request to {url} with data {data} and params {params}")
             if data and method.upper() == "POST":
-                # Use json=data to send application/json
+                # Use json=data to send application/json as expected by newer backend
                 response = requests.post(url, json=data, headers=headers)    
             elif method.upper() == "GET":
                 response = requests.get(url, params=params, headers=headers)
@@ -63,11 +64,10 @@ class HypothesisGeneration:
                 return {"error": f"Unsupported HTTP method: {method}"}
                 
             response.raise_for_status()
-            data = response.json()
-            return data 
+            return response.json()
         except requests.exceptions.RequestException as e:
             logger.error(f"API request failed: {e}")
-            return {"error": f"Request failed Please Try Again"}
+            return {"error": f"Request failed: {str(e)}"}
 
     def _validate_response(self, response: Dict[str, Any], required_keys: List[str] = []) -> Tuple[bool, str]:
         """
@@ -100,13 +100,11 @@ class HypothesisGeneration:
         
         # Retry configuration: 6 attempts * 10 seconds = 60 seconds max wait
         max_retries = 6
-        retry_delay = 10
-
+        retry_delay = 10 
+        
         url = f"{HYPOTHESIS_MAIN_ENDPOINT}/hypothesis"
         
         for attempt in range(max_retries):
-        
-         
             response = self._make_api_request("GET", url, token, params={"id": hypothesis_id})
             
             valid, error = self._validate_response(response, required_keys=["status"])
@@ -156,108 +154,117 @@ class HypothesisGeneration:
             
         return response
 
-
-    def get_by_hypothesis_id(self, token: str, hypothesis_id: str, user_id, query=None) -> Dict[str, Any]:
+    def get_by_hypothesis_id(self, token: str, hypothesis_id: str, user_id: str, query: str = None) -> Dict[str, Any]:
         """
         Retrieve hypothesis information by ID.
         """
         logger.info(f"Retrieving hypothesis by ID: {hypothesis_id}")
-        emit_to_user(user=user_id,message=f"Retrieving hypothesis by ID: {hypothesis_id}")
+        emit_to_user(user=user_id, message=f"Retrieving hypothesis by ID: {hypothesis_id}")
         
         try:   
             if query: 
-                emit_to_user(user=user_id,message=f"Processing query with existing hypothesis...")
+                emit_to_user(user=user_id, message=f"Processing query with existing hypothesis...")
                 data = {
                     "query": query,
-                    "hypothesis_id": hypothesis_id}
+                    "hypothesis_id": hypothesis_id
+                }
                 headers = {
                     "Authorization": f"Bearer {token}"
                 }
-                # Use json=data
                 response = requests.post(HYPOTHESIS_CHAT_ENDPOINT, json=data, headers=headers)
                 response.raise_for_status()
                 data = response.json()
-                emit_to_user(user=user_id,message="Successfully processed query with hypothesis")
+                emit_to_user(user=user_id, message="Successfully processed query with hypothesis")
                 return data
             else:
                 # ── Redis cache disabled for development/testing ─────────────────────
-                # Uncomment to re-enable caching in production:
                 # cached_graph = redis_manager.get_graph_by_id(hypothesis_id)
                 # if cached_graph and cached_graph.get("graph_summary"):
-                #     logger.info(f"Cache hit for graph_id={hypothesis_id} {cached_graph}")
+                #     logger.info(f"Cache hit for graph_id={hypothesis_id}")
                 #     return {"text": cached_graph["graph_summary"]}
                 # ─────────────────────────────────────────────────────────────────────
 
                 data = {
                     "hypothesis_id": hypothesis_id
                 }
-
                 headers = {
                     "Authorization": f"Bearer {token}"
                 }
                 try:
-                    # Use json=data
                     response = requests.post(HYPOTHESIS_CHAT_ENDPOINT, json=data, headers=headers)
                     response.raise_for_status()
                     data = response.json()
-                    # redis_manager.create_graph(graph_id=data['hypothesis_id'], graph_summary=data['summary'])  # Redis disabled for testing
-                    # logger.info(f"Cached generated graph for graph id {data['resource']['id']}")
+                    # redis_manager.create_graph(graph_id=data['hypothesis_id'], graph_summary=data['summary']) # Redis disabled
                     return data
                 except Exception as e:
-                    logger.error(f"Failed to retrieve hypothesis by ID: {response}")
-                    emit_to_user(user=user_id,message=f"Failed to retrieve hypothesis")
-                    return "NO summaries provided"
+                    logger.error(f"Failed to retrieve hypothesis by ID: {str(e)}")
+                    emit_to_user(user=user_id, message=f"Failed to retrieve hypothesis")
+                    return {"text": "No summaries provided"}
         except Exception as e:
-            emit_to_user(user=user_id,message="Error retrieving hypothesis")
-            return None
+            logger.error(f"Error in get_by_hypothesis_id: {str(e)}")
+            emit_to_user(user=user_id, message="Error retrieving hypothesis")
+            return {"text": "Error retrieving hypothesis"}
 
-    def format_user_query(self, query: str, user_id) -> Dict[str, Any]:
+    def format_user_query(self, query: str, user_id: str) -> Dict[str, Any]:
         """
-        Format user query using the LLM to extract relevant parameters.
+        Format user query using standard NLP/Regex extraction to ensure robust parameter handling.
+        This avoids LLM JSON formatting issues by directly extracting entities.
         """
-        logger.info(f"Formatting user query: {query}")
-
+        logger.info(f"Formatting user query via NLP/Regex: {query}")
+        
         try:
-            prompt = hypothesis_format_prompt.format(question=query)
-            response = self.llm.generate(prompt)
+            extracted = {}
 
-            if not response:
-                logger.warning("LLM returned empty response for query formatting")
-                emit_to_user(user=user_id, message="Warning: Empty response from query formatting")
-                return {}
-
-            # Guard: ensure the LLM returned a dict, not a raw string
-            if isinstance(response, str):
-                logger.warning(f"LLM returned a string instead of a dict: {response}")
-                emit_to_user(user=user_id, message="Warning: Could not parse extraction response")
-                return {}
-
-            logger.info(f"Successfully formatted query with {len(response)} parameters")
-
-            # POST-PROCESSING VALIDATION: Override LLM if it hallucinated the variant
-            import re
-            regex_variants = re.findall(r'\brs\d+\b', query, re.IGNORECASE)
-
+            # 1. Extract Variant (rsID)
+            # Matches rs12345, rs 12345, etc.
+            regex_variants = re.findall(r'\brs\s*(\d+)\b', query, re.IGNORECASE)
             if regex_variants:
-                user_variant = regex_variants[0]
-                llm_variant = response.get("variant")
+                # Reconstruct the standard 'rs' + digits format
+                extracted["variant"] = f"rs{regex_variants[0]}"
+            else:
+                 # Fallback: check for full 'rs123' if the above split logic missed it for keys
+                 direct_match = re.findall(r'rs\d+', query, re.IGNORECASE)
+                 if direct_match:
+                     extracted["variant"] = direct_match[0]
 
-                if llm_variant and llm_variant.lower() != user_variant.lower():
-                    logger.warning(
-                        f"LLM hallucination detected! User said '{user_variant}' but LLM extracted "
-                        f"'{llm_variant}'. Overriding."
+            # 2. Extract Tissue/Project-Specific Terms
+            if "variant" in extracted:
+                # naive removal of the variant to find the "rest" of the string as potential tissue
+                candidate_text = re.sub(r'rs\d+', '', query, flags=re.IGNORECASE)
+                candidate_text = re.sub(r'generate hypothesis for', '', candidate_text, flags=re.IGNORECASE)
+                candidate_text = re.sub(r' in ', '', candidate_text, flags=re.IGNORECASE)
+                # Clean up
+                candidate_text = candidate_text.strip().strip('.').strip()
+                if candidate_text:
+                    extracted["tissue_name"] = candidate_text
+            
+            # Fallback to LLM if simple regex failed to produce both results
+            if "variant" not in extracted or "tissue_name" not in extracted:
+                 try:
+                    # Use a simpler prompt that asks for "Variant;Tissue" string format
+                    simple_prompt = (
+                         f"Extract the genetic variant ID (rs#) and the tissue name from this query: '{query}'. "
+                         "Return ONLY the format: VARIAN: <rsID>, TISSUE: <TissueName>. Do not output JSON."
                     )
-                    response["variant"] = user_variant
-                    emit_to_user(user=user_id, message=f"Corrected variant extraction to {user_variant}")
-                elif not llm_variant:
-                    logger.warning(f"LLM missed variant. Found '{user_variant}' via regex.")
-                    response["variant"] = user_variant
+                    response_text = self.llm.generate(simple_prompt)
+                    
+                    # Parse the text response
+                    if response_text:
+                        if "variant" not in extracted:
+                            v_match = re.search(r'VARIANT:\s*(rs\d+)', response_text, re.IGNORECASE)
+                            if v_match: extracted["variant"] = v_match.group(1)
+                        
+                        if "tissue_name" not in extracted:
+                             t_match = re.search(r'TISSUE:\s*([^\n,.]+)', response_text, re.IGNORECASE)
+                             if t_match: extracted["tissue_name"] = t_match.group(1).strip()
+                 except Exception as e:
+                     logger.error(f"Fallback NLP extraction failed: {e}")
 
-            return response
-
+            logger.info(f"Extracted parameters: {extracted}")
+            return extracted
         except Exception as e:
             logger.error(f"Error formatting user query: {str(e)}")
-            emit_to_user(user=user_id, message="Error formatting query")
+            emit_to_user(user=user_id, message=f"Error formatting query")
             return {}
 
     def get_user_projects(self, token: str) -> List[Dict[str, Any]]:
@@ -301,12 +308,10 @@ class HypothesisGeneration:
         # Track which projects contain each component
         variant_found_in = []  # List of {project_id, project_name, variants, tissues}
         tissue_found_in = []   # List of {project_id, project_name, variants, tissues}
-        searched_project_names = [] # Names of all projects searched
             
         for project in projects:
             project_id = project.get("id")
             project_name = project.get("name")
-            searched_project_names.append(project_name)
             
             # Fetch project details
             url = f"{HYPOTHESIS_DATA_API}/projects"
@@ -321,7 +326,9 @@ class HypothesisGeneration:
                 
             # Helper for flexible matching (lowercase, replace spaces/dashes with underscores)
             def normalize(s: str) -> str:
-                normalized = s.lower().strip().replace(" ", "_").replace("-", "_")
+                # First, strip punctuation and whitespace properly
+                # This fixes issues like ", adipose tissue" or "- adipose"
+                normalized = s.strip(" ,.-_").lower().replace(" ", "_").replace("-", "_")
                 # Strip common biological suffixes (e.g., "adipose_subcutaneous_tissue" -> "adipose_subcutaneous")
                 normalized = normalized.replace("_tissue", "").replace("_cell", "").replace("_cells", "")
                 return normalized
@@ -383,8 +390,7 @@ class HypothesisGeneration:
                 "error_type": "variant_not_found",
                 "variant": variant,
                 "tissue": tissue,
-                "all_variants": all_variants,
-                "searched_projects": searched_project_names
+                "all_variants": all_variants
             }
         
         # Scenario 3: Mismatch (variant and tissue exist, but in different projects)
@@ -411,20 +417,14 @@ class HypothesisGeneration:
         # Ensure we have the minimum required fields
         if "variant" not in params or "tissue_name" not in params:
              # Fallback or ask for clarification? For now, error.
-             pass
-
-        # Log the extracted parameters so they are visible in the Docker logs
-        logger.info(
-            f"Extracted parameters: variant='{params.get('variant')}', "
-            f"tissue='{params.get('tissue_name')}'"
-        )
+             return {"text": f"Please provide both a genetic variant (rs#) and a tissue/phenotype. Found: {params}"}
 
         # Validate Project Context (Phase 3)
         validated_project_id, error_details = self.validate_project_context(token, params["variant"], params["tissue_name"])
         
         if validated_project_id:
              params["project_id"] = validated_project_id
-             logger.info(f"Project context valid ation successful. Using project ID: {validated_project_id}")
+             logger.info(f"Project context validation successful. Using project ID: {validated_project_id}")
              # Add project info to user message
              emit_to_user(user=user_id, message=f"Found related project: {validated_project_id}")
         else:
@@ -442,13 +442,11 @@ class HypothesisGeneration:
              
              # Scenario 2: Variant not found anywhere
              elif error_type == "variant_not_found":
-                 searched_projects = ", ".join(error_details.get("searched_projects", []))
                  all_variants = error_details.get("all_variants", [])
                  variant_list = "\n".join([f"- {v['variant']} ({v['project_name']})" for v in all_variants])
                  
                  error_message = (
-                     f"No hypothesis is generated: I searched your projects ({searched_projects if searched_projects else 'none'}), "
-                     f"but variant **{variant}** was not found.\n\n"
+                     f"No hypothesis is generated: Variant **{variant}** not found in any project.\n\n"
                      f"**Available variants:**\n{variant_list if variant_list else '(none)'}"
                  )
                  return {"text": error_message}

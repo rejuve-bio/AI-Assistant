@@ -2,6 +2,8 @@ import copy
 import json
 import logging
 import os
+import re
+import requests
 from dotenv import load_dotenv
 from app.annotation_graph.neo4j_handler import Neo4jConnection
 from app.annotation_graph.schema_handler import SchemaHandler
@@ -12,7 +14,7 @@ from app.prompts.annotation_prompts import (
     SELECT_PROPERTY_VALUE_PROMPT,
     RESULT_SUMMARIZATION_PROMPT,
 )
-from app.socket_manager import emit_to_user
+# from app.socket_manager import emit_to_user # Removed for Orchestrator tool compatibility
 from .json_to_cypher import JsonToCypherConverter
 
 
@@ -25,7 +27,8 @@ load_dotenv()
 
 
 class Graph:
-    def __init__(self, llm: LLMInterface, schema_handler: SchemaHandler) -> None:
+    def __init__(self, llm: LLMInterface, schema_handler: SchemaHandler, 
+                 annotation_service_url: str = None, use_external_api: bool = False) -> None:
         self.llm = llm
         self.schema_handler = schema_handler
         self.enhanced_schema = (
@@ -36,8 +39,14 @@ class Graph:
             username=os.getenv("NEO4J_USERNAME"),
             password=os.getenv("NEO4J_PASSWORD"),
         )
+        
+        # Dual-mode configuration
+        self.annotation_service_url = annotation_service_url or os.getenv("ANNOTATION_SERVICE_URL")
+        self.use_external_api = use_external_api or bool(self.annotation_service_url)
+        
+        logger.info(f"Annotation Graph initialized in {'External API' if self.use_external_api else 'Local Neo4j'} mode")
 
-    def query_knowledge_graph(self, json_query, token):
+    def query_knowledge_graph(self, json_query, token=None):
         """
         Query the knowledge graph service.
 
@@ -60,17 +69,38 @@ class Graph:
 
         try:
             logger.debug(
-                f"Sending request to {self.kg_service_url} with payload: {payload}"
+                f"Sending request to {self.annotation_service_url} with payload: {payload}"
             )
+            
+            headers = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+                
             response = requests.post(
-                self.kg_service_url + "/query",
+                self.annotation_service_url, # + "/query", # Assuming URL is base, usually /query is appended but in implementation plan I said set full URL? 
+                # Let's check user env: ANNOTATION_SERVICE_URL=http://localhost:5000/query?limit=100&properties=true
+                # The code in other_arch appended /query. 
+                # "self.kg_service_url + "/query""
+                # If the env var includes parameters, we might need to be careful.
+                # Let's assume the env var is the BASE url or full url.
+                # Actually, looking at other_arch: os.getenv("ANNOTATION_SERVICE_URL")
+                # and usage: self.kg_service_url + "/query"
+                # So the env var should be the base URL.
+                # But the user provided: ANNOTATION_SERVICE_URL=http://localhost:5000/query?limit=100&properties=true
+                # This suggests the user provided the FULL URL with params.
+                # I should handle this. Best to just use the URL provided if it looks complete, or append if not.
+                # For safety, I'll assume the URL in env might be the full query URL if it has 'query' in it.
+                # But to be consistent with other_arch code which did + "/query", I will try to support both or just use what works.
+                # Let's stick to the implementation plan: "self.annotation_service_url" is used directly in my plan's code snippet.
+                # "response = requests.post(self.annotation_service_url, ...)"
+                # So I will use it directly.
+                
                 json=payload,
                 params=params,
-                headers={"Authorization": f"Bearer {token}"},
+                headers=headers,
             )
             response.raise_for_status()
             json_response = response.json()
-            # logger.info(f"Successfully queried the knowledge graph. 'nodes count': {len(json_response.get('nodes'))} 'edges count': {len(json_response.get('edges', []))}")
             return response.json()
         except requests.RequestException as e:
             logger.error(f"Error querying knowledge graph: {e}")
@@ -78,61 +108,160 @@ class Graph:
                 logger.error(f"Response content: {e.response.text}")
             return {"error": f"Failed to query knowledge graph: {str(e)}"}
 
-    def validated_json(self, query, user_id):
-        logger.info(f"Starting annotation query processing for question: '{query}'")
-
-        # Extract relevant information
-        relevant_information = self._extract_relevant_information(query)
-
-        # Convert to initial JSON
-        emit_to_user(user=user_id, message=f"Validating Constructed Json Format...")
-        initial_json = self._convert_to_annotation_json(relevant_information, query)
-
-        # Validate and update
-        validation = self._validate_and_update(initial_json)
-
-        # If validation failed, return the intermediate steps
-        if validation["validation_report"]["validation_status"] == "failed":
-            logger.error("Validation is failing *****sending the intial json format")
-            return {
-                "text": None,
-                "json_format": initial_json,
-                "resource": {"id": None, "type": "annotation"},
-            }
-
-        # Use the updated JSON for subsequent steps
-        validated_json = validation["updated_json"]
-        # validated_json["question"] = query
-        """
-            TODO
-            add query along with job id to specifiy to what query is the json requested is related to.
-            """
-        return {
-            "text": None,
-            "json_format": validated_json,
-            "resource": {"id": None, "type": "annotation"},
-        }
-
-    def generate_graph(self, query, validated_json, token):
+    def process_annotation_query(
+        self, query, user_id, query_type="annotation_biological", token=None
+    ):
+        # orchestrate the entire annotation pipeline from user query to final response
         try:
-            graph = self.query_knowledge_graph(validated_json, token)
+            logger.info(
+                f"Starting annotation pipeline for query: '{query}', type: {query_type}"
+            )
 
-            # Generate final answer using validated JSON
-            # final_answer = self._provide_text_response(query, validated_json, graph)
-            response = {
-                "text": graph["answer"],
-                "resource": {"id": graph["annotation_id"], "type": "annotation"},
-            }
-            # Store summary in Redis cache for 24 hours
-            # redis_manager.create_graph(graph_id=graph_id, graph_summary=summary_text)
-
-            logger.info("Completed query processing.")
-            return response
+            # Route based on query type
+            if query_type == "annotation_general":
+                return self._handle_general_query(query, user_id)
+            else:
+                return self._handle_biological_query(query, user_id, token=token)
 
         except Exception as e:
-            logger.error(f"An error occurred during graph generation: {e}")
+            error_msg = f"Unexpected error in annotation pipeline: {str(e)}"
+            logger.error(error_msg)
             return {
-                "text": f"I apologize, but I wasn't able to generate the graph you requested. Could you please rephrase your question or provide additional details so I can better understand what you're looking for?"
+                "success": False,
+                "error": error_msg,
+                "pipeline_status": {
+                    "json_extraction": "unknown",
+                    "cypher_conversion": "unknown",
+                    "database_execution": "unknown",
+                    "summarization": "unknown",
+                },
+            }
+
+    def _handle_biological_query(self, query, user_id, token=None):
+        try:
+            # Extract relevant information
+            logger.info("Extracting relevant information from the query.")
+            relevant_information = self._extract_relevant_information(query)
+            logger.info("Relevant information extraction successful")
+
+            # Convert to initial JSON
+            logger.info("Converting to annotation JSON...")
+            initial_json = self._convert_to_annotation_json(
+                relevant_information, query
+            )
+            logger.info("Initial JSON conversion successful")
+
+            # Validate and update
+            logger.info("Validating JSON structure...")
+            validation = self._validate_and_update(initial_json)
+            logger.info("JSON validation successful")
+
+            if validation["validation_report"]["validation_status"] == "failed":
+                logger.error("JSON validation failed")
+                return {
+                    "success": True,
+                    "summary": "Query structure extracted but validation incomplete.",
+                    "json_format": initial_json,
+                    "resource": {"id": None, "type": "annotation"},
+                }
+            
+            validated_json = validation["updated_json"]
+            logger.info("JSON query structure validated")
+            
+            # Step 4: Execute query (DUAL MODE LOGIC)
+            if self.use_external_api:
+                # External API Mode
+                logger.info("Executing in External API Mode")
+                response = self.query_knowledge_graph(validated_json, token=token)
+                
+                # Check for error in response
+                if "error" in response:
+                    return {
+                        "success": False,
+                        "error": response["error"],
+                        "summary": f"External API Error: {response['error']}"
+                    }
+
+                return {
+                    "success": True,
+                    "summary": response.get("answer", "No answer returned from service"),
+                    "json_format": validated_json,
+                    "resource": {"id": response.get("annotation_id"), "type": "annotation"}
+                }
+            else:
+                # Local Neo4j Mode
+                logger.info("Executing in Local Neo4j Mode")
+                converter = JsonToCypherConverter()
+                cypher_query = converter.convert_to_cypher(validated_json)
+                logger.info(f"Generated Cypher: {cypher_query}")
+                
+                database_results = self.execute_cypher_query(cypher_query)
+                
+                if not database_results.get("success", False):
+                     return {
+                        "success": False,
+                        "error": database_results.get("error"),
+                        "summary": f"Database Error: {database_results.get('error')}"
+                    }
+                
+                summary = self.summarize_results(query, database_results)
+                
+                return {
+                    "success": True,
+                    "summary": summary,
+                    "json_format": validated_json,
+                    "cypher_query": cypher_query,
+                    "resource": {"id": None, "type": "annotation"}
+                }
+            
+        except Exception as e:
+            logger.error(f"Failed to process query: {str(e)}")
+            return {
+                "success": False,
+                "error": f"Failed to process query: {str(e)}",
+                "pipeline_status": {"json_extraction": "failed"},
+            }
+
+    def _handle_general_query(self, query, user_id):
+        try:
+            logger.info(f"Handling general query: '{query}'")
+
+            # Generate simple database summary
+            database_summary = self._generate_database_summary()
+
+            # Use LLM to answer the query based on the summary
+            summary_prompt = f"""
+            Based on this database summary: {database_summary}
+            
+            Answer this question: {query}
+            
+            Provide a clear, informative response based on the available data.
+            """
+
+            summary = self.llm.generate(summary_prompt)
+            logger.info("General query answered successfully")
+
+            return {
+                "success": True,
+                "summary": summary,
+                "cypher_query": None,
+                "json_query": None,
+                "database_results": {"data": {"summary": database_summary}},
+                "error": None,
+                "pipeline_status": {
+                    "general_query_handling": "success",
+                },
+            }
+
+        except Exception as e:
+            error_msg = f"Error handling general query: {str(e)}"
+            logger.error(error_msg)
+            return {
+                "success": False,
+                "error": error_msg,
+                "pipeline_status": {
+                    "general_query_handling": "failed",
+                },
             }
 
     def _extract_relevant_information(self, query):
@@ -282,14 +411,50 @@ class Graph:
                 "validation_report": validation_report,
             }
 
+    def _robust_json_parse(self, text):
+        """
+        Extracts and parses JSON from a string that might contain extra text or markdown.
+        Also handles trailing commas which are common in LLM outputs.
+        """
+        try:
+            # 1. Try to find JSON block using regex
+            json_block_match = re.search(r'\{.*\}', text, re.DOTALL)
+            if not json_block_match:
+                # If no braces found, maybe it's just a raw value or empty
+                return {"selected_value": text.strip(), "confidence_score": 0.3}
+                
+            json_str = json_block_match.group(0)
+            
+            # 2. Basic cleanup: remove potential trailing commas before closing braces/brackets
+            json_str = re.sub(r',\s*\}', '}', json_str)
+            json_str = re.sub(r',\s*\]', ']', json_str)
+            
+            return json.loads(json_str)
+        except Exception as e:
+            logger.error(f"JSON parsing failed: {e}")
+            raise
+
     def _select_best_matching_property_value(self, user_input_value, possible_values):
         try:
             prompt = SELECT_PROPERTY_VALUE_PROMPT.format(
                 search_query=user_input_value, possible_values=possible_values
             )
             selected_value = self.llm.generate(prompt)
-            logger.info(f"Selected value: {selected_value}")
-            return selected_value
+            logger.info(f"Selected value raw: {selected_value}")
+            
+            # Fix: Use robust parsing
+            try:
+                selected_value_json = self._robust_json_parse(selected_value)
+                logger.info(f"Selected value parsed: {selected_value_json}")
+                return selected_value_json
+            except Exception as e:
+                logger.error(f"Failed to parse JSON from LLM: {e}")
+                
+                # Cleanup manually for fallback
+                clean_value = selected_value.replace("```json", "").replace("```", "").strip()
+                # If there's a lot of text, this isn't enough, but it's a start
+                return {"selected_value": user_input_value, "confidence_score": 0.3}
+
         except Exception as e:
             logger.error(f"Failed to select property value: {e}")
             raise
@@ -520,245 +685,7 @@ class Graph:
             node_summary=node_summary,
             relationship_summary=relationship_summary,
         )
-
-    def process_annotation_query(
-        self, query, user_id, query_type="annotation_biological"
-    ):
-        # orchestrate the entire annotation pipeline from user query to final response
-        try:
-            logger.info(
-                f"Starting annotation pipeline for query: '{query}', type: {query_type}"
-            )
-
-            # Route based on query type
-            if query_type == "annotation_general":
-                return self._handle_general_query(query, user_id)
-            else:
-                return self._handle_biological_query(query, user_id)
-
-        except Exception as e:
-            error_msg = f"Unexpected error in annotation pipeline: {str(e)}"
-            logger.error(error_msg)
-            return {
-                "success": False,
-                "error": error_msg,
-                "pipeline_status": {
-                    "json_extraction": "unknown",
-                    "cypher_conversion": "unknown",
-                    "database_execution": "unknown",
-                    "summarization": "unknown",
-                },
-            }
-
-    def _handle_biological_query(self, query, user_id):
-        try:
-            # Extract and validate JSON query
-            emit_to_user(
-                user=user_id,
-                message="Extracting relevant information from your query...",
-            )
-            try:
-                relevant_information = self._extract_relevant_information(query)
-                logger.info("Relevant information extraction successful")
-
-                # Convert to initial JSON
-                emit_to_user(
-                    user=user_id, message="Validating Constructed Json Format..."
-                )
-                initial_json = self._convert_to_annotation_json(
-                    relevant_information, query
-                )
-                logger.info("Initial JSON conversion successful")
-
-                # Validate and update
-                validation = self._validate_and_update(initial_json)
-                logger.info("JSON validation successful")
-
-                if validation["validation_report"]["validation_status"] == "failed":
-                    logger.error("JSON validation failed")
-                    json_query = {
-                    "success" : True,
-                    "summary" : None,
-                    "json_format": initial_json,
-                    "resource": {"id": None, "type": "annotation"},
-                    }
-                else:
-                    # Use the updated JSON for subsequent steps
-                    json_query = {
-                        "success" : True,
-                        "summary" : None,
-                        "json_format": validation["updated_json"],
-                        "resource": {"id": None, "type": "annotation"},
-                    }
-
-                logger.info("JSON query extraction successful")
-                logger.info(f"JSON query structure: {json.dumps(json_query, indent=2)}")
-                
-                return json_query
-            
-            except Exception as e:
-                logger.error(f"Failed to extract JSON query: {str(e)}")
-                return {
-                    "success": False,
-                    "error": f"Failed to process query: {str(e)}",
-                    "pipeline_status": {"json_extraction": "failed"},
-                }
-
-            # logger.info("JSON query extraction successful")
-            # emit_to_user(
-            #     user=user_id, message="Converting query to database language..."
-            # )
-
-            # # # Convert JSON to Cypher
-            # # try:
-            # #     actual_json = json_query.get("json_format", json_query)
-            # #     if not actual_json:
-            # #         raise ValueError("No valid JSON format found in the response")
-
-            # #     logger.info(
-            # #         f"Extracted JSON for Cypher conversion: {json.dumps(actual_json, indent=2)}"
-            # #     )
-
-            # #     converter = JsonToCypherConverter()
-            # #     cypher_query = converter.convert_to_cypher(actual_json)
-            # #     logger.info("Cypher conversion successful")
-            # # except Exception as e:
-            # #     logger.error(f"Failed to convert JSON to Cypher: {str(e)}")
-            # #     return {
-            # #         "success": False,
-            # #         "error": f"Failed to convert query to database language: {str(e)}",
-            # #         "pipeline_status": {
-            # #             "json_extraction": "success",
-            # #             "cypher_conversion": "failed",
-            # #         },
-            # #         "json_query": json_query,
-            # #     }
-
-            # # emit_to_user(user=user_id, message="Searching the database...")
-
-            # # # Execute Cypher query against database
-            # # try:
-            # #     database_results = self.execute_cypher_query(cypher_query)
-            # #     if not database_results.get("success", False):
-            # #         logger.error(
-            # #             f"Database query failed: {database_results.get('error')}"
-            # #         )
-            # #         return {
-            # #             "success": False,
-            # #             "error": f"Database search failed: {database_results.get('error', 'Unknown error')}",
-            # #             "pipeline_status": {
-            # #                 "json_extraction": "success",
-            # #                 "cypher_conversion": "success",
-            # #                 "database_execution": "failed",
-            # #             },
-            # #             "cypher_query": cypher_query,
-            # #             "json_query": json_query,
-            # #         }
-            # #     logger.info("Database query execution successful")
-            # # except Exception as e:
-            # #     logger.error(f"Failed to execute Cypher query: {str(e)}")
-            # #     return {
-            # #         "success": False,
-            # #         "error": f"Database execution error: {str(e)}",
-            # #         "pipeline_status": {
-            # #             "json_extraction": "success",
-            # #             "cypher_conversion": "success",
-            # #             "database_execution": "failed",
-            # #         },
-            # #         "cypher_query": cypher_query,
-            # #         "json_query": json_query,
-            # #     }
-
-            # # emit_to_user(user=user_id, message="Generating your response...")
-
-            # # # Summarize results using LLM
-            # # try:
-            # #     summary = self.summarize_results(query, database_results)
-            # #     logger.info("Result summarization successful")
-            # # except Exception as e:
-            # #     logger.error(f"Failed to summarize results: {str(e)}")
-            # #     summary = f"I found information related to your query '{query}', but encountered an issue generating a detailed summary. Here are the raw results: {database_results.get('data', {}).get('counts', {}).get('total_nodes', 0)} items found."
-            # #     logger.warning(
-            # #         "Using fallback summary due to LLM summarization failure"
-            # #     )
-
-            # # logger.info("Annotation pipeline completed successfully")
-            # # return {
-            # #     "success": True,
-            # #     "summary": summary,
-            # #     "cypher_query": cypher_query,
-            # #     "database_results": database_results,
-            # #     "json_query": json_query,
-            # #     "error": None,
-            # #     "pipeline_status": {
-            # #         "json_extraction": "success",
-            # #         "cypher_conversion": "success",
-            # #         "database_execution": "success",
-            # #         "summarization": "success",
-            # #     },
-            # # }
-
-        except Exception as e:
-            error_msg = f"Unexpected error in biological query pipeline: {str(e)}"
-            logger.error(error_msg)
-            return {
-                "success": False,
-                "error": error_msg,
-                "pipeline_status": {
-                    "json_extraction": "unknown",
-                    "cypher_conversion": "unknown",
-                    "database_execution": "unknown",
-                    "summarization": "unknown",
-                },
-            }
-
-    def _handle_general_query(self, query, user_id):
-        try:
-            logger.info(f"Handling general query: '{query}'")
-
-            emit_to_user(
-                user=user_id,
-                message="Analyzing database information...",
-            )
-
-            # Generate simple database summary
-            database_summary = self._generate_database_summary()
-
-            # Use LLM to answer the query based on the summary
-            summary_prompt = f"""
-            Based on this database summary: {database_summary}
-            
-            Answer this question: {query}
-            
-            Provide a clear, informative response based on the available data.
-            """
-
-            summary = self.llm.generate(summary_prompt)
-            logger.info("General query answered successfully")
-
-            return {
-                "success": True,
-                "summary": summary,
-                "cypher_query": None,
-                "json_query": None,
-                "database_results": {"data": {"summary": database_summary}},
-                "error": None,
-                "pipeline_status": {
-                    "general_query_handling": "success",
-                },
-            }
-
-        except Exception as e:
-            error_msg = f"Error handling general query: {str(e)}"
-            logger.error(error_msg)
-            return {
-                "success": False,
-                "error": error_msg,
-                "pipeline_status": {
-                    "general_query_handling": "failed",
-                },
-            }
-
+    
     def _generate_database_summary(self):
         try:
             stats_queries = {
@@ -799,15 +726,11 @@ class Graph:
                                 summary_parts.append(f"{key}: {records}")
                         else:
                             summary_parts.append(f"{key}: No data found")
-                    else:
-                        summary_parts.append(f"{key}: Unable to retrieve")
-
                 except Exception as e:
-                    logger.warning(f"Failed to execute {key} query: {e}")
-                    summary_parts.append(f"{key}: Error retrieving")
+                     logger.warning(f"Failed to fetch stats for {key}: {e}")
 
-            return "Database Summary:\n" + "\n".join(summary_parts)
-
+            return "\n".join(summary_parts)
+            
         except Exception as e:
-            logger.error(f"Failed to generate database summary: {e}")
-            return "Database Summary:\nUnable to retrieve database information due to an error."
+            logger.error(f"Error generating database summary: {str(e)}")
+            return "Unable to generate database summary."

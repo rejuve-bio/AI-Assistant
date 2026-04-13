@@ -15,13 +15,29 @@ Let's think step by step to extract the relevant information needed to build the
 5. Double check if the direction is correct. It is strict (source)-[predicate]->(target)
 
 ### STRICT RULES:
-- Use only node types and relationships specified in the schema: gene, transcript, exon
-- Use only these relationships: transcribed_to, transcribed_from, includes
-- Do not invent or reverse relationships.
-- Ensure all nodes in relationships are included in the list.
-- Only add property keys if mentioned in the user query
-- Never grab the property from the schema 
-- Never infer an id from your knowledge
+1. Use ONLY node types and relationships specified in the provided ### Schema ### segment.
+2. Common types include: gene, transcript, exon, protein, pathway, snp.
+3. Common relationships include: transcribed_to, transcribed_from, includes, translates_to, interacts_with, genes_pathways.
+4. Do not invent or reverse relationships. Direction is critical.
+5. Ensure all nodes in relationships are included in the nodes list.
+6. Only add property keys if mentioned in the user query.
+7. Never infer an ID from your internal knowledge.
+
+### CRITICAL ID vs PROPERTIES RULES:
+- **Database ID**: If the query asks for a specific database ID (like "ensg00000186092"), put it in the `id` field
+- **Property Value**: If the query asks for a name/identifier (like "BRCA1", "ENST00000441515"), put it in `properties`
+- **Examples:**
+  - "Find gene BRCA1" → `id: ""`, `properties: {{"gene_name": "BRCA1"}}`
+  - "Find gene with ID ensg00000186092" → `id: "ensg00000186092"`, `properties: {{}}`
+  - "Find transcript ENST00000441515" → `id: ""`, `properties: {{"transcript_id": "ENST00000441515"}}`
+
+### RELATIONSHIP INFERENCE RULES:
+- **Only add relationships when the query explicitly asks for connected information**
+- **Examples:**
+  - "Find gene BRCA1" → NO relationships needed (just the gene)
+  - "Show me transcripts of gene BRCA1" → ADD transcribed_to relationship
+  - "Find transcript ENST00000441515" → NO relationships needed (just the transcript)
+  - "Show me exons of transcript ENST00000441515" → ADD includes relationship
 
 ### CRITICAL ID vs PROPERTIES RULES:
 - **Database ID**: If the query asks for a specific database ID (like "ensg00000186092"), put it in the `id` field
@@ -96,9 +112,9 @@ Convert the Extracted information into the target JSON format based on the schem
 1. Generate unique `node_ids` for each node in the format "label_X" (e.g., "gene_1", "transcript_1", "exon_1").
 2. Include **ALL nodes** mentioned in the extracted information in the "nodes" list.
 3. Ensure all nodes that appear in the predicates (relationships) are also included in the "nodes" list, even if they were not explicitly extracted.
-4. Ensure all predicates (relationships) **exactly match** those defined in the schema: transcribed_to, transcribed_from, includes.
+4. Ensure all predicates (relationships) **exactly match** those defined in the schema (e.g., transcribed_to, transcribed_from, includes, translates_to, interacts_with).
 5. **Do NOT add** any information not present in the extracted information or schema.
-6. Use the correct node types: gene, transcript, exon.
+6. Use the correct node types defined in the schema (gene, transcript, protein, etc.).
 
 ### CRITICAL ID vs PROPERTIES RULES:
 - **Database ID**: If the extracted info has a database ID (like "ensg00000186092"), put it in the `id` field

@@ -9,11 +9,15 @@ class JsonToCypherConverter:
     """
 
     def __init__(self):
-        self.supported_node_types = {"gene", "transcript", "exon"}
+        self.supported_node_types = {"gene", "transcript", "exon", "protein", "pathway"}
         self.supported_relationships = {
             "transcribed_to",
             "transcribed_from",
             "includes",
+            "interacts_with",
+            "genes_pathways",
+            "translates_to",
+            "translation_of"
         }
 
     def convert_to_cypher(self, json_query):

@@ -48,7 +48,14 @@ def process_query(current_user_id, auth_token):
         context_id = context.get("content_id", None)
         graph_id = context.get("id",None)
         resource = context.get("resource", "annotation")
-        url = context.get("url",None)
+        # Code-exec specific optional fields
+        urls = request.form.getlist("urls") if resource == "code_exec" else []
+        files = request.form.getlist("files") if resource == "code_exec" else []
+        options_raw = data.get("options", "{}") if resource == "code_exec" else "{}"
+        try:
+            options = json.loads(options_raw)
+        except Exception:
+            options = {}
         graph = data.get("graph", None)
         json_query = data.get("json_query", None)
 
@@ -135,7 +142,9 @@ def process_query(current_user_id, auth_token):
             graph_id=graph_id,
             resource=resource,
             content_ids=content_ids,
-            urls=url
+            files=files if files else None,
+            urls=urls if urls else None,
+            options=options or None,
         )
 
         return jsonify(response)
@@ -143,6 +152,486 @@ def process_query(current_user_id, auth_token):
         current_app.logger.error(f"Exception: {e}")
         traceback.print_exc()
         return f"Bad Response: {e}", 400
+
+
+def save_data_file(uploaded_file, user_id, file_type):
+    """Helper function to save CSV/HTML/XML files for code execution"""
+    try:
+        return_response = {"text": None, "resource": {}}
+        
+        # Check for duplicate files
+        existing_files = mongo_db_manager.get_user_content_files(user_id, file_type)
+        if any(f.get("filename") == uploaded_file.filename for f in existing_files):
+            return_response["text"] = f"{file_type.upper()} file already exists."
+            return_response["resource"]["filename"] = uploaded_file.filename
+            return return_response
+        
+        # Check quota (increased from 10 to 50 for development/testing)
+        MAX_CONTENT_QUOTA = int(os.getenv("MAX_CONTENT_QUOTA", "20"))
+        if mongo_db_manager.get_content_count(user_id) >= MAX_CONTENT_QUOTA:
+            return_response["text"] = f"Your quota is full. Maximum {MAX_CONTENT_QUOTA} content items allowed."
+            return_response["resource"]["count"] = mongo_db_manager.get_content_count(user_id)
+            return return_response
+        
+        import uuid
+        from datetime import datetime
+        
+        content_id = str(uuid.uuid4())
+        upload_folder = f"storage/data_files/{file_type}"
+        os.makedirs(upload_folder, exist_ok=True)
+        
+        # Get file extension
+        ext = os.path.splitext(uploaded_file.filename)[1].lower()
+        file_path = os.path.join(upload_folder, f"{content_id}{ext}")
+        uploaded_file.save(file_path)
+        
+        upload_time = datetime.now()
+        
+        # Get file size in MB
+        try:
+            file_size_bytes = os.path.getsize(file_path)
+            file_size = round(file_size_bytes / (1024 * 1024), 2)
+        except Exception:
+            file_size = None
+        
+        file_analysis = {
+            "content_id": content_id,
+            "filename": uploaded_file.filename,
+            "file_path": file_path,
+            "file_size": f"{file_size} MB" if file_size else None,
+            "upload_time": upload_time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        
+        # Store metadata in MongoDB
+        mongo_db_manager.add_content_file(
+            user_id=user_id,
+            content_id=content_id,
+            content_type=file_type,
+            filename=uploaded_file.filename,
+            file_size=file_size,
+            upload_time=upload_time,
+        )
+        
+        # Add history entry
+        from app.storage.history_manager import HistoryManager
+        HistoryManager().create_history(
+            user_id=user_id,
+            user_message=f"Uploaded {file_type.upper()}: {uploaded_file.filename}",
+            assistant_answer=f"{file_type.upper()} file '{uploaded_file.filename}' uploaded successfully.",
+        )
+        
+        return_response["text"] = f"{file_type.upper()} file uploaded successfully."
+        return_response["resource"] = file_analysis
+        return return_response
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"text": f"Error uploading {file_type} file: {str(e)}"}
+
+
+@main_bp.route("/upload_content", methods=["POST"])
+@token_required
+def upload_content(current_user_id, auth_token):
+    """
+    Unified endpoint for uploading PDF, CSV, HTML, XML files and web content
+    Accepts either files (PDFs, CSV, HTML, XML) or URLs (web content)
+    accepts a question to answer after upload (optional)
+    """
+    try:
+        user_id = current_user_id
+        question = request.form.get(
+            "question"
+        )  # Optional question to answer after upload
+        if not user_id:
+            return jsonify(error="Missing user_id"), 400
+
+        ai_assistant = current_app.config["ai_assistant"]
+        results = []
+
+        # Debug logging
+        current_app.logger.debug(f"Upload request - files keys: {list(request.files.keys())}, form keys: {list(request.form.keys())}")
+        
+        # Handle file uploads (PDF, CSV, HTML, XML)
+        # Check both request.files and request.form for file uploads
+        files_list = []
+        if "files" in request.files:
+            files_list = request.files.getlist("files")
+            current_app.logger.debug(f"Found {len(files_list)} file(s) with key 'files'")
+        
+        # Also check if files are sent with a different key name (some clients use "file" singular)
+        if not files_list and "file" in request.files:
+            files_list = request.files.getlist("file")
+            current_app.logger.debug(f"Found {len(files_list)} file(s) with key 'file'")
+        
+        current_app.logger.debug(f"Total files to process: {len(files_list)}")
+        
+        if files_list:
+            for uploaded in files_list:
+                if uploaded and uploaded.filename:
+                    filename_lower = uploaded.filename.lower()
+                    
+                    # Handle PDF files: default to RAG, optionally route to code_exec for analysis
+                    if filename_lower.endswith(".pdf"):
+                        # Decide routing: explicit context resource or keyword-based
+                        context_resource = None
+                        try:
+                            context_str = request.form.get("context", "{}")
+                            context_dict = json.loads(context_str) if context_str else {}
+                            context_resource = context_dict.get("resource")
+                        except:
+                            pass
+
+                        question_lower = (question or "").lower()
+                        is_explicit_code_exec = context_resource == "code_exec"
+                        is_analysis_request = question and (
+                            question_lower.startswith((
+                                "compute", "analyze", "plot", "calculate", "generate", "extract", "create", "show", "display", "find", "get", "load"
+                            )) or any(word in question_lower for word in [
+                                "table", "tables", "data", "correlation", "heatmap", "statistic", "graph", "chart", "visualization", "summary", "mean", "sum", "count", "column"
+                            ])
+                        )
+
+                        should_execute_code = is_explicit_code_exec or is_analysis_request
+
+                        if should_execute_code:
+                            # Route PDF to code_exec: save under data_files/pdf and invoke agent
+                            try:
+                                response = save_data_file(uploaded, user_id, "pdf")
+                                item = {"filename": uploaded.filename, "response": response}
+
+                                if question and isinstance(response, dict):
+                                    content_id = response.get("resource", {}).get("content_id")
+                                    file_path = response.get("resource", {}).get("file_path")
+                                    if content_id and file_path:
+                                        # Collect options if provided
+                                        options_dict = {}
+                                        try:
+                                            options_str = request.form.get("options", "{}")
+                                            options_dict = json.loads(options_str) if options_str else {}
+                                        except:
+                                            pass
+
+                                        answer = ai_assistant.assistant_response(
+                                            query=question,
+                                            user_id=user_id,
+                                            token=auth_token,
+                                            resource="code_exec",
+                                            graph_id=None,
+                                            files=[file_path],
+                                            options=options_dict if options_dict else None,
+                                        )
+                                        item["answer"] = answer or {"text": "No answer generated"}
+                            except Exception as e:
+                                traceback.print_exc()
+                                item = {"filename": uploaded.filename, "response": {"text": f"Error saving PDF for code execution: {str(e)}"}}
+
+                            results.append(item)
+                        else:
+                            # Default RAG path (index and answer with resource=content)
+                            response = ai_assistant.rag.save_retrievable_docs(uploaded, user_id)
+                            item = {"filename": uploaded.filename, "response": response}
+
+                            # Handle question answering for both new uploads and duplicates
+                            if question and isinstance(response, dict):
+                                content_id = None
+                                is_duplicate = response.get("text") == "PDF already exists."
+
+                                if is_duplicate:
+                                    # Get the existing content ID for this filename
+                                    pdf_files = mongo_db_manager.get_user_content_files(
+                                        user_id, "pdf"
+                                    )
+                                    existing_content = next(
+                                        (
+                                            f
+                                            for f in pdf_files
+                                            if f.get("filename") == uploaded.filename
+                                        ),
+                                        None,
+                                    )
+                                    if existing_content:
+                                        content_id = existing_content.get("content_id")
+                                        # Update the response text to indicate question was answered
+                                        item["response"]["text"] = "PDF already exists, but question was answered using existing content."
+                                else:
+                                    # New upload - get content_id from response
+                                    content_id = response.get("resource", {}).get("content_id")
+
+                                # Answer the question if we have a content_id
+                                if content_id:
+                                    try:
+                                        answer = ai_assistant.assistant_response(
+                                            query=question,
+                                            user_id=user_id,
+                                            token=auth_token,
+                                            resource="content",
+                                            graph_id=None,
+                                            content_ids=[content_id],
+                                        )
+                                        item["answer"] = answer or {"text": "No answer generated"}
+                                    except Exception:
+                                        traceback.print_exc()
+                                        item["answer"] = {"text": "Error answering question"}
+
+                            results.append(item)
+                    
+                    # Handle CSV files
+                    elif filename_lower.endswith(".csv"):
+                        try:
+                            current_app.logger.debug(f"Processing CSV file: {uploaded.filename}")
+                            response = save_data_file(uploaded, user_id, "csv")
+                            item = {"filename": uploaded.filename, "response": response}
+                            current_app.logger.debug(f"CSV save response: {response}")
+                            
+                            # Check if context explicitly requests code_exec OR if question matches analysis keywords
+                            context_resource = None
+                            try:
+                                context_str = request.form.get("context", "{}")
+                                context_dict = json.loads(context_str) if context_str else {}
+                                context_resource = context_dict.get("resource")
+                            except:
+                                pass
+                            
+                            # Execute code if:
+                            # 1. Context explicitly sets resource="code_exec", OR
+                            # 2. Question matches analysis keywords
+                            question_lower = (question or "").lower()
+                            is_explicit_code_exec = context_resource == "code_exec"
+                            is_analysis_request = question and (
+                                question_lower.startswith(("compute", "analyze", "plot", "calculate", "generate", "create", "show", "display", "find", "get", "load")) or
+                                any(word in question_lower for word in ["correlation", "heatmap", "statistic", "graph", "chart", "visualization", "summary", "mean", "sum", "count", "column"])
+                            )
+                            
+                            should_execute_code = is_explicit_code_exec or is_analysis_request
+                            
+                            if should_execute_code and question and isinstance(response, dict):
+                                content_id = response.get("resource", {}).get("content_id")
+                                file_path = response.get("resource", {}).get("file_path")
+                                
+                                current_app.logger.debug(f"CSV code execution triggered - explicit={is_explicit_code_exec}, keyword_match={is_analysis_request}, content_id: {content_id}, file_path: {file_path}")
+                                
+                                if content_id and file_path:
+                                    try:
+                                        # Get options if provided
+                                        options_dict = {}
+                                        try:
+                                            options_str = request.form.get("options", "{}")
+                                            options_dict = json.loads(options_str) if options_str else {}
+                                        except:
+                                            pass
+                                        
+                                        answer = ai_assistant.assistant_response(
+                                            query=question,
+                                            user_id=user_id,
+                                            token=auth_token,
+                                            resource="code_exec",
+                                            graph_id=None,
+                                            files=[file_path] if file_path else None,
+                                            options=options_dict if options_dict else None,
+                                        )
+                                        item["answer"] = answer or {"text": "No answer generated"}
+                                        current_app.logger.debug(f"CSV code execution completed successfully")
+                                    except Exception as e:
+                                        current_app.logger.error(f"Error executing code for CSV: {e}", exc_info=True)
+                                        traceback.print_exc()
+                                        item["answer"] = {"text": f"Error executing code: {str(e)}"}
+                                else:
+                                    current_app.logger.warning(f"Missing content_id or file_path for CSV code execution")
+                            elif question and not should_execute_code:
+                                current_app.logger.debug(f"Question provided but code execution not triggered. context_resource={context_resource}, is_analysis_request={is_analysis_request}")
+                            
+                            results.append(item)
+                            current_app.logger.debug(f"CSV file processed, results count: {len(results)}")
+                        except Exception as e:
+                            current_app.logger.error(f"Error processing CSV file: {e}")
+                            traceback.print_exc()
+                            results.append({
+                                "filename": uploaded.filename if uploaded.filename else "unknown",
+                                "error": f"Error processing CSV file: {str(e)}"
+                            })
+                    
+                    # Handle HTML files
+                    elif filename_lower.endswith((".html", ".htm")):
+                        response = save_data_file(uploaded, user_id, "html")
+                        item = {"filename": uploaded.filename, "response": response}
+                        
+                        # Check if context explicitly requests code_exec OR if question matches analysis keywords
+                        context_resource = None
+                        try:
+                            context_str = request.form.get("context", "{}")
+                            context_dict = json.loads(context_str) if context_str else {}
+                            context_resource = context_dict.get("resource")
+                        except:
+                            pass
+                        
+                        question_lower = (question or "").lower()
+                        is_explicit_code_exec = context_resource == "code_exec"
+                        is_analysis_request = question and (
+                            question_lower.startswith(("compute", "analyze", "plot", "calculate", "generate", "extract", "create", "show", "display", "find", "get", "load")) or
+                            any(word in question_lower for word in ["table", "data", "correlation", "statistic", "graph", "chart", "visualization", "summary", "mean", "sum", "column"])
+                        )
+                        
+                        should_execute_code = is_explicit_code_exec or is_analysis_request
+                        
+                        if should_execute_code and question and isinstance(response, dict):
+                            content_id = response.get("resource", {}).get("content_id")
+                            file_path = response.get("resource", {}).get("file_path")
+                            
+                            if content_id and file_path:
+                                try:
+                                    # Get options if provided
+                                    options_dict = {}
+                                    try:
+                                        options_str = request.form.get("options", "{}")
+                                        options_dict = json.loads(options_str) if options_str else {}
+                                    except:
+                                        pass
+                                    
+                                    answer = ai_assistant.assistant_response(
+                                        query=question,
+                                        user_id=user_id,
+                                        token=auth_token,
+                                        resource="code_exec",
+                                        graph_id=None,
+                                        files=[file_path] if file_path else None,
+                                        options=options_dict if options_dict else None,
+                                    )
+                                    item["answer"] = answer or {"text": "No answer generated"}
+                                except Exception as e:
+                                    traceback.print_exc()
+                                    item["answer"] = {"text": f"Error executing code: {str(e)}"}
+                        
+                        results.append(item)
+                    
+                    # Handle XML files
+                    elif filename_lower.endswith(".xml"):
+                        response = save_data_file(uploaded, user_id, "xml")
+                        item = {"filename": uploaded.filename, "response": response}
+                        
+                        # Check if context explicitly requests code_exec OR if question matches analysis keywords
+                        context_resource = None
+                        try:
+                            context_str = request.form.get("context", "{}")
+                            context_dict = json.loads(context_str) if context_str else {}
+                            context_resource = context_dict.get("resource")
+                        except:
+                            pass
+                        
+                        question_lower = (question or "").lower()
+                        is_explicit_code_exec = context_resource == "code_exec"
+                        is_analysis_request = question and (
+                            question_lower.startswith(("compute", "analyze", "plot", "calculate", "generate", "extract", "create", "parse", "show", "display", "find", "get", "load")) or
+                            any(word in question_lower for word in ["table", "data", "correlation", "statistic", "graph", "chart", "visualization", "summary", "mean", "sum", "column", "element", "record"])
+                        )
+                        
+                        should_execute_code = is_explicit_code_exec or is_analysis_request
+                        
+                        if should_execute_code and question and isinstance(response, dict):
+                            content_id = response.get("resource", {}).get("content_id")
+                            file_path = response.get("resource", {}).get("file_path")
+                            
+                            if content_id and file_path:
+                                try:
+                                    # Get options if provided
+                                    options_dict = {}
+                                    try:
+                                        options_str = request.form.get("options", "{}")
+                                        options_dict = json.loads(options_str) if options_str else {}
+                                    except:
+                                        pass
+                                    
+                                    answer = ai_assistant.assistant_response(
+                                        query=question,
+                                        user_id=user_id,
+                                        token=auth_token,
+                                        resource="code_exec",
+                                        graph_id=None,
+                                        files=[file_path] if file_path else None,
+                                        options=options_dict if options_dict else None,
+                                    )
+                                    item["answer"] = answer or {"text": "No answer generated"}
+                                except Exception as e:
+                                    traceback.print_exc()
+                                    item["answer"] = {"text": f"Error executing code: {str(e)}"}
+                        
+                        results.append(item)
+                    
+                    # Reject unsupported file types
+                    else:
+                        results.append(
+                            {
+                                "filename": uploaded.filename if uploaded.filename else "unknown",
+                                "error": "Only PDF, CSV, HTML, and XML files are allowed.",
+                            }
+                        )
+                else:
+                    # No filename provided
+                    results.append({
+                        "error": "No filename provided in file upload."
+                    })
+        
+        # If no files were processed and no URLs, return helpful error
+        if not results and not request.form.getlist("urls"):
+            return jsonify(
+                results=[],
+                error="No files or URLs provided. Please upload a file (PDF, CSV, HTML, XML) or provide a URL.",
+                help="For file uploads, use 'files' as the form-data key and select a file in Postman."
+            ), 400
+
+        # Handle web URLs
+        urls = request.form.getlist("urls")
+        for url in urls:
+            if url and url.strip():
+                clean_url = url.strip()
+                response = ai_assistant.rag.save_web_content(clean_url, user_id)
+                item = {"url": clean_url, "response": response}
+
+                # Handle question answering for both new uploads and duplicates
+                if question and isinstance(response, dict):
+                    content_id = None
+                    is_duplicate = response.get("text") == "URL already exists."
+
+                    if is_duplicate:
+                        # Get the existing content ID for this URL
+                        web_files = mongo_db_manager.get_user_content_files(
+                            user_id, "web"
+                        )
+                        existing_content = next(
+                            (f for f in web_files if f.get("url") == clean_url), None
+                        )
+                        if existing_content:
+                            content_id = existing_content.get("content_id")
+                            # Update the response text to indicate question was answered
+                            item["response"][
+                                "text"
+                            ] = "URL already exists, but question was answered using existing content."
+                    else:
+                        # New upload - get content_id from response
+                        content_id = response.get("resource", {}).get("content_id")
+
+                    # Answer the question if we have a content_id
+                    if content_id:
+                        try:
+                            answer = ai_assistant.assistant_response(
+                                query=question,
+                                user_id=user_id,
+                                token=auth_token,
+                                resource="content",
+                                graph_id=None,
+                                content_ids=[content_id],
+                            )
+                            item["answer"] = answer or {"text": "No answer generated"}
+                        except Exception:
+                            traceback.print_exc()
+                            item["answer"] = {"text": "Error answering question"}
+
+                results.append(item)
+
+        return jsonify(results=results), 200
+    except Exception as e:
+        current_app.logger.error(f"Content upload error: {e}")
+        traceback.print_exc()
+        return jsonify(error=f"Error uploading content: {str(e)}"), 500
 
 
 @main_bp.route("/user_status/documents/", methods=["GET"])
