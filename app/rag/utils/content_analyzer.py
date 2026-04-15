@@ -13,12 +13,9 @@ logger = logging.getLogger(__name__)
 
 
 class ContentAnalyzer:
-    def __init__(self, use_openai=True):
-        # Use the LLM models from llm_models.py
-        if use_openai:
-            self.llm_model = get_llm_model("openai", "gpt-3.5-turbo")
-        else:
-            self.llm_model = get_llm_model("gemini", "gemini-1.5-flash")
+    
+    def __init__(self, llm):
+        self.llm_model = llm
 
     def _generate_text(self, prompt):
         # Generate text using the LLM model

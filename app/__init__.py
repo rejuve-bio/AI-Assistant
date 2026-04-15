@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 import json
 import yaml
 import logging
@@ -8,6 +9,7 @@ from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
+from .routes import main_bp
 from .routes import main_bp
 from app.main import AiAssistance
 from app.rag.rag import RAG
@@ -151,7 +153,7 @@ def create_app():
     schema_handler = SchemaHandler(
         schema_config_path="./config/schema_config.yaml",
         biocypher_config_path="./config/biocypher_config.yaml",
-        enhanced_schema_path="./config/enhanced_schema.txt",
+        enhanced_schema_path="./config/new_enhanced_schema.txt",
     )
     logger.info("SchemaHandler initialized")
 
@@ -275,7 +277,7 @@ def create_app():
 
     except Exception as e:
         logger.error(
-            f"An error occurred during the application setup for SITE_INFORMATION: {e}",
+            f"An error occurred during the application setup for SITE INFORMATION: {e}",
             exc_info=True,
         )
 
@@ -284,6 +286,20 @@ def create_app():
     app.config["mongo_db_manager"] = mongo_db_manager
     logger.info("MongoDB manager initialized and stored in app config")
 
+    # Seed FAQ questions
+    try:
+        faq_file_path = "faq_sample_data.json"
+        if os.path.exists(faq_file_path):
+            with open(faq_file_path, "r", encoding="utf-8") as f:
+                initial_faqs = json.load(f)
+            
+            mongo_db_manager.seed_faq_questions(initial_faqs)
+        else:
+            logger.warning(f"FAQ sample data file not found at {faq_file_path}")
+            
+    except Exception as e:
+        logger.error(f"Error seeding FAQ questions: {e}")
+
     # Initialize AiAssistance with shared qdrant_client and embedding_model
     ai_assistant = AiAssistance(
         advanced_llm,
@@ -291,6 +307,7 @@ def create_app():
         schema_handler,
         embedding_model=embedding_model,
         qdrant_client=qdrant_client,
+        mongo_db_manager=mongo_db_manager,
     )
     logger.info("AiAssistance initialized")
 
@@ -315,6 +332,8 @@ def create_app():
     # Register routes
     app.register_blueprint(main_bp)
     logger.info('Blueprint "main_bp" registered')
+    
+
 
     logger.info("Flask app created successfully")
     return app, socketio

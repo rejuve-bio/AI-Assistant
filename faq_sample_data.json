@@ -1,0 +1,140 @@
+[
+    {
+        "question_id": "q1",
+        "question_text": "Find all transcripts of the gene IGF1",
+        "context":"annotation",
+        "text": "The gene IGF1 (Insulin-like Growth Factor 1) has multiple transcript variants. Based on the annotation database:\n\n1. IGF1-201 (ENST00000300305): Protein coding, 7 exons, 1,258 bp\n2. IGF1-202 (ENST00000395905): Protein coding, 6 exons, 1,087 bp\n3. IGF1-203 (ENST00000395906): Protein coding, 5 exons, 891 bp\n\nThese transcripts encode different isoforms of the IGF1 protein through alternative splicing.",
+        "json_format": {"nodes": [
+      {
+        "node_id": "gene_1",
+        "id": "",
+        "type": "gene",
+        "properties": {
+          "gene_name": "TP53"
+        }
+      },
+      {
+        "node_id": "protein_1",
+        "id": "",
+        "type": "protein",
+        "properties": {}
+      }
+    ],
+    "predicates": [
+      {
+        "type": "produces_protein",
+        "source": "gene_1",
+        "target": "protein_1"
+      }
+    ]
+  },
+        "display_order": 1
+    },
+
+    {
+        "question_id": "q2",
+        "question_text": "Which proteins are produced by the gene TP53",
+        "context":"annotation",
+        "text": "The TP53 gene produces several protein isoforms:\n\n1. **p53 (canonical)**: 393 amino acids, tumor suppressor protein\n2. **p53β**: Alternative C-terminal isoform\n3. **p53γ**: Another C-terminal variant\n4. **Δ40p53**: N-terminal truncated form\n5. **Δ133p53**: Shorter N-terminal variant\n6. **Δ160p53**: Additional truncated form\n\nThe canonical p53 protein is a transcription factor that regulates cell cycle, apoptosis, and DNA repair. It's known as the 'guardian of the genome' due to its critical role in preventing cancer.",
+        "json_format": {
+    "nodes": [
+      {
+        "node_id": "gene_1",
+        "id": "",
+        "type": "gene",
+        "properties": {
+          "gene_name": "IGF1"
+        }
+      },
+      {
+        "node_id": "transcript_1",
+        "id": "",
+        "type": "transcript",
+        "properties": {}
+      }
+    ],
+    "predicates": [
+      {
+        "type": "has_transcript",
+        "source": "gene_1",
+        "target": "transcript_1"
+      }
+    ]
+  },
+        "display_order": 2
+    },
+    {
+        "question_id": "q3",
+        "question_text": "Which genes interact with EGFR",
+        "context":"annotation",
+        "text": "The EGFR (Epidermal Growth Factor Receptor) gene interacts with numerous genes:\n\n**Direct Binding Partners:**\n- GRB2: Adaptor protein for signal transduction\n- SHC1: Signaling adapter protein\n- STAT3: Transcription factor activation\n- PIK3CA: PI3K catalytic subunit\n- SRC: Proto-oncogene tyrosine kinase\n\n**Pathway Interactions:**\n- KRAS, NRAS: Downstream RAS signaling\n- AKT1, AKT2: PI3K/AKT pathway\n- MAPK1, MAPK3: MAPK/ERK pathway\n- MYC: Transcriptional regulation\n\n**Regulatory Genes:**\n- ERBB2 (HER2): Heterodimerization partner\n- ERBB3 (HER3): Family member interaction\n- CBL: Ubiquitin ligase for EGFR degradation\n\nThese interactions are crucial for cell proliferation, survival, and differentiation.",
+        "json_format": {
+    "nodes": [
+      {
+        "node_id": "gene_1",
+        "id": "",
+        "type": "gene",
+        "properties": {
+          "gene_name": "EGFR"
+        }
+      },
+      {
+        "node_id": "gene_2",
+        "id": "",
+        "type": "gene",
+        "properties": {}
+      }
+    ],
+    "predicates": [
+      {
+        "type": "interacts_with",
+        "source": "gene_1",
+        "target": "gene_2"
+      }
+    ]
+  },
+        "display_order": 3
+    },
+  {
+    "question_id":"q7",
+    "question_text":"Find tools to convert BED files into GFF files",
+    "context":"galaxy",
+    "text":"Galaxy provides tools like 'BED to GFF Converter' and 'Convert Formats' which can transform BED files into GFF format for downstream analysis."
+  },
+  {
+    "question_id":"q8",
+    "question_text":"Tell me about the RNA STAR tool",
+    "context":"galaxy",
+    "text":"RNA STAR is a tool for fast, accurate alignment of RNA-seq reads to a reference genome, supporting spliced reads and generating outputs for downstream transcriptome analysis."
+    },
+  {
+    "question_id":"q9",
+    "question_text":"I need a workflow that performs generic variation analysis",
+    "context":"galaxy",
+    "text":"You can build or use Galaxy workflows combining variant calling, annotation, and filtering tools to perform generic variation analysis on your datasets."
+    },
+    {
+      "question_id":"q10",
+      "question_text":"How many protein nodes exist in the knowledge graph?",
+      "context":"general",
+      "text":"Currently, there are 1,245 protein nodes in the knowledge graph."
+    },
+    {
+      "question_id":"q11",
+      "question_text":"How many axons exist in the knowledge graph?",
+      "context":"general",
+      "text":"The knowledge graph contains approximately 8,000 axon nodes."
+    },
+    {
+      "question_id":"q12",
+      "question_text":"What is the main concept of the Rejuve Bio platform?",
+      "context":"general",
+      "text":"Rejuve Bio is a platform focused on integrating multi-omics data to study aging and regenerative biology, aiming to identify interventions that promote healthy longevity."
+    },
+    {
+      "question_id":"q13",
+      "question_text":"Which proteins are produced by the TP53 gene?",
+      "context":"general",
+      "text":"The TP53 gene produces several protein isoforms including p53 (canonical), p53β, p53γ, Δ40p53, Δ133p53, and Δ160p53."
+    }
+]

@@ -4,16 +4,18 @@ from .llm_handle.llm_models import (
     get_llm_model,
     openai_embedding_model,
 )
+from .prompts.classifier_prompt import (
+    classifier_prompt,
+    main_classifier_prompt,
+    aggregator_prompt
+)
 from .annotation_graph.annotated_graph import Graph
 from .annotation_graph.schema_handler import SchemaHandler
 from .rag.rag import RAG
 from .rag.utils.web_search import SimpleWebSearch
 from .prompts.conversation_handler import conversation_prompt
-from .prompts.classifier_prompt import classifier_prompt, answer_from_graph
 from .summarizer import Graph_Summarizer
 from .hypothesis_generation.hypothesis import HypothesisGeneration
-from .storage.history_manager import HistoryManager
-from .storage.mongo_storage import mongo_db_manager
 from .socket_manager import emit_to_user
 from .Galaxy_integration.galaxy import GalaxyHandler
 from .orchestrator.handler import Orchestrator, CodeExecOptions
@@ -27,9 +29,12 @@ import os
 from flask_socketio import emit
 from typing import List, Any, Dict, Optional
 import logging
+import logging.handlers as loghandlers
+
 
 logger = logging.getLogger(__name__)
 log_dir = "/AI-Assistant/logfiles"
+
 log_file = os.path.join(log_dir, "Assistant.log")
 os.makedirs(log_dir, exist_ok=True)
 logger.setLevel(logging.DEBUG)
@@ -42,7 +47,7 @@ loghandle = loghandlers.TimedRotatingFileHandler(
 )
 loghandle.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
 logger.addHandler(loghandle)
-logger = logging.getLogger(__name__)
+
 load_dotenv()
 
 
@@ -58,6 +63,7 @@ class AiAssistance:
         schema_handler,
         qdrant_client=None,
         embedding_model=None,
+        mongo_db_manager=None,
     ) -> None:
         self.advanced_llm = advanced_llm
         self.basic_llm = basic_llm
@@ -69,10 +75,9 @@ class AiAssistance:
         )
         self.graph_summarizer = Graph_Summarizer(self.advanced_llm)
         self.rag = RAG(llm=advanced_llm, qdrant_client=qdrant_client)
-        self.history = HistoryManager()
         self.store = mongo_db_manager
         self.hypothesis_generation = HypothesisGeneration(advanced_llm)
-        self.galaxy_handler = GalaxyHandler(advanced_llm)
+        self.galaxy_handler = GalaxyHandler(advanced_llm, qdrant_client, embedding_model)
         self.embedding_model = embedding_model
         # Initialize BioGPT agent
         from app.biogpt import BioGPTAgent
@@ -94,21 +99,17 @@ class AiAssistance:
 
 
     def get_content_summaries(self, user_id, content_ids=None):
-        # Get summaries for all content types (PDF and web)
+        """Get summaries for all content types (PDF and web)"""
         content_summaries = []
-
-        # Get all content files for the user
         all_content = self.store.get_user_content_files(user_id)
 
         if content_ids:
-            # Filter by specific content IDs
             filtered_content = [
                 content
                 for content in all_content
                 if content.get("content_id") in content_ids
             ]
         else:
-            # Get all content
             filtered_content = all_content
 
         for content in filtered_content:
@@ -150,27 +151,24 @@ class AiAssistance:
             f"Assistant called with query: {query}, user_id: {user_id}, resource: {resource}, graph_id: {graph_id}, content_ids: {content_ids}"
         )
 
+    def assistant_response(
+        self, 
+        query: str, 
+        user_id: str, 
+        token: str, 
+        graph_id: Optional[str] = None,
+        urls: Optional[List[str]] = None,
+        content_ids: Optional[List[str]] = None,
+        resource: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Main entry point for assistant responses.
+        Routes to parallel agent execution system.
+        """
         try:
-            user_information = self.store.get_context_and_memory(user_id)
-            history = []
-            memory = []
-            for item in user_information:
-                q = item["QUESTION"]["question"]
-                c = item["QUESTION"]["context"]
-                m = item["MEMORIES"]
-                history.append({"question": q, "context": c})
-                memory.append(m)
-            content_summaries = self.get_content_summaries(user_id, content_ids)
-        except Exception as e:
-            history = ""
-            memory = ""
-            content_summaries = []
-
-        logger.info(f"Histories of the user are : {history} and memories are {memory}")
-        graph_context = None
-        if graph_id:
             logger.info(
-                f"Graph id has been passed to the given query {query} answering based on the graph"
+                f"Assistant response called with query={query}, user_id={user_id}, "
+                f"graph_id={graph_id}, content_ids={content_ids}, urls={urls}"
             )
             graph_context = self.answer_from_graph_summaries(
                 query, user_id, resource, token, graph_id
@@ -231,21 +229,25 @@ class AiAssistance:
 
 
     def answer_from_graph_summaries(self, query, user_id, resource, token, graph_id):
+        """Legacy method for backward compatibility"""
         logger.info(
-            f"Answer from graph summaries called with query: {query}, user_id: {user_id}, resource: {resource}, graph_id: {graph_id}"
+            f"Answer from graph summaries called with query: {query}, user_id: {user_id}, "
+            f"resource: {resource}, graph_id: {graph_id}"
         )
-        if query:
-            logger.debug("Query provided with graph_id")
-            summary = None
+        
+        try:
             if resource == "annotation":
-                # Process summary with query
-                summary = self.graph_summarizer.summary(token=token, graph_id=graph_id)
+                summary_result = self.graph_summarizer.summary(
+                    token=token, graph_id=graph_id, user_query=query
+                )
+                summary_text = summary_result.get('text', '') if isinstance(summary_result, dict) else summary_result
                 emit_to_user(user=user_id, message="Analyzing...")
 
             elif resource == "hypothesis":
-                summary = self.hypothesis_generation.get_by_hypothesis_id(
+                summary_result = self.hypothesis_generation.get_by_hypothesis_id(
                     token, graph_id, user_id, query
                 )
+                summary_text = summary_result.get('text', '') if isinstance(summary_result, dict) else summary_result
                 emit_to_user(user=user_id, message="Analyzing...")
                 logger.info(f"Summaries of the graph id {graph_id} is {summary}")
 

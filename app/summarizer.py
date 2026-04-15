@@ -23,7 +23,7 @@ class Graph_Summarizer:
     def __init__(self, llm) -> None:
         self.llm = llm
         self.llm = llm
-
+        self.description = []
         if self.llm.__class__.__name__ == "GeminiModel":
             self.max_token = 2000
         elif self.llm.__class__.__name__ == "OpenAIModel":
@@ -201,90 +201,114 @@ class Graph_Summarizer:
 
             return self.descriptions
 
-    def annotate_by_id(self, graph_id, token, query=None):
-        logger.info("querying annotation by graph id...")
-
-        try:
-            params = {"source": "ai-assistant"}
-
-            if query:
-                # Keep your original POST request flow as is
-                logger.debug(f"Sending request to {self.kg_service_url}")
-                json_payload = {"requests": {"question": query}}
-                response = requests.post(
-                    self.kg_service_url + "/annotation/" + graph_id,
-                    params=params,
-                    json=json_payload,
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                json_response = response.json()
-                response_data = {
-                    "text": (
-                        json_response.get("answer")
-                        if json_response.get("answer") is not None
-                        else "Graph is too big, No summaries provided to answer your question"
-                    )
-                }
-                logger.info(f"response is {response_data}")
-                logger.info(f"Querying annotation by id with user query is done")
-                return response_data
-
-            else:
-                # First check Redis cache for summary
-                cached_graph = redis_manager.get_graph_by_id(graph_id)
-                if cached_graph and cached_graph.get("graph_summary"):
-                    logger.info(f"Cache hit for graph_id={graph_id} {cached_graph}")
-                    return {"text": cached_graph["graph_summary"]}
-
-                # Cache miss, call external API
-                logger.debug(f"Sending request to {self.kg_service_url}")
-                response = requests.get(
-                    self.kg_service_url + "/annotation/" + graph_id,
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                response.raise_for_status()
-                json_response = response.json()
-                summary_text = (
-                    json_response.get("answer") or json_response.get("title") or ""
-                )
-
-                # Store summary in Redis cache for 24 hours
-                redis_manager.create_graph(graph_id=graph_id, graph_summary=summary_text)
-
-                logger.info(f"response is {summary_text}")
-                logger.info(f"Querying annotation by id is done")
-                return {"text": summary_text}
-
-        except Exception as e:
-            traceback.print_exc()
-            logger.error("Error generating graph information from /annotation endpoint")
-            return {"text": "Error generating graph information"}
-
-    # def get_graph_info(self, graph_id, token):
-    #     logger.info("querying the graph...")
-
+    # def annotate_by_id(self,graph_id, token, query=None):
     #     try:
-    #         logger.debug(f"Sending request to {self.kg_service_url}")
-    #         params =  {"source": "ai-assistant"}
+    #         cached_graph = redis_manager.get_graph_by_id(graph_id)
+    #         if cached_graph and cached_graph.get("graph_summary"):
+    #             logger.info(f"Cache hit for graph_id={graph_id} {cached_graph}")
+    #             summary = cached_graph["graph_summary"]
+    #             return summary
+
+    #         params = {"source": "ai-assistant"}
+    #         logger.info("querying the graph without user question...")
     #         response = requests.get(
-    #             self.kg_service_url+'/annotation/'+graph_id,
-    #             params=params,
-    #             headers={"Authorization": f"Bearer {token}"}
+    #             self.kg_service_url + "/annotation/" + graph_id,
+    #             headers={"Authorization": token},
     #         )
+            
     #         response.raise_for_status()
     #         json_response = response.json()
-    #         graph =  {
-    #                     "nodes": json_response.get("nodes", []),
-    #                     "edges": json_response.get("edges", []),
-    #                     "node_count": json_response.get("node_count",[]),
-    #                     "edge_count": json_response.get("edge_count",[]),
-    #                 }
-    #         return graph
-    #     except:
-    #         traceback.print_exc()
-    #         logger.info("error generating graph information from /annotation endpoint")
-    #         return []
+            
+    #         if isinstance(json_response, str):
+    #             try:
+    #                 json_response = json.loads(json_response)
+    #             except json.JSONDecodeError:
+    #                 json_response = {"answer": json_response}
 
+    #         if not isinstance(json_response, dict):
+    #             json_response = {"answer": str(json_response)}
+            
+    #         response = {}
+    #         if json_response.get("summary"):
+    #             response["summary"] = json_response.get("summary")
+    #         else:
+    #             response["text"] = "Graph is too big, No summaries provided to answer your question"
+    #         summary = json_response.get("summary")
+    #         if summary:
+    #             redis_manager.create_graph(graph_id=graph_id, graph_summary=summary)
+    #             if query:
+    #                 response_data = self.llm.generate(f"Please answer the question based on the summary: {summary}.\nQuestion: {query}\nAnswer:")
+    #                 return {"summary": summary, "text": response_data}
+    #             else:
+    #                 return {"summary": summary}
+    #         else:
+    #             return {"text": "Graph is too big, No summaries provided to answer your question"}
+    #     except Exception as e:
+    #         logger.error(f"Error in annotate_by_id: {e}")
+    #         return {"text": "Graph is too big, No summaries provided to answer your question"}
+    def annotate_by_id(self, graph_id, token, query=None):
+        try:
+            cached_graph = redis_manager.get_graph_by_id(graph_id)
+            if cached_graph and cached_graph.get("graph_summary"):
+                summary = json.loads(cached_graph["graph_summary"])  # Convert JSON string back to dict
+                logger.info(f'Cache hit for graph_id={graph_id} is graph summary of {summary}')
+                return {"summary": cached_graph["graph_summary"], "text": None}
+
+            logger.info("Querying the graph without user question...")
+            http_response = requests.get(
+                f"{self.kg_service_url}/annotation/{graph_id}",
+                headers={"Authorization": token},
+            )
+            http_response.raise_for_status()
+
+            json_response = http_response.json()
+            if isinstance(json_response, str):
+                try:
+                    json_response = json.loads(json_response)
+                except json.JSONDecodeError:
+                    json_response = {"summary": None, "answer": json_response}
+
+            if not isinstance(json_response, dict):
+                json_response = {"summary": None, "answer": str(json_response)}
+
+            summary = json_response.get("summary")
+            node_count = json_response.get("node_count", 0)
+            edge_count = json_response.get("edge_count", 0)
+            node_count_by_label = json_response.get("node_count_by_label", {})
+            edge_count_by_label = json_response.get("edge_count_by_label", {})
+            
+            if summary:
+                enhanced_summary = {
+                    "summary": summary,
+                    "node_count": node_count,
+                    "edge_count": edge_count,
+                    "node_count_by_label": node_count_by_label,
+                    "edge_count_by_label": edge_count_by_label
+                }
+                
+                redis_manager.create_graph(graph_id=graph_id, graph_summary=json.dumps(enhanced_summary))                
+                text = None
+                if query:
+                    text = self.llm.generate(
+                        f"Based on this graph data:\n"
+                        f"Summary: {summary}\n"
+                        f"Total nodes: {node_count}\n"
+                        f"Total edges: {edge_count}\n"
+                        f"Node types: {node_count_by_label}\n"
+                        f"Edge types: {edge_count_by_label}\n\n"
+                        f"Question: {query}\nAnswer:"
+                    )
+                return {"summary": enhanced_summary, "text": text}
+            else:
+                return {"summary": None, "text": "Graph is too big, No summaries provided"}
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"HTTP error in annotate_by_id: {e}")
+            return {"summary": None, "text": f"Failed to contact graph service: {e}"}
+        except Exception as e:
+            logger.error(f"Unexpected error in annotate_by_id: {e}")
+            return {"summary": None, "text": f"Unexpected error: {e}"}
+    
     def summary(self, graph=None, user_query=None, graph_id=None, token=None):
 
         try:
@@ -293,6 +317,7 @@ class Graph_Summarizer:
                 result = self.annotate_by_id(
                     graph_id=graph_id, query=user_query, token=token
                 )
+                logger.info(f"summary of the graph {graph_id} is {result}")
                 return result
 
             if graph:
