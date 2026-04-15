@@ -6,7 +6,7 @@ The **Clinical Trial Matcher Agent** is a specialized module within the Rejuve B
 ## Purpose and Value Proposition
 At Rejuve Biotech, the core mission is to accelerate longevity research by turning static biological data into actionable clinical insights. The Clinical Trial Matcher Agent directly serves this mission by:
 
-1. **Bridging the Gap Between Data and Clinical Application**: When researchers discover a potential longevity target (like the SIRT1 gene or a new aging pathway) or a compound (like Rapamycin), this agent allows them to instantly check if there are ongoing human trials for those interventions.
+1. **Bridging the Gap Between Data (mainly hypothesis Generated) and Clinical Application**: When researchers discover a potential longevity target (like the SIRT1 gene or a new aging pathway) or a compound (like Rapamycin), this agent allows them to instantly check if there are ongoing human trials for those interventions.
 2. **Empowering the AI Assistant**: By providing the Orchestrator with real-time access to global trial registries, the AI Assistant transforms from a static knowledge base into a dynamic research tool that can validate hypotheses against real-world clinical activity.
 3. **Accelerating Discovery**: It saves researchers hours of manual searching by instantly summarizing the most relevant trials, their phases, statuses, and specific conditions.
 
