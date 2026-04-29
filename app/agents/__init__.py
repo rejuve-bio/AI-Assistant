@@ -378,6 +378,64 @@ class Orchestrator:
             logger.error(f"RAG step error: {e}", exc_info=True)
             return {"text": f"Error: {e}", "source": "knowledge base", "json_format": None}
 
+    def _build_annotation_text(self, json_format: dict) -> str:
+        if not json_format:
+            return "The annotation structure was created successfully (see structured data)."
+        nodes = json_format.get("nodes", [])
+        substituted = []
+        for n in nodes:
+            if n.get("status") is False and n.get("suggestion") and not n.get("not_validated"):
+                props = n.get("properties", {})
+                suggestion = n.pop("suggestion")
+                for key in props:
+                    substituted.append((props[key], suggestion))
+                    props[key] = suggestion
+                    break
+                n["status"] = True
+                n.pop("validation_error", None)
+
+        failed = [n for n in nodes if n.get("status") is False]
+        text = "The annotation structure was created successfully (see structured data)."
+
+        if substituted:
+            if len(substituted) == 1:
+                orig, sub = substituted[0]
+                text += f' Note: "{orig}" was not found in the database. The structure was created for the closest match "{sub}" instead — did you mean "{sub}"?'
+            else:
+                pairs = ", ".join(f'"{o}" → "{s}"' for o, s in substituted)
+                text += f" Note: The following were not found and substituted with the closest match: {pairs}."
+
+        if failed:
+            missing_parts = []
+            all_suggestions = []
+            for n in failed:
+                not_validated = n.get("not_validated")
+                suggestions = n.get("suggestions", {})
+                if not_validated:
+                    items = not_validated if isinstance(not_validated, list) else [not_validated]
+                    for item in items:
+                        missing_parts.append(f'"{item}"')
+                        suggestion = suggestions.get(item)
+                        if suggestion:
+                            all_suggestions.append((item, suggestion))
+                else:
+                    props = n.get("properties", {})
+                    name = next(iter(props.values()), n.get("type", "unknown"))
+                    missing_parts.append(f'"{name}"')
+                    suggestion = n.get("suggestion")
+                    if suggestion:
+                        all_suggestions.append((name, suggestion))
+            verb = "was" if len(missing_parts) == 1 else "were"
+            joined = ", ".join(missing_parts)
+            text += f" Note: {joined} {verb} not found in the database but {verb} included in the structure based on the provided information."
+            if all_suggestions:
+                if len(all_suggestions) == 1:
+                    text += f" Did you mean \"{all_suggestions[0][1]}\"?"
+                else:
+                    did_you_mean = ", ".join(f'"{o}" → "{s}"' for o, s in all_suggestions)
+                    text += f" Did you mean: {did_you_mean}?"
+        return text
+
     def _annotation_step(self, state: AgentState, step_input: str, sub_type: str) -> Dict:
         query_type = sub_type if sub_type in ("annotation_biological", "annotation_general") else "annotation_biological"
         try:
@@ -386,11 +444,9 @@ class Orchestrator:
                 query=step_input, user_id=state["user_id"], query_type=query_type
             )
             if pipeline_resp.get("success"):
-                return {
-                    "text": pipeline_resp.get("summary", ""),
-                    "json_format": pipeline_resp.get("json_format"),
-                    "source": "annotation database",
-                }
+                json_format = pipeline_resp.get("json_format")
+                text = self._build_annotation_text(json_format)
+                return {"text": text, "json_format": json_format, "source": "annotation database"}
             return {"text": pipeline_resp.get("error", "Annotation failed"), "source": "annotation database", "json_format": None}
         except Exception as e:
             logger.error(f"Annotation step error: {e}", exc_info=True)
