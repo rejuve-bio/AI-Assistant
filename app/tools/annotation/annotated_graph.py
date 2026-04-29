@@ -3,8 +3,8 @@ import json
 import logging
 import os
 from dotenv import load_dotenv
-from app.annotation_graph.neo4j_handler import Neo4jConnection
-from app.annotation_graph.schema_handler import SchemaHandler
+from app.tools.annotation.neo4j_handler import Neo4jConnection
+from app.tools.annotation.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import LLMInterface
 from app.prompts.annotation_prompts import (
     EXTRACT_RELEVANT_INFORMATION_PROMPT,
