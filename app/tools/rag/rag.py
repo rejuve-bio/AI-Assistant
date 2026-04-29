@@ -6,10 +6,10 @@ import logging
 import uuid
 from datetime import datetime
 import fitz
-from app.rag.utils.content_processor import ContentProcessor
-from app.rag.utils.content_analyzer import ContentAnalyzer
+from app.tools.rag.utils.content_processor import ContentProcessor
+from app.tools.rag.utils.content_analyzer import ContentAnalyzer
 from app.storage.mongo_storage import mongo_db_manager
-from app.rag.utils.web_search import SimpleWebSearch
+from app.tools.rag.utils.web_search import SimpleWebSearch
 
 
 logging.basicConfig(

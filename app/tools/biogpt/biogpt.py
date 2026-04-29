@@ -1,12 +1,9 @@
-from transformers import BioGptTokenizer, BioGptForCausalLM
 import torch
 import logging
 from threading import Lock
 import os
-from transformers import AutoTokenizer
-from optimum.intel import OVModelForCausalLM
-from optimum.intel import OVModelForCausalLM
 import psutil
+from transformers import AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -91,17 +88,15 @@ class BioGPTAgentOpenVINO:
             with BioGPTAgentOpenVINO._lock:
                 # double-check inside lock
                 if BioGPTAgentOpenVINO._model is None:
-                    # Manage cache size before loading to prevent disk overflow
+                    from optimum.intel import OVModelForCausalLM
                     self._manage_cache_size()
-                    
+
                     start_ram = self._get_ram_usage()
                     logger.info(f"Lazy-loading OpenVINO BioGPT model: {self.model_name}...")
                     logger.info(f"Base RAM Usage: {start_ram:.2f} MB")
 
-                    # Load tokenizer
                     BioGPTAgentOpenVINO._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-                    
-                    # Load model using OpenVINO
+
                     logger.info("Loading OpenVINO model...")
                     BioGPTAgentOpenVINO._model = OVModelForCausalLM.from_pretrained(
                         self.model_name,
@@ -116,45 +111,28 @@ class BioGPTAgentOpenVINO:
                     logger.info(f"RAM after loading: {after_load_ram:.2f} MB (Added: {after_load_ram - start_ram:.2f} MB)")
 
     def generate_answer(self, query: str, max_length: int = 50) -> str:
-        """
-        Generate answer using OpenVINO-optimized BioGPT model.
-        
-        Args:
-            query: The biomedical question
-            max_length: Maximum length for generation (default: 256)
-            
-        Returns:
-            Generated answer text
-        """
         try:
             self._load_if_needed()
 
-            # Encode input
             inputs = BioGPTAgentOpenVINO._tokenizer(query, return_tensors="pt")
-            
-            # Generate with optimized parameters
             logger.info(f"Generating answer for: {query}")
             with torch.no_grad():
                 output_ids = BioGPTAgentOpenVINO._model.generate(
                     **inputs,
-                    max_new_tokens=max_length,  # Generate up to 150 new tokens
+                    max_new_tokens=max_length,
                     pad_token_id=BioGPTAgentOpenVINO._tokenizer.eos_token_id,
-                    use_cache=True,      # Enable key/value cache for faster generation
-                    do_sample=False,      # Enable sampling for non-deterministic responses
+                    use_cache=True,
+                    do_sample=False,
                 )
 
-            # Decode the generated text
             generated_text = BioGPTAgentOpenVINO._tokenizer.decode(output_ids[0], skip_special_tokens=True)
-            
-            # Extract answer by removing the input query
             answer = generated_text[len(query):].strip()
-            
-            # Additional cleanup: sometimes the model repeats the question
             if answer.startswith(query):
                 answer = answer[len(query):].strip()
-            
             return answer.strip()
 
         except Exception as e:
-            logger.error(f"Error in BioGPT generation: {str(e)}", exc_info=True)
-            return f"BIOGPT ERROR: {str(e)}"
+            logger.warning(f"OpenVINO BioGPT unavailable ({e}), falling back to LLM")
+            if self.llm:
+                return self.llm.generate(query)
+            return "BioGPT model unavailable and no LLM fallback configured."

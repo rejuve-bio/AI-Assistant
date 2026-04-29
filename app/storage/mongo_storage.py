@@ -249,6 +249,7 @@ class MongoManager:
         keywords: str = None,
         topics: str = None,
         suggested_questions: str = None,
+        file_path: str = None,
     ):
         """Add a content file record"""
         try:
@@ -268,6 +269,7 @@ class MongoManager:
                 "keywords": keywords,
                 "topics": topics,
                 "suggested_questions": suggested_questions,
+                "file_path": file_path,
                 "created_at": datetime.utcnow(),
                 "updated_at": datetime.utcnow(),
             }

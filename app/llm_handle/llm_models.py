@@ -31,7 +31,6 @@ def openai_embedding_model(batch):
 
     for i in range(0, len(batch), batch_size):
         batch_segment = batch[i : i + batch_size]
-        print(batch_segment)
         logger.info(
             f"Embedding batch {i // batch_size + 1} of {len(batch) // batch_size + 1}"
         )
@@ -58,7 +57,6 @@ def gemini_embedding_model(batch):
 
     for i in range(0, len(batch), batch_size):
         batch_segment = batch[i : i + batch_size]
-        print(batch_segment)
         logger.info(
             f"Embedding batch {i // batch_size + 1} of {len(batch) // batch_size + 1}"
         )
@@ -114,7 +112,7 @@ def get_llm_model(model_provider, model_version=None):
             gemini_api_key, model_provider, model_version or "gemini-pro"
         )
 
-    elif model_provider in ("ollama"):
+    elif model_provider == "ollama":
         return OllamaModel(
             model_name=model_version or os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
         )

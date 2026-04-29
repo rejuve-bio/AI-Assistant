@@ -1,17 +1,12 @@
 RETRIEVE_PROMPT = """
-You are tasked with answering the user's query based solely on the provided information. 
+Answer the query using only the provided information. Be direct and brief — the audience is a biomedical researcher who does not need background explained.
 
-Query: {query}.
+Query: {query}
+Information: {retrieved_content}
 
-Information: {retrieved_content}.
-
-Instructions:
-1. Evaluate the provided information for relevance, accuracy, and usefulness to the query.
-2. If the information is sufficient, provide a clear and concise answer directly addressing the query.
-3. Do not mention or refer to "retrieved results" or the source of the information in your response.
-4. If the information is empty, irrelevant, or unhelpful, respond with: "I can't help with your question."
-
-Provide only the answer, and avoid any unnecessary references or disclaimers.
+- Answer in 2-4 sentences maximum unless the query requires a structured list.
+- If the information is insufficient or irrelevant, respond with exactly: "I can't help with your question."
+- Do not restate the question. Do not add disclaimers or source references.
 """
 
 SYSTEM_PROMPT = """
@@ -73,4 +68,18 @@ Instructions:
 
 Document content:
 {text_content}
+"""
+
+CLARIFYING_QUESTIONS_PROMPT = """
+A biomedical researcher just received this response. Suggest 3-4 follow-up actions they would actually take next.
+
+User query: {user_query}
+Response: {assistant_response}
+
+Rules:
+- Each suggestion must be specific and directly actionable given what was just returned.
+- Prioritize: validating findings, running a related analysis, comparing with another dataset or method, drilling into a specific result.
+- Do NOT generate generic questions like "Can you explain X?" or "What is Y?" — the researcher already knows the basics.
+- Frame as questions the researcher would type into this system (e.g. "Run DESeq2 on the filtered genes from this result", "Search PubMed for rs1421085 obesity studies").
+- Return ONLY a numbered list, no preamble.
 """
