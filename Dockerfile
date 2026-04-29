@@ -1,25 +1,34 @@
-# Use the official Python 3.10 slim image as the base image
 FROM python:3.10-slim
 
 ENV PYTHONUNBUFFERED=1
-ENV POETRY_HTTP_TIMEOUT=600
 
-# Set the working directory
 WORKDIR /AI-Assistant
-
-
-# Create log directory here
 RUN mkdir -p /AI-Assistant/logfiles
 
-# Install Poetry
-RUN pip install poetry
+# ── System packages ───────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget curl \
+    libcurl4-openssl-dev libssl-dev libxml2-dev \
+    libhdf5-dev zlib1g-dev libbz2-dev liblzma-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy the application code
+# ── PLINK2 via miniforge/bioconda ─────────────────────────────────────────────
+RUN wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/mf.sh \
+    && bash /tmp/mf.sh -b -p /opt/conda \
+    && rm /tmp/mf.sh \
+    && /opt/conda/bin/conda install -y -c bioconda plink2 \
+    && /opt/conda/bin/conda clean -afy \
+    && ln -sf /opt/conda/bin/plink2 /usr/local/bin/plink2
+
+# ── PyTorch CPU (installed separately to use correct index) ───────────────────
+RUN pip install --no-cache-dir \
+    torch --index-url https://download.pytorch.org/whl/cpu
+
+# ── All other Python dependencies ─────────────────────────────────────────────
+COPY pyproject.toml poetry.lock* ./
+RUN pip install poetry && poetry config virtualenvs.create false && poetry install --no-root --only main
+
+# ── Application code ──────────────────────────────────────────────────────────
 COPY . /AI-Assistant
 
-# Install dependencies 
-RUN poetry config virtualenvs.create false && \
-    poetry install --no-root --no-interaction
-
-# Run the application
-CMD ["gunicorn", "-w", "4", "--bind", "0.0.0.0:$FLASK_PORT", "run:app"]
+CMD ["gunicorn", "-w", "4", "--bind", "0.0.0.0:$FLASK_PORT", "--timeout", "600", "run:app"]
