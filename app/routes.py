@@ -4,9 +4,21 @@ from dotenv import load_dotenv
 import traceback
 import json
 import os
-from app.rag.utils.tts_utils import tts_manager
+import uuid
+import shutil
+from datetime import datetime
+from app.tools.rag.utils.tts_utils import tts_manager
 from app.storage.redis import redis_manager
 from app.storage.mongo_storage import mongo_db_manager
+
+BIOINFO_EXTENSIONS = {
+    ".vcf", ".vcf.gz", ".bed", ".bim", ".fam",
+    ".csv", ".tsv", ".txt", ".gz",
+    ".bam", ".sam", ".fastq", ".fq", ".fa", ".fasta",
+    ".h5", ".h5ad", ".loom",
+}
+
+BIOINFO_UPLOAD_DIR = "uploads/bioinfo"
 
 load_dotenv()
 main_bp = Blueprint("main", __name__)
@@ -84,7 +96,12 @@ def process_query(current_user_id, auth_token):
 
         if uploaded_files:
             for uploaded in uploaded_files:
-                if uploaded.filename and uploaded.filename.lower().endswith(".pdf"):
+                if not uploaded.filename:
+                    continue
+
+                fname_lower = uploaded.filename.lower()
+
+                if fname_lower.endswith(".pdf"):
                     response = ai_assistant.rag.save_retrievable_docs(uploaded, user_id)
                     if isinstance(response, dict):
                         is_duplicate = response.get("text") == "PDF already exists."
@@ -98,6 +115,40 @@ def process_query(current_user_id, auth_token):
                             if new_id:
                                 newly_uploaded_content_ids.append(new_id)
                         upload_results.append({"filename": uploaded.filename, "response": response})
+
+                elif any(fname_lower.endswith(ext) for ext in BIOINFO_EXTENSIONS):
+                    # Bioinformatics file — save to disk without RAG processing
+                    try:
+                        os.makedirs(BIOINFO_UPLOAD_DIR, exist_ok=True)
+                        content_id = str(uuid.uuid4())
+                        safe_name = os.path.basename(uploaded.filename)
+                        dest = os.path.join(BIOINFO_UPLOAD_DIR, f"{content_id}_{safe_name}")
+                        uploaded.save(dest)
+                        file_size = round(os.path.getsize(dest) / (1024 * 1024), 4)
+                        mongo_db_manager.add_content_file(
+                            user_id=user_id,
+                            content_id=content_id,
+                            content_type="bioinfo",
+                            filename=uploaded.filename,
+                            file_size=file_size,
+                            upload_time=datetime.utcnow(),
+                            file_path=os.path.abspath(dest),
+                        )
+                        newly_uploaded_content_ids.append(content_id)
+                        upload_results.append({
+                            "filename": uploaded.filename,
+                            "response": {
+                                "text": "Bioinformatics file uploaded successfully.",
+                                "resource": {"content_id": content_id, "filename": uploaded.filename},
+                            },
+                        })
+                        current_app.logger.info(f"Bioinfo file saved: {dest} content_id={content_id}")
+                    except Exception as e:
+                        current_app.logger.error(f"Bioinfo upload error: {e}")
+                        upload_results.append({
+                            "filename": uploaded.filename,
+                            "response": {"text": f"Error uploading file: {e}"},
+                        })
             
             # Merge content_ids
             if newly_uploaded_content_ids:
