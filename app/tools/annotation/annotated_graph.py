@@ -171,6 +171,7 @@ class Graph:
                 "property_changes": [],
                 "direction_changes": [],
                 "removed_properties": [],
+                "failed_nodes": [],
                 "validation_status": "success",
             }
 
@@ -186,6 +187,7 @@ class Graph:
                 properties = node.get("properties", {})
                 node_id = node.get("node_id")
                 node_types[node_id] = node_type
+                node["validated"] = True
 
                 # Track removed properties
                 for property_key in list(properties.keys()):
@@ -228,14 +230,16 @@ class Graph:
                                     )
                                 properties[property_key] = new_value
                             else:
-                                raise ValueError(
-                                    f"No suitable property found for {node_type} with key {property_key} "
-                                    f"and value {property_value}."
+                                node["validated"] = False
+                                node["validation_error"] = f"No suitable match found for '{property_value}' in the database."
+                                validation_report["failed_nodes"].append(
+                                    {"node_id": node_id, "reason": node["validation_error"]}
                                 )
                         else:
-                            raise ValueError(
-                                f"No suitable property found for {node_type} with key {property_key} "
-                                f"and value {property_value}."
+                            node["validated"] = False
+                            node["validation_error"] = f"'{property_value}' not found in the database."
+                            validation_report["failed_nodes"].append(
+                                {"node_id": node_id, "reason": node["validation_error"]}
                             )
 
             # Validate edge direction
@@ -574,22 +578,13 @@ class Graph:
                 validation = self._validate_and_update(initial_json)
                 logger.info("JSON validation successful")
 
-                if validation["validation_report"]["validation_status"] == "failed":
-                    logger.error("JSON validation failed")
-                    json_query = {
-                    "success" : True,
-                    "summary" : None,
-                    "json_format": initial_json,
+                json_query = {
+                    "success": True,
+                    "summary": None,
+                    "json_format": validation["updated_json"],
+                    "validation_report": validation["validation_report"],
                     "resource": {"id": None, "type": "annotation"},
-                    }
-                else:
-                    # Use the updated JSON for subsequent steps
-                    json_query = {
-                        "success" : True,
-                        "summary" : None,
-                        "json_format": validation["updated_json"],
-                        "resource": {"id": None, "type": "annotation"},
-                    }
+                }
 
                 logger.info("JSON query extraction successful")
                 logger.info(f"JSON query structure: {json.dumps(json_query, indent=2)}")
