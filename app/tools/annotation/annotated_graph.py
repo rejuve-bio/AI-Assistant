@@ -117,8 +117,8 @@ class Graph:
         try:
             graph = self.query_knowledge_graph(validated_json, token)
 
-            # Generate final answer using validated JSON
-            # final_answer = self._provide_text_response(query, validated_json, graph)
+
+
             response = {
                 "text": graph["answer"],
                 "resource": {"id": graph["annotation_id"], "type": "annotation"},
@@ -182,12 +182,38 @@ class Graph:
             if "nodes" not in updated_json:
                 raise ValueError("The input JSON must contain a 'nodes' key.")
 
+            # Pre-pass: collect all values that need Neo4j lookup grouped by (node_type, property_key)
+            lookup_needed = {}  # (node_type, property_key) -> set of string values
+            for node in updated_json.get("nodes"):
+                node_type = node.get("type")
+                properties = node.get("properties", {})
+                for property_key, property_value in properties.items():
+                    if not property_value and property_value != 0:
+                        continue
+                    if node.get("is_list") and isinstance(property_value, (str, list)):
+                        items = (
+                            [i.strip() for i in property_value.split(",") if i.strip()]
+                            if isinstance(property_value, str)
+                            else property_value
+                        )
+                        lookup_needed.setdefault((node_type, property_key), set()).update(items)
+                    elif isinstance(property_value, str):
+                        lookup_needed.setdefault((node_type, property_key), set()).add(property_value)
+
+            # Run one batch Neo4j query per (node_type, property_key)
+            similarity_cache = {}  # (node_type, property_key, value) -> [(similar_value, score), ...]
+            for (node_type, property_key), values in lookup_needed.items():
+                batch = self.neo4j.get_similar_property_values_batch(node_type, property_key, list(values))
+                for value, matches in batch.items():
+                    similarity_cache[(node_type, property_key, value)] = matches
+
             for node in updated_json.get("nodes"):
                 node_type = node.get("type")
                 properties = node.get("properties", {})
                 node_id = node.get("node_id")
                 node_types[node_id] = node_type
-                node["validated"] = True
+                if not node.get("is_list"):
+                    node["status"] = True
 
                 # Track removed properties
                 for property_key in list(properties.keys()):
@@ -203,10 +229,44 @@ class Graph:
                                 "original_value": property_value,
                             }
                         )
-                    elif isinstance(property_value, str):
-                        similar_values = self.neo4j.get_similar_property_values(
-                            node_type, property_key, property_value
+                    elif node.get("is_list") and isinstance(property_value, (str, list)):
+                        items = (
+                            [i.strip() for i in property_value.split(",") if i.strip()]
+                            if isinstance(property_value, str)
+                            else property_value
                         )
+                        validated_items = []
+                        failed_items = []
+                        item_suggestions = {}
+                        for item in items:
+                            similar_values = similarity_cache.get((node_type, property_key, item), [])
+                            if similar_values:
+                                selected_property = self._select_best_matching_property_value(
+                                    item, similar_values
+                                )
+                                if selected_property.get("selected_value"):
+                                    validated_items.append(selected_property["selected_value"])
+                                else:
+                                    failed_items.append(item)
+                                    top = similar_values[0][0]
+                                    if top.lower() != item.lower():
+                                        item_suggestions[item] = top
+                            else:
+                                failed_items.append(item)
+                        properties[property_key] = ", ".join(validated_items + failed_items)
+                        if failed_items:
+                            node["status"] = False
+                            node["not_validated"] = failed_items
+                            if item_suggestions:
+                                node["suggestions"] = item_suggestions
+                            validation_report["failed_nodes"].append(
+                                {"node_id": node_id, "reason": f"Could not find in database: {failed_items}"}
+                            )
+                        else:
+                            node["status"] = True
+
+                    elif isinstance(property_value, str):
+                        similar_values = similarity_cache.get((node_type, property_key, property_value), [])
 
                         if similar_values:
                             selected_property = (
@@ -230,13 +290,16 @@ class Graph:
                                     )
                                 properties[property_key] = new_value
                             else:
-                                node["validated"] = False
+                                node["status"] = False
                                 node["validation_error"] = f"No suitable match found for '{property_value}' in the database."
+                                top = similar_values[0][0]
+                                if top.lower() != property_value.lower():
+                                    node["suggestion"] = top
                                 validation_report["failed_nodes"].append(
                                     {"node_id": node_id, "reason": node["validation_error"]}
                                 )
                         else:
-                            node["validated"] = False
+                            node["status"] = False
                             node["validation_error"] = f"'{property_value}' not found in the database."
                             validation_report["failed_nodes"].append(
                                 {"node_id": node_id, "reason": node["validation_error"]}
@@ -267,6 +330,9 @@ class Graph:
                     temp_s = edge["source"]
                     edge["source"] = edge["target"]
                     edge["target"] = temp_s
+
+            for node in updated_json.get("nodes", []):
+                node.pop("is_list", None)
 
             logger.info(
                 f"Validated and updated JSON: \n{json.dumps(updated_json, indent=2)}"

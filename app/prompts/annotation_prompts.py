@@ -15,13 +15,19 @@ Let's think step by step to extract the relevant information needed to build the
 5. Double check if the direction is correct. It is strict (source)-[predicate]->(target)
 
 ### STRICT RULES:
-- Use only node types and relationships specified in the schema: gene, transcript, exon
-- Use only these relationships: transcribed_to, transcribed_from, includes
+- Use only node types and relationships specified in the schema above.
 - Do not invent or reverse relationships.
 - Ensure all nodes in relationships are included in the list.
 - Only add property keys if mentioned in the user query
-- Never grab the property from the schema 
+- Never grab the property from the schema
 - Never infer an id from your knowledge
+
+### LIST DETECTION RULES:
+- If the query provides multiple values for the same node type (e.g. a list of gene names), treat them as a SINGLE list node — do NOT create one node per value.
+- Mark list nodes with `is_list: true` and set the property value as a comma-separated list.
+- Examples:
+  - "genes BRCA1, TP53, EGFR" → ONE node, `is_list: true`, `gene_name: BRCA1, TP53, EGFR`
+  - "any gene in PTEN, RB1, CDK2" → ONE node, `is_list: true`, `gene_name: PTEN, RB1, CDK2`
 
 ### CRITICAL ID vs PROPERTIES RULES:
 - **Database ID**: If the query asks for a specific database ID (like "ensg00000186092"), put it in the `id` field
@@ -45,15 +51,19 @@ Provide your response in the following format:
 **Relevant Nodes:**
 - Node Type: `node_type1`
   - ID: `specific_id_or_empty_string`
-  - Properties: 
+  - Is List: false
+  - Properties:
     - key: value # ONLY if mentioned in the user Query
 
-- Node Type: `node_type2`
+- Node Type: `node_type2` (list node example)
   - ID: ``
-  - Properties: 
+  - Is List: true
+  - Properties:
+    - key: "value1, value2, value3"
 
 - Node Type: `node_type3`
   - ID: ``
+  - Is List: false
   - Properties:
 
 **Relevant Relationships:** # ONLY if a connection or path is needed to achieve the query
@@ -93,12 +103,13 @@ Convert the Extracted information into the target JSON format based on the schem
 {schema}
 
 ### Conversion rules:
-1. Generate unique `node_ids` for each node in the format "label_X" (e.g., "gene_1", "transcript_1", "exon_1").
+1. Generate unique `node_ids` for each node in the format "label_X" (e.g., "gene_1", "transcript_1", "gene_list_A").
 2. Include **ALL nodes** mentioned in the extracted information in the "nodes" list.
 3. Ensure all nodes that appear in the predicates (relationships) are also included in the "nodes" list, even if they were not explicitly extracted.
-4. Ensure all predicates (relationships) **exactly match** those defined in the schema: transcribed_to, transcribed_from, includes.
+4. Ensure all predicates (relationships) **exactly match** those defined in the schema above.
 5. **Do NOT add** any information not present in the extracted information or schema.
-6. Use the correct node types: gene, transcript, exon.
+6. Use the correct node types from the schema above.
+7. If a node is a list (`is_list: true`), set the property value as a comma-separated string (e.g., "BRCA1, TP53, EGFR") and include `"is_list": true` on the node. Do NOT use a JSON array.
 
 ### CRITICAL ID vs PROPERTIES RULES:
 - **Database ID**: If the extracted info has a database ID (like "ensg00000186092"), put it in the `id` field
@@ -115,15 +126,18 @@ Convert the Extracted information into the target JSON format based on the schem
       "node_id": "label_1",
       "id": "id_or_empty_string",
       "type": "label",
+      "is_list": false,
       "properties": {{
         "key": "value"
       }}
     }},
     {{
-      "node_id": "label_2",
+      "node_id": "label_list_A",
       "id": "",
       "type": "label",
+      "is_list": true,
       "properties": {{
+        "key": "value1, value2, value3"
       }}
     }}
     ...
@@ -132,7 +146,7 @@ Convert the Extracted information into the target JSON format based on the schem
     {{
       "type": "predicate",
       "source": "label_1",
-      "target": "label_2"
+      "target": "label_list_A"
     }}
     ...
   ]
