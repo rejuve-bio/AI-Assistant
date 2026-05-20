@@ -1,0 +1,11 @@
+{
+  "name": "query_openfda",
+  "module": "database_connectors",
+  "description": "Query FDA drug database for drug information including brand names, indications, and adverse events",
+  "usage": "from app.tools.biomni.database_connectors import query_openfda; result = query_openfda('ibuprofen')",
+  "parameters": {
+    "drug_name": "str — drug name (generic or brand, e.g. 'ibuprofen', 'aspirin')"
+  },
+  "returns": "dict with keys: drug_name, brand_names, indications, contraindications, adverse_events (top), source",
+  "tags": ["fda", "drug", "adverse events", "pharmacology", "clinical", "drug label", "indication", "contraindication"]
+}

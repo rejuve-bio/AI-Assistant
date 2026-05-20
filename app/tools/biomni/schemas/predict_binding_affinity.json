@@ -1,0 +1,12 @@
+{
+  "name": "predict_binding_affinity",
+  "module": "pharmacology",
+  "description": "Predict protein-ligand binding affinity given a UniProt ID and a SMILES string",
+  "usage": "from app.tools.biomni.pharmacology import predict_binding_affinity; result = predict_binding_affinity('P00533', 'CC1=CC=C(C=C1)NC2=NC=CC(=N2)NC3=CC=CC(=C3)S(=O)(=O)N')",
+  "parameters": {
+    "protein_uniprot_id": "str — UniProt accession of the target protein",
+    "smiles": "str — SMILES string of the ligand"
+  },
+  "returns": "dict with keys: protein_uniprot_id, smiles, estimated_kd_nm, estimated_ki_nm, note",
+  "tags": ["binding affinity", "docking", "protein-ligand", "drug target", "kd", "ki", "inhibitor constant"]
+}

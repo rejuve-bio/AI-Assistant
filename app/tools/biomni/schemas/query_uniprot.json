@@ -1,0 +1,12 @@
+{
+  "name": "query_uniprot",
+  "module": "database_connectors",
+  "description": "Query UniProt protein database for protein information, sequences, and functional annotations",
+  "usage": "from app.tools.biomni.database_connectors import query_uniprot; result = query_uniprot('BRCA1')",
+  "parameters": {
+    "gene_or_protein": "str — gene symbol or protein name (e.g. 'BRCA1', 'TP53')",
+    "fields": "list — UniProt fields to retrieve (default: standard protein fields)"
+  },
+  "returns": "dict with keys: proteins (list of {uniprot_id, gene, protein_name, organism, sequence_length, function}), source",
+  "tags": ["uniprot", "protein", "sequence", "annotation", "database", "swiss-prot", "trembl", "protein function"]
+}

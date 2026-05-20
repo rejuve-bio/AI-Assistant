@@ -1,0 +1,11 @@
+{
+  "name": "query_omim",
+  "module": "data_lake",
+  "description": "Get genetic disorder associations for a gene from OMIM (requires data lake volume mounted)",
+  "usage": "from app.tools.biomni.data_lake import query_omim; result = query_omim('CFTR')",
+  "parameters": {
+    "gene_name": "str — gene symbol (e.g. 'BRCA1', 'CFTR', 'HTT')"
+  },
+  "returns": "dict with keys: gene, disorders (list of {disorder_name, mim_number, inheritance, phenotype_key}), source",
+  "tags": ["omim", "mendelian disease", "genetic disorder", "inheritance", "phenotype", "rare disease", "autosomal", "dominant", "recessive"]
+}

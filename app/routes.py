@@ -7,7 +7,7 @@ import os
 import uuid
 import shutil
 from datetime import datetime
-from app.tools.rag.utils.tts_utils import tts_manager
+from app.tools.platform.rag.utils.tts_utils import tts_manager
 from app.storage.redis import redis_manager
 from app.storage.mongo_storage import mongo_db_manager
 

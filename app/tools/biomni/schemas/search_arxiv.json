@@ -1,0 +1,13 @@
+{
+  "name": "search_arxiv",
+  "module": "literature",
+  "description": "Search arXiv for scientific preprints using the arXiv API",
+  "usage": "from app.tools.biomni.literature import search_arxiv; result = search_arxiv('CRISPR cancer therapy', max_results=10, category='q-bio')",
+  "parameters": {
+    "query": "str — search query string",
+    "max_results": "int — maximum results to return (default 10)",
+    "category": "str — arXiv category: 'q-bio', 'cs', 'stat', '' for all (default 'q-bio')"
+  },
+  "returns": "dict with keys: query, total, papers (list of {title, authors, abstract, arxiv_id, published, url})",
+  "tags": ["arxiv", "literature", "preprint", "search", "papers", "research", "science", "publications"]
+}

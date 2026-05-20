@@ -1,0 +1,12 @@
+{
+  "name": "query_ensembl",
+  "module": "database_connectors",
+  "description": "Query Ensembl REST API for gene annotation including genomic location, transcripts, and biotype",
+  "usage": "from app.tools.biomni.database_connectors import query_ensembl; result = query_ensembl('BRCA2', species='human')",
+  "parameters": {
+    "gene_name": "str — gene symbol (e.g. 'BRCA2', 'MYC')",
+    "species": "str — species name (default 'human')"
+  },
+  "returns": "dict with keys: gene_id, gene_name, chromosome, start, end, strand, biotype, transcripts (list), source",
+  "tags": ["ensembl", "gene", "annotation", "transcript", "genome", "biotype", "ensembl id", "gene model"]
+}

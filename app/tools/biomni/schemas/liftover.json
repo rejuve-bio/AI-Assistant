@@ -1,0 +1,13 @@
+{
+  "name": "liftover",
+  "module": "genetics",
+  "description": "Lift over genomic coordinates between genome assembly versions (hg19/GRCh37 ↔ hg38/GRCh38)",
+  "usage": "from app.tools.biomni.genetics import liftover; result = liftover([{'chrom': 'chr1', 'pos': 1000000}, {'chrom': 'chr2', 'pos': 2000000}], from_build='hg19', to_build='hg38')",
+  "parameters": {
+    "positions": "list — list of dicts with keys: chrom (e.g. 'chr1'), pos (int)",
+    "from_build": "str — source genome build: 'hg19', 'hg38', 'GRCh37', 'GRCh38' (default 'hg19')",
+    "to_build": "str — target genome build (default 'hg38')"
+  },
+  "returns": "dict with keys: from_build, to_build, total, converted_count, failed_count, results (list with new_chrom, new_pos), failed",
+  "tags": ["liftover", "genome assembly", "hg19", "hg38", "grch37", "grch38", "coordinates", "pyliftover", "coordinate conversion"]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "query_alphafold",
+  "module": "database_connectors",
+  "description": "Get AlphaFold protein structure prediction for a UniProt accession ID",
+  "usage": "from app.tools.biomni.database_connectors import query_alphafold; result = query_alphafold('P04637')",
+  "parameters": {
+    "uniprot_id": "str — UniProt accession ID (e.g. 'P04637' for TP53)"
+  },
+  "returns": "dict with keys: uniprot_id, structure_url, pdb_url, plddt_score, model_created_date, source",
+  "tags": ["alphafold", "protein structure", "3d structure", "folding", "uniprot", "pdb", "structure prediction", "deepmind"]
+}

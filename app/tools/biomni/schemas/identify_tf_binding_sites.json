@@ -1,0 +1,13 @@
+{
+  "name": "identify_tf_binding_sites",
+  "module": "genetics",
+  "description": "Identify transcription factor binding sites in a DNA sequence by querying JASPAR motif database",
+  "usage": "from app.tools.biomni.genetics import identify_tf_binding_sites; result = identify_tf_binding_sites('ATGGCTAGCTAGCGATCGATCGATCGATCG', tf_names=['TP53', 'CTCF', 'SP1'], threshold=0.8)",
+  "parameters": {
+    "sequence": "str — DNA sequence to scan for TF binding sites",
+    "tf_names": "list — TF names to scan e.g. ['TP53', 'CTCF', 'SP1'] (default: common TFs)",
+    "threshold": "float — relative score threshold 0-1 (default 0.8)"
+  },
+  "returns": "dict with keys: sequence_length, tfs_queried, jaspar_matrices (list of {tf, jaspar_matrix, note})",
+  "tags": ["transcription factor", "binding site", "jaspar", "motif", "tfbs", "ctcf", "sp1", "tp53", "gata1", "nf1"]
+}

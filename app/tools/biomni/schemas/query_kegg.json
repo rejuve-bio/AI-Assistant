@@ -1,0 +1,11 @@
+{
+  "name": "query_kegg",
+  "module": "database_connectors",
+  "description": "Query KEGG pathway database to get metabolic and signaling pathways associated with a gene",
+  "usage": "from app.tools.biomni.database_connectors import query_kegg; result = query_kegg('KRAS')",
+  "parameters": {
+    "gene_name": "str — gene symbol (e.g. 'KRAS', 'EGFR')"
+  },
+  "returns": "dict with keys: gene, pathways (list of {pathway_id, pathway_name, description}), source",
+  "tags": ["kegg", "pathway", "metabolic", "gene", "signaling", "metabolism", "biological pathway", "map"]
+}

@@ -3,8 +3,8 @@ import json
 import logging
 import os
 from dotenv import load_dotenv
-from app.tools.annotation.neo4j_handler import Neo4jConnection
-from app.tools.annotation.schema_handler import SchemaHandler
+from app.tools.platform.annotation.neo4j_handler import Neo4jConnection
+from app.tools.platform.annotation.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import LLMInterface
 from app.prompts.annotation_prompts import (
     EXTRACT_RELEVANT_INFORMATION_PROMPT,
@@ -14,6 +14,29 @@ from app.prompts.annotation_prompts import (
 )
 from app.socket_manager import emit_to_user
 from .json_to_cypher import JsonToCypherConverter
+
+# Maps Neo4j node labels → the source databases they were built from.
+NODE_LABEL_TO_SOURCE_DB = {
+    "Gene":                   ["GENCODE v44"],
+    "Transcript":             ["GENCODE v44"],
+    "Exon":                   ["GENCODE v44"],
+    "Protein":                ["UniProt"],
+    "Variant":                ["ClinVar", "dbSNP"],
+    "StructuralVariant":      ["dbVar", "ClinVar"],
+    "RegulatoryElement":      ["ENCODE", "Roadmap Epigenomics"],
+    "Enhancer":               ["ENCODE SCREEN", "Roadmap Epigenomics"],
+    "Promoter":               ["ENCODE SCREEN"],
+    "TFBS":                   ["JASPAR", "ENCODE"],
+    "SuperEnhancer":          ["dbSUPER"],
+    "TAD":                    ["3D Genome Browser"],
+    "eQTL":                   ["GTEx v8"],
+    "ProteinInteraction":     ["STRING v12"],
+    "Pathway":                ["REACTOME", "GO"],
+    "GOTerm":                 ["Gene Ontology"],
+    "TissueExpression":       ["GTEx v8"],
+    "ChromatinAccessibility": ["ENCODE", "Roadmap Epigenomics"],
+    "TFRegulation":           ["TFLink", "JASPAR"],
+}
 
 
 logging.basicConfig(
@@ -774,51 +797,96 @@ class Graph:
             }
 
     def _handle_general_query(self, query, user_id):
+        """Full NL → JSON → Cypher → execute pipeline. Returns actual data + provenance.
+        Falls back to _handle_stats_query if Cypher conversion fails."""
         try:
-            logger.info(f"Handling general query: '{query}'")
+            logger.info(f"Handling general data query: '{query}'")
 
-            emit_to_user(
-                user=user_id,
-                message="Analyzing database information...",
-            )
+            relevant_information = self._extract_relevant_information(query)
+            initial_json = self._convert_to_annotation_json(relevant_information, query)
+            validation = self._validate_and_update(initial_json)
+            validated_json = validation["updated_json"]
 
-            # Generate simple database summary
-            database_summary = self._generate_database_summary()
+            converter = JsonToCypherConverter()
+            cypher_query = converter.convert_to_cypher(validated_json)
 
-            # Use LLM to answer the query based on the summary
-            summary_prompt = f"""
-            Based on this database summary: {database_summary}
-            
-            Answer this question: {query}
-            
-            Provide a clear, informative response based on the available data.
-            """
+            database_results = self.execute_cypher_query(cypher_query)
 
-            summary = self.llm.generate(summary_prompt)
-            logger.info("General query answered successfully")
+            if not database_results.get("success", False):
+                logger.warning("Cypher query failed, falling back to stats summary")
+                return self._handle_stats_query(query, user_id)
+
+            provenance = self._build_provenance(database_results)
+            summary = self.summarize_results(query, database_results)
 
             return {
                 "success": True,
                 "summary": summary,
-                "cypher_query": None,
-                "json_query": None,
-                "database_results": {"data": {"summary": database_summary}},
+                "cypher_query": cypher_query,
+                "database_results": database_results,
+                "provenance": provenance,
                 "error": None,
                 "pipeline_status": {
-                    "general_query_handling": "success",
+                    "json_extraction": "success",
+                    "cypher_conversion": "success",
+                    "database_execution": "success",
+                    "summarization": "success",
                 },
             }
 
         except Exception as e:
-            error_msg = f"Error handling general query: {str(e)}"
+            logger.warning(f"General data query failed ({e}), falling back to stats summary")
+            return self._handle_stats_query(query, user_id)
+
+    def _handle_stats_query(self, query, user_id):
+        """Answers general/stats questions about the database (counts, schema, node types)."""
+        try:
+            logger.info(f"Handling stats query: '{query}'")
+            database_summary = self._generate_database_summary()
+            summary_prompt = f"""
+            Based on this database summary: {database_summary}
+
+            Answer this question: {query}
+
+            Provide a clear, informative response based on the available data.
+            """
+            summary = self.llm.generate(summary_prompt)
+            return {
+                "success": True,
+                "summary": summary,
+                "cypher_query": None,
+                "database_results": {"data": {"summary": database_summary}},
+                "error": None,
+                "pipeline_status": {"stats_query_handling": "success"},
+            }
+        except Exception as e:
+            error_msg = f"Error handling stats query: {str(e)}"
             logger.error(error_msg)
             return {
                 "success": False,
                 "error": error_msg,
-                "pipeline_status": {
-                    "general_query_handling": "failed",
-                },
+                "pipeline_status": {"stats_query_handling": "failed"},
             }
+
+    def _build_provenance(self, db_results):
+        """Reads node labels from query results and maps them to source databases."""
+        data = db_results.get("data", {})
+        nodes = data.get("nodes", [])
+
+        hit_labels = set()
+        for node in nodes:
+            for label in node.get("labels", []):
+                hit_labels.add(label)
+
+        source_dbs = []
+        for label in hit_labels:
+            source_dbs.extend(NODE_LABEL_TO_SOURCE_DB.get(label, []))
+
+        return {
+            "database": "Neo4j (Rejuve annotation graph)",
+            "node_types_queried": sorted(hit_labels),
+            "source_databases": sorted(set(source_dbs)),
+        }
 
     def _generate_database_summary(self):
         try:

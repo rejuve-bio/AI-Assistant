@@ -1,0 +1,11 @@
+{
+  "name": "predict_admet",
+  "module": "pharmacology",
+  "description": "Predict ADMET properties (absorption, distribution, metabolism, excretion, toxicity) for a molecule using RDKit and Lipinski rule-of-5",
+  "usage": "from app.tools.biomni.pharmacology import predict_admet; result = predict_admet('CC(=O)Oc1ccccc1C(=O)O')",
+  "parameters": {
+    "smiles": "str — SMILES string of the molecule"
+  },
+  "returns": "dict with keys: smiles, mw, logp, hbd, hba, rotatable_bonds, tpsa, lipinski_pass, predicted_properties",
+  "tags": ["admet", "drug", "lipinski", "pharmacokinetics", "rdkit", "smiles", "absorption", "toxicity", "druglikeness"]
+}

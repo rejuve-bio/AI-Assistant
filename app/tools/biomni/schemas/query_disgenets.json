@@ -1,0 +1,12 @@
+{
+  "name": "query_disgenets",
+  "module": "data_lake",
+  "description": "Get gene-disease associations from DisGeNET with association scores (requires data lake volume mounted)",
+  "usage": "from app.tools.biomni.data_lake import query_disgenets; result = query_disgenets('BRCA1', top_k=20)",
+  "parameters": {
+    "gene_name": "str — gene symbol (e.g. 'BRCA1', 'APOE')",
+    "top_k": "int — number of top disease associations to return (default 20)"
+  },
+  "returns": "dict with keys: gene, diseases (list of {disease_name, score, disease_id}), source",
+  "tags": ["disgenets", "gene disease", "association", "mendelian", "complex disease", "disease score", "gene phenotype"]
+}

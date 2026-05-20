@@ -1,0 +1,12 @@
+{
+  "name": "simulate_restriction_digest",
+  "module": "molecular_biology",
+  "description": "Simulate restriction enzyme digest of a DNA sequence using BioPython, returning cut sites and fragment sizes",
+  "usage": "from app.tools.biomni.molecular_biology import simulate_restriction_digest; result = simulate_restriction_digest('GAATTCATGCATGCGGATCCAAA', enzymes=['EcoRI', 'BamHI'])",
+  "parameters": {
+    "sequence": "str — DNA sequence to digest",
+    "enzymes": "list — restriction enzyme names e.g. ['EcoRI', 'BamHI', 'HindIII'] (default: common cloning enzymes)"
+  },
+  "returns": "dict with keys: sequence_length, cut_sites (dict per enzyme), n_fragments, fragments (list of {start, end, size})",
+  "tags": ["restriction enzyme", "digest", "cloning", "ecori", "bamhi", "hindiii", "biopython", "fragment", "gel electrophoresis"]
+}

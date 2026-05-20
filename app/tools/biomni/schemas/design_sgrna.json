@@ -1,0 +1,14 @@
+{
+  "name": "design_sgrna",
+  "module": "molecular_biology",
+  "description": "Design CRISPR sgRNA guides for a target DNA sequence, scanning both strands for PAM sites",
+  "usage": "from app.tools.biomni.molecular_biology import design_sgrna; result = design_sgrna('ATGGCTAGCTAGCGATCGATCGATCGATCGATCGATCGA', pam='NGG', top_k=10)",
+  "parameters": {
+    "target_sequence": "str — DNA sequence to target (must include PAM context)",
+    "pam": "str — PAM sequence: 'NGG' for SpCas9, 'NNGRRT' for SaCas9 (default 'NGG')",
+    "guide_length": "int — length of guide RNA (default 20)",
+    "top_k": "int — number of top guides to return (default 10)"
+  },
+  "returns": "dict with keys: pam, guide_length, total_guides_found, top_guides (list of {sequence, pam, position, gc_content, off_target_score, strand})",
+  "tags": ["crispr", "sgrna", "guide rna", "cas9", "gene editing", "genome editing", "knock out", "knock in", "pam"]
+}

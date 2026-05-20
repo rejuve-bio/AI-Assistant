@@ -1,0 +1,12 @@
+{
+  "name": "search_scholar",
+  "module": "literature",
+  "description": "Search Google Scholar for scientific papers with citation counts",
+  "usage": "from app.tools.biomni.literature import search_scholar; result = search_scholar('BRCA1 breast cancer mutations', max_results=10)",
+  "parameters": {
+    "query": "str — search query (supports operators like author:, source:)",
+    "max_results": "int — maximum results to return (default 10)"
+  },
+  "returns": "dict with keys: query, total, papers (list of {title, authors, year, abstract, citations, url})",
+  "tags": ["google scholar", "literature search", "papers", "citations", "research", "scholarly", "pubmed", "publications"]
+}

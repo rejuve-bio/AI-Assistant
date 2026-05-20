@@ -1,0 +1,12 @@
+{
+  "name": "query_msigdb",
+  "module": "data_lake",
+  "description": "Check membership of genes in MSigDB gene sets with Jaccard similarity scoring (requires data lake volume mounted)",
+  "usage": "from app.tools.biomni.data_lake import query_msigdb; result = query_msigdb(['TP53', 'MDM2', 'CDKN1A', 'BAX'], collection='H')",
+  "parameters": {
+    "gene_list": "list — list of gene symbols to check against gene sets",
+    "collection": "str — MSigDB collection: 'H' (Hallmarks), 'C2' (Curated), 'C5' (GO), 'C6' (Oncogenic), 'C7' (Immunologic), 'C8' (Cell type) (default 'H')"
+  },
+  "returns": "dict with keys: collection, n_genes_input, n_gene_sets_matched, top_matches (list of {gene_set, matched_genes, n_matched, jaccard_similarity}), source",
+  "tags": ["msigdb", "gene set", "hallmarks", "gsea", "pathway", "enrichment", "molecular signatures", "c2", "c5", "go"]
+}

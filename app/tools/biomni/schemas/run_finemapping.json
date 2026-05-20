@@ -1,0 +1,13 @@
+{
+  "name": "run_finemapping",
+  "module": "genetics",
+  "description": "Bayesian statistical finemapping on GWAS summary statistics to compute posterior inclusion probabilities (PIPs) and 95% credible sets",
+  "usage": "from app.tools.biomni.genetics import run_finemapping; result = run_finemapping('input/sumstats.tsv', n_causal=1, output_dir='output/')",
+  "parameters": {
+    "sumstats_path": "str — path to TSV summary statistics file with columns: snp, chr, pos, beta, se, pval, n",
+    "n_causal": "int — expected number of causal variants per locus (default 1)",
+    "output_dir": "str — directory to write finemapping results (default 'output/')"
+  },
+  "returns": "dict with keys: n_variants_total, credible_set_size, top_variant, credible_set (list with pip scores), output_files",
+  "tags": ["finemapping", "gwas", "credible set", "pip", "posterior inclusion probability", "causal variants", "susie", "bayesian"]
+}

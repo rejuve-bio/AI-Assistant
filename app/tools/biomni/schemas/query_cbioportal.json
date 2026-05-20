@@ -1,0 +1,12 @@
+{
+  "name": "query_cbioportal",
+  "module": "database_connectors",
+  "description": "Query cBioPortal for cancer genomics data including somatic mutations, copy number, and expression across TCGA studies",
+  "usage": "from app.tools.biomni.database_connectors import query_cbioportal; result = query_cbioportal('TP53', study_id='tcga_pan_can_atlas_2018')",
+  "parameters": {
+    "gene_name": "str — gene symbol (e.g. 'TP53', 'KRAS')",
+    "study_id": "str — cBioPortal study ID (default 'tcga_pan_can_atlas_2018')"
+  },
+  "returns": "dict with keys: gene, study_id, mutations (list), copy_number, expression_percentile, alteration_frequency, source",
+  "tags": ["cbioportal", "cancer", "tcga", "mutation", "genomics", "oncology", "somatic", "copy number", "cancer genome atlas"]
+}

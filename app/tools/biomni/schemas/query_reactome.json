@@ -1,0 +1,12 @@
+{
+  "name": "query_reactome",
+  "module": "database_connectors",
+  "description": "Get biological pathways from Reactome database for a gene",
+  "usage": "from app.tools.biomni.database_connectors import query_reactome; result = query_reactome('MTOR', species='Homo sapiens')",
+  "parameters": {
+    "gene_name": "str — gene symbol (e.g. 'MTOR', 'AKT1')",
+    "species": "str — species (default 'Homo sapiens')"
+  },
+  "returns": "dict with keys: gene, pathways (list of {pathway_id, pathway_name, top_level_pathway, url}), source",
+  "tags": ["reactome", "pathway", "biological process", "gene", "signaling", "metabolic", "pathway hierarchy"]
+}

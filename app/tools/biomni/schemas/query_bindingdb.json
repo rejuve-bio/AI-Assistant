@@ -1,0 +1,12 @@
+{
+  "name": "query_bindingdb",
+  "module": "data_lake",
+  "description": "Get drug-protein binding affinities (Ki, IC50) from BindingDB for a target protein (requires data lake volume mounted)",
+  "usage": "from app.tools.biomni.data_lake import query_bindingdb; result = query_bindingdb('EGFR', top_k=20)",
+  "parameters": {
+    "target_gene": "str — target gene/protein name (e.g. 'EGFR', 'ABL1')",
+    "top_k": "int — number of top binding compounds to return (default 20)"
+  },
+  "returns": "dict with keys: target, compounds (list of {ligand_name, smiles, ki_nm, ic50_nm}), source",
+  "tags": ["bindingdb", "binding affinity", "drug", "ki", "ic50", "inhibitor", "target", "ligand", "small molecule"]
+}

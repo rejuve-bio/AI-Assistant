@@ -1,0 +1,11 @@
+{
+  "name": "query_clinvar",
+  "module": "database_connectors",
+  "description": "Query ClinVar for variant clinical significance, associated conditions, and review status",
+  "usage": "from app.tools.biomni.database_connectors import query_clinvar; result = query_clinvar('rs28897672')",
+  "parameters": {
+    "variant_id": "str — rs ID (e.g. 'rs28897672') or HGVS notation"
+  },
+  "returns": "dict with keys: variant_id, clinical_significance, conditions (list), review_status, gene, source",
+  "tags": ["clinvar", "variant", "pathogenicity", "clinical", "snp", "rs id", "benign", "pathogenic", "vus", "disease"]
+}

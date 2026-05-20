@@ -1,0 +1,12 @@
+{
+  "name": "query_depmap",
+  "module": "data_lake",
+  "description": "Get cancer cell line dependency scores for a gene from DepMap (requires data lake volume mounted)",
+  "usage": "from app.tools.biomni.data_lake import query_depmap; result = query_depmap('KRAS', top_k=20)",
+  "parameters": {
+    "gene_name": "str — gene symbol (e.g. 'KRAS', 'MYC')",
+    "top_k": "int — number of most dependent cell lines to return (default 20)"
+  },
+  "returns": "dict with keys: gene, mean_dependency_score, n_cell_lines, most_dependent_lines (dict of cell_line: score), source",
+  "tags": ["depmap", "cancer dependency", "cell line", "essentiality", "crispr screen", "kras", "myc", "oncogene", "dependency map"]
+}

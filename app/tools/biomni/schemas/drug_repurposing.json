@@ -1,0 +1,12 @@
+{
+  "name": "drug_repurposing",
+  "module": "pharmacology",
+  "description": "Find drug repurposing candidates for a disease using TXGNN model predictions from the data lake",
+  "usage": "from app.tools.biomni.pharmacology import drug_repurposing; result = drug_repurposing('Alzheimer disease', top_k=20)",
+  "parameters": {
+    "disease_name": "str — name of the disease to find drug candidates for",
+    "top_k": "int — number of top drug candidates to return (default 20)"
+  },
+  "returns": "dict with keys: disease, candidates (list of {drug_name, score, mechanism})",
+  "tags": ["drug repurposing", "txgnn", "disease", "drug discovery", "alzheimer", "repurposing", "drug candidate"]
+}

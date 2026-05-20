@@ -1,0 +1,13 @@
+{
+  "name": "annotate_scrna",
+  "module": "genomics",
+  "description": "Automated cell type annotation of scRNA-seq AnnData using CellTypist, Leiden clustering, and optional XGBoost",
+  "usage": "from app.tools.biomni.genomics import annotate_scrna; result = annotate_scrna('input/cells.h5ad', methods=['celltypist', 'leiden'], output_dir='output/')",
+  "parameters": {
+    "adata_path": "str — path to .h5ad AnnData file",
+    "methods": "list — annotation methods to run: 'celltypist', 'leiden', 'xgboost' (default ['celltypist', 'leiden'])",
+    "output_dir": "str — directory for output files (default 'output/')"
+  },
+  "returns": "dict with keys: cell_type_counts, n_cells, methods_used, output_files",
+  "tags": ["scrna", "single cell", "cell type annotation", "celltypist", "leiden", "scanpy", "h5ad", "scRNA-seq", "clustering"]
+}

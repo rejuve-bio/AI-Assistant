@@ -1,0 +1,11 @@
+{
+  "name": "get_doi_supplementary",
+  "module": "literature",
+  "description": "Fetch paper metadata (title, abstract, authors, open access PDF) for a DOI from Semantic Scholar",
+  "usage": "from app.tools.biomni.literature import get_doi_supplementary; result = get_doi_supplementary('10.1038/s41586-021-03305-5')",
+  "parameters": {
+    "doi": "str — Digital Object Identifier e.g. '10.1038/s41586-021-03305-5'"
+  },
+  "returns": "dict with keys: doi, title, abstract, authors, year, journal, open_access_pdf",
+  "tags": ["doi", "paper", "semantic scholar", "metadata", "literature", "open access", "abstract", "publication"]
+}

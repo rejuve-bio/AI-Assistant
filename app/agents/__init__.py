@@ -6,24 +6,69 @@ from ..prompts.classifier_prompt import (
 )
 from ..prompts.dependency_prompts import DEPENDENCY_SUMMARIZATION_PROMPT
 from ..prompts.rag_prompts import CLARIFYING_QUESTIONS_PROMPT
-from app.tools.annotation.annotated_graph import Graph
-from app.tools.rag.rag import RAG
-from app.tools.annotation.summarizer import Graph_Summarizer
-from app.tools.hypothesis.hypothesis import HypothesisGeneration
+from app.tools.platform.annotation.annotated_graph import Graph
+from app.tools.platform.rag.rag import RAG
+from app.tools.platform.annotation.summarizer import Graph_Summarizer
+from app.tools.platform.hypothesis.hypothesis import HypothesisGeneration
 from ..socket_manager import emit_to_user
-from app.tools.galaxy.galaxy import GalaxyHandler
-from app.tools.biogpt.biogpt import BioGPTAgentOpenVINO
-from app.tools.web_search import WebSearch
+from app.tools.platform.galaxy.galaxy import GalaxyHandler
+from app.tools.platform.biogpt.biogpt import BioGPTAgentOpenVINO
+from app.tools.platform.web_search import WebSearch
+from app.tools.biomni import BiomniFunctionRetriever
 from .code_executor import CodeExecutor
 from typing import TypedDict, List, Annotated, Any, Dict, Optional
 from langgraph.types import Send
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+import importlib
 import json
 import operator
 import os
 import logging
 
 logger = logging.getLogger(__name__)
+
+# ── Biomni direct-call argument extractor ───────────────────────────────────
+BIOMNI_ARG_EXTRACT_PROMPT = """Extract argument values from this task for a function call.
+
+Task: {task}
+Function: {function_name}
+Parameters: {params}
+
+Respond with ONLY a JSON object of argument values. No explanation, no markdown.
+Examples:
+  {{"gene_name": "BRCA1"}}
+  {{"gene_list": ["TP53", "MYC", "KRAS"], "collection": "H"}}
+  {{"target_gene": "EGFR", "top_k": 20}}"""
+
+# ── Dynamic replanner ───────────────────────────────────────────────────────
+REPLAN_PROMPT = """You are checking whether a multi-step biomedical query is fully answered.
+
+User query: {user_query}
+
+Outputs collected so far:
+{collected_outputs}
+
+Is the query fully answered by these outputs?
+
+Respond with EXACTLY one of:
+
+SUFFICIENT
+
+or, if something critical is clearly missing:
+
+NEED_MORE:
+[
+  {{"id": {next_id}, "agent": "<agent>", "type": "informative", "input": "<specific instruction>", "depends_on": []}},
+  ...
+]
+
+Rules:
+- Maximum 2 additional steps.
+- Use SUFFICIENT unless an entire major part of the query is completely unanswered.
+- Valid agents: rag_agent, biogpt_agent, annotation_agent (sub_type: annotation_general),
+  web_search_agent (sub_type: pubmed), biomni_agent, code_executor (type: action, tool: python).
+- For biomni_agent: set input to the exact database lookup needed.
+- Do NOT add steps that re-fetch what was already retrieved."""
 
 
 def _merge_dicts(existing: Dict, new: Dict) -> Dict:
@@ -70,6 +115,9 @@ class AgentState(TypedDict):
     # Last N conversation turns fed in from MongoDB
     conversation_history: Optional[List[Dict[str, Any]]]
 
+    # Replanning loop control (max 1 replan round)
+    replan_count: int
+
     # Final aggregation
     agents_completed: Annotated[List[str], operator.add]
     agents_to_run: List[str]
@@ -98,7 +146,8 @@ class Orchestrator:
         self.galaxy_handler = GalaxyHandler(advanced_llm, qdrant_client, embedding_model)
         self.biogpt = BioGPTAgentOpenVINO(llm=advanced_llm)
         self.web_search = WebSearch(advanced_llm)
-        self.code_executor = CodeExecutor(advanced_llm, basic_llm)
+        biomni_retriever = BiomniFunctionRetriever(embedding_model)
+        self.code_executor = CodeExecutor(advanced_llm, basic_llm, biomni_retriever=biomni_retriever)
 
         logger.info(f"Orchestrator initialized with llm: {type(advanced_llm).__name__}")
 
@@ -317,6 +366,7 @@ class Orchestrator:
                 "text": output_text,
                 "json_format": result.get("json_format"),
                 "files": result.get("files", []),
+                "provenance": result.get("provenance"),
             }],
             "agents_completed": [agent_name],
         }
@@ -334,9 +384,14 @@ class Orchestrator:
     def should_continue_dag(self, state: AgentState) -> str:
         completed = set(state.get("completed_step_ids", []))
         plan = state.get("plan", [])
-        if len(completed) >= len(plan):
-            return "aggregator"
-        return "dag_scheduler"
+        if len(completed) < len(plan):
+            return "dag_scheduler"
+        # All current steps done — replan once if we haven't yet
+        if state.get("replan_count", 0) == 0:
+            logger.info("All steps done → replanner (first check)")
+            return "replanner"
+        logger.info("All steps done → aggregator (already replanned)")
+        return "aggregator"
 
     # ─────────────────────────────────────────────────────────────────────────
     # Informative agent dispatch
@@ -354,6 +409,7 @@ class Orchestrator:
             "hypothesis_agent":        lambda: self._hypothesis_step(state, step_input),
             "content_retrieval_agent": lambda: self._content_retrieval_step(state, step_input),
             "web_search_agent":        lambda: self._web_search_step(state, step_input, sub_type),
+            "biomni_agent":            lambda: self._biomni_lookup_step(state, step_input),
         }
 
         handler = tool_dispatch.get(agent)
@@ -445,8 +501,20 @@ class Orchestrator:
             )
             if pipeline_resp.get("success"):
                 json_format = pipeline_resp.get("json_format")
-                text = self._build_annotation_text(json_format)
-                return {"text": text, "json_format": json_format, "source": "annotation database"}
+                provenance = pipeline_resp.get("provenance")
+
+                if json_format:
+                    # annotation_biological: JSON structure for frontend visualization
+                    text = self._build_annotation_text(json_format)
+                else:
+                    # annotation_general: actual data returned with provenance
+                    text = pipeline_resp.get("summary", "")
+
+                result = {"text": text, "json_format": json_format, "source": "annotation database"}
+                if provenance:
+                    result["provenance"] = provenance
+                return result
+
             return {"text": pipeline_resp.get("error", "Annotation failed"), "source": "annotation database", "json_format": None}
         except Exception as e:
             logger.error(f"Annotation step error: {e}", exc_info=True)
@@ -604,6 +672,124 @@ class Orchestrator:
         }
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Biomni direct DB/data-lake lookup (no code generation)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _biomni_lookup_step(self, state: AgentState, step_input: str) -> Dict:
+        """Directly call a Biomni database or data-lake function for this step.
+
+        The retriever picks the best-matching function, the LLM extracts the
+        arguments from step_input, and we call the function and return the result.
+        """
+        try:
+            emit_to_user(user=state["user_id"], message="Querying biomedical databases...")
+            retriever = self.code_executor.biomni_retriever
+            if not retriever or not retriever._schemas:
+                return {"text": "Biomni retriever not available.", "source": "biomni", "json_format": None}
+
+            candidates = retriever._rank_by_embedding(step_input, top_k=3)
+            if not candidates:
+                return {"text": "No matching Biomni function found.", "source": "biomni", "json_format": None}
+
+            schema = candidates[0]
+            params = schema.get("parameters", {})
+            params_desc = ", ".join(f"{k}: {v}" for k, v in params.items())
+
+            # Ask LLM to extract argument values
+            arg_prompt = BIOMNI_ARG_EXTRACT_PROMPT.format(
+                task=step_input,
+                function_name=schema["name"],
+                params=params_desc,
+            )
+            args_raw = self.basic_llm.generate(arg_prompt)
+            try:
+                # Strip markdown fences if present
+                clean = args_raw.strip().strip("```json").strip("```").strip()
+                kwargs = json.loads(clean)
+            except Exception:
+                # Fallback: use the first param with step_input as value
+                first_key = next(iter(params), None)
+                kwargs = {first_key: step_input} if first_key else {}
+
+            # Dynamically import and call the function
+            mod = importlib.import_module(f"app.tools.biomni.{schema['module']}")
+            func = getattr(mod, schema["name"])
+            logger.info(f"biomni_lookup: calling {schema['module']}.{schema['name']}({kwargs})")
+            result = func(**kwargs)
+
+            # Format result as text
+            text = json.dumps(result, indent=2, default=str)
+            provenance = {
+                "database": f"Biomni — {schema['name']}",
+                "biomni_apis": [schema["name"]],
+                "source_databases": [result.get("source", schema["module"])],
+                "node_types_queried": [],
+            }
+            return {"text": text, "source": f"biomni:{schema['name']}", "json_format": None, "provenance": provenance}
+
+        except Exception as e:
+            logger.error(f"Biomni lookup step error: {e}", exc_info=True)
+            return {"text": f"Error calling Biomni function: {e}", "source": "biomni", "json_format": None}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Replanner — checks if plan is complete or needs more steps
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def replanner(self, state: AgentState) -> Dict[str, Any]:
+        """After all current steps finish, ask the LLM if more steps are needed.
+
+        Adds new steps to the plan (with new IDs) if something critical is missing.
+        Increments replan_count so this runs at most once per query.
+        """
+        replan_count = state.get("replan_count", 0) + 1
+
+        step_agent_outputs = state.get("step_agent_outputs", [])
+        collected = "\n\n".join(
+            f"[Step {o['step_id']} — {o.get('source', o['agent'])}]: {str(o.get('text', ''))[:600]}"
+            for o in sorted(step_agent_outputs, key=lambda x: x.get("step_id", 0))
+        )
+        current_plan = state.get("plan", [])
+        next_id = max((s["id"] for s in current_plan), default=0) + 1
+
+        prompt = REPLAN_PROMPT.format(
+            user_query=state.get("user_query", ""),
+            collected_outputs=collected[:3000],
+            next_id=next_id,
+        )
+
+        try:
+            verdict = self.basic_llm.generate(prompt).strip()
+        except Exception as e:
+            logger.error(f"Replanner LLM call failed: {e}")
+            return {"replan_count": replan_count}
+
+        if verdict.upper().startswith("SUFFICIENT"):
+            logger.info("Replanner: SUFFICIENT — going to aggregator")
+            return {"replan_count": replan_count}
+
+        if verdict.upper().startswith("NEED_MORE:"):
+            raw_json = verdict[len("NEED_MORE:"):].strip()
+            try:
+                new_steps = json.loads(raw_json)
+                if isinstance(new_steps, list) and new_steps:
+                    updated_plan = current_plan + new_steps
+                    logger.info(f"Replanner: adding {len(new_steps)} step(s): {[s['agent'] for s in new_steps]}")
+                    return {"plan": updated_plan, "replan_count": replan_count}
+            except Exception as e:
+                logger.warning(f"Replanner failed to parse new steps: {e}")
+
+        return {"replan_count": replan_count}
+
+    def after_replan(self, state: AgentState) -> str:
+        """Route after replanner: if new unfinished steps exist → dag_scheduler, else → aggregator."""
+        completed = set(state.get("completed_step_ids", []))
+        plan = state.get("plan", [])
+        unfinished = [s for s in plan if s["id"] not in completed]
+        if unfinished:
+            return "dag_scheduler"
+        return "aggregator"
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Aggregator
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -652,6 +838,38 @@ class Orchestrator:
             file_names = [os.path.basename(f) for f in all_output_files]
             files_note = f"\n\nGenerated files: {', '.join(file_names)}"
 
+        # Build provenance note from all steps that returned source info
+        provenance_lines = []
+        for output in step_agent_outputs:
+            prov = output.get("provenance")
+            if not prov:
+                continue
+            db = prov.get("database", "")
+            source_dbs = prov.get("source_databases", [])
+            node_types = prov.get("node_types_queried", [])
+            biomni_tools = prov.get("biomni_tools", [])
+            biomni_apis = prov.get("biomni_apis", [])
+            not_in_neo4j = prov.get("not_in_neo4j", [])
+
+            if db and source_dbs:
+                provenance_lines.append(
+                    f"- {db} | data types: {', '.join(node_types)} | "
+                    f"sourced from: {', '.join(source_dbs)}"
+                )
+            if biomni_tools:
+                provenance_lines.append(f"- Biomni analysis tools used: {', '.join(biomni_tools)}")
+            if biomni_apis:
+                provenance_lines.append(f"- External APIs queried: {', '.join(biomni_apis)}")
+            if not_in_neo4j:
+                provenance_lines.append(
+                    f"- Not found in our database — sourced externally: {', '.join(not_in_neo4j)}"
+                )
+
+        provenance_note = (
+            "\n\nData sources used:\n" + "\n".join(provenance_lines)
+            if provenance_lines else ""
+        )
+
         plan = state.get("plan", [])
         execution_context = ""
         if len(plan) > 1:
@@ -668,6 +886,7 @@ class Orchestrator:
                 json_note=json_note,
                 files_note=files_note,
                 execution_context=execution_context,
+                provenance_note=provenance_note,
             )
             aggregated = self.advanced_llm.generate(prompt)
             if isinstance(aggregated, str) and aggregated.strip() == user_query.strip():

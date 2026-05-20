@@ -12,11 +12,11 @@ from flask_limiter.util import get_remote_address
 
 from .routes import main_bp
 from app.main import AiAssistance
-from app.tools.rag.rag import RAG
+from app.tools.platform.rag.rag import RAG
 from app.socket_manager import init_socketio
 from app.storage.qdrant import Qdrant
 from app.storage.mongo_storage import MongoManager
-from app.tools.annotation.schema_handler import SchemaHandler
+from app.tools.platform.annotation.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import (
     get_llm_model,
     sentence_transformer_embedding_model,

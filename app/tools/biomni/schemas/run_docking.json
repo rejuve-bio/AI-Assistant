@@ -1,0 +1,13 @@
+{
+  "name": "run_docking",
+  "module": "pharmacology",
+  "description": "Molecular docking simulation using AutoDock Vina to compute binding poses and affinities",
+  "usage": "from app.tools.biomni.pharmacology import run_docking; result = run_docking('input/receptor.pdb', 'CC1=CC=C(C=C1)C2=CC(=NN2)C(F)(F)F', 'output/')",
+  "parameters": {
+    "receptor_pdb_path": "str — path to receptor PDB file",
+    "ligand_smiles": "str — SMILES string of the ligand",
+    "output_dir": "str — directory to write docking results (default 'output/')"
+  },
+  "returns": "dict with keys: best_affinity_kcal_mol, poses (list of {affinity, rmsd_lb, rmsd_ub}), output_files",
+  "tags": ["molecular docking", "autodock vina", "drug discovery", "binding energy", "pose", "virtual screening"]
+}

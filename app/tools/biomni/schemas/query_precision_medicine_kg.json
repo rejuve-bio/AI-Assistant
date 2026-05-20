@@ -1,0 +1,14 @@
+{
+  "name": "query_precision_medicine_kg",
+  "module": "data_lake",
+  "description": "Query the precision medicine knowledge graph (17,000 diseases, 4M relationships) for gene/disease/drug neighbors (requires data lake volume mounted)",
+  "usage": "from app.tools.biomni.data_lake import query_precision_medicine_kg; result = query_precision_medicine_kg('BRCA1', entity_type='gene', relation='associated_with', top_k=20)",
+  "parameters": {
+    "entity": "str — entity name (gene, disease, or drug)",
+    "entity_type": "str — entity type: 'gene', 'disease', 'drug' (default 'gene')",
+    "relation": "str — optional relation type to filter by (e.g. 'associated_with', 'treats')",
+    "top_k": "int — number of results to return (default 20)"
+  },
+  "returns": "dict with keys: entity, entity_type, n_neighbors, neighbors (list of {target_name, target_type, relation, weight}), source",
+  "tags": ["knowledge graph", "precision medicine", "drug", "gene", "disease", "network", "kg", "biomedical graph", "relationship"]
+}

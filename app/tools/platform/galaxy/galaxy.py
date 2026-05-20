@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import traceback
-from app.tools.galaxy.galaxy_content_clean import HTMLProcessor
+from app.tools.platform.galaxy.galaxy_content_clean import HTMLProcessor
 from langchain_mcp_adapters.client import MultiServerMCPClient
 import os
 import subprocess

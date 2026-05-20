@@ -1,0 +1,13 @@
+{
+  "name": "query_string",
+  "module": "database_connectors",
+  "description": "Get protein-protein interactions from STRING database for a gene with confidence scores",
+  "usage": "from app.tools.biomni.database_connectors import query_string; result = query_string('EGFR', species=9606, min_score=400)",
+  "parameters": {
+    "gene_name": "str — gene symbol (e.g. 'EGFR', 'TP53')",
+    "species": "int — NCBI taxonomy ID (default 9606 for human)",
+    "min_score": "int — minimum combined interaction score 0-1000 (default 400)"
+  },
+  "returns": "dict with keys: gene, interactions (list of {partner_gene, score, experimental_score, coexpression_score}), source",
+  "tags": ["string", "protein interaction", "ppi", "network", "gene", "interactome", "protein network", "physical interaction"]
+}

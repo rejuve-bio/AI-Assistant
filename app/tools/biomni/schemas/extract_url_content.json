@@ -1,0 +1,12 @@
+{
+  "name": "extract_url_content",
+  "module": "literature",
+  "description": "Extract and clean text content from a URL (paper page, database entry, or any web page)",
+  "usage": "from app.tools.biomni.literature import extract_url_content; result = extract_url_content('https://www.ncbi.nlm.nih.gov/gene/7157', max_chars=5000)",
+  "parameters": {
+    "url": "str — URL to fetch content from",
+    "max_chars": "int — maximum characters to return from the page (default 5000)"
+  },
+  "returns": "dict with keys: url, title, content (cleaned text)",
+  "tags": ["web scraping", "url", "content extraction", "html", "paper", "ncbi", "database", "beautifulsoup"]
+}

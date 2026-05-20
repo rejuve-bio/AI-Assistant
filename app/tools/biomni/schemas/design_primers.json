@@ -1,0 +1,14 @@
+{
+  "name": "design_primers",
+  "module": "molecular_biology",
+  "description": "Design PCR primers for a template DNA sequence using Primer3 with Tm and product size constraints",
+  "usage": "from app.tools.biomni.molecular_biology import design_primers; result = design_primers('ATGGCTAGCTAGCGATCGATCG...', product_size_range=(100, 500), tm_range=(55, 65), output_dir='output/')",
+  "parameters": {
+    "template_sequence": "str — DNA template sequence to design primers for",
+    "product_size_range": "tuple — (min, max) PCR product size in bp (default (100, 500))",
+    "tm_range": "tuple — (min, max) melting temperature in °C (default (55, 65))",
+    "output_dir": "str — directory for output files (default 'output/')"
+  },
+  "returns": "dict with keys: template_length, primer_pairs (list of {pair_id, left_sequence, right_sequence, product_size, tm_left, tm_right, penalty})",
+  "tags": ["pcr", "primers", "primer3", "cloning", "molecular biology", "melting temperature", "tm", "amplicon"]
+}

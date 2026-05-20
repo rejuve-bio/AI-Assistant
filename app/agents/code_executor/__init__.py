@@ -23,6 +23,7 @@ Task instruction:
 Available input files in the input/ directory:
 {available_files}
 
+{biomni_functions}
 Write a complete, self-contained {tool} script that performs this task.
 
 Rules:
@@ -35,6 +36,7 @@ Rules:
   Python: pandas, numpy, scipy, matplotlib, seaborn, scikit-learn, gseapy, networkx, biopython, statsmodels
   R: ggplot2, dplyr, DESeq2, limma, edgeR, WGCNA, igraph, survival, Seurat (if needed)
   PLINK: standard plink2 CLI commands in a bash script
+- If a Biomni function above fits the task, import and use it directly instead of reimplementing the logic
 - Handle missing files gracefully with informative error messages
 - Do NOT include markdown fences, just raw code
 
@@ -66,10 +68,11 @@ FAIL: <reason this cannot be fixed by code changes>"""
 
 
 class CodeExecutor:
-    def __init__(self, advanced_llm, basic_llm):
+    def __init__(self, advanced_llm, basic_llm, biomni_retriever=None):
         self.advanced_llm = advanced_llm
         self.basic_llm = basic_llm
         self.sandbox = Subprocess()
+        self.biomni_retriever = biomni_retriever
 
     def execute(self, step_input: str, tool: str, step_id: int, user_id: str,
                 retry_count: int = 0, file_paths: Optional[List[str]] = None,
@@ -174,7 +177,17 @@ class CodeExecutor:
             available = "\n".join(f"  - input/{os.path.basename(p)}" for p in file_paths)
         else:
             available = "  (no files uploaded — generate example data or use public datasets)"
-        prompt = CODE_GEN_PROMPT.format(step_input=step_input, tool=tool, available_files=available)
+
+        biomni_section = ""
+        if self.biomni_retriever and tool == "python":
+            relevant = self.biomni_retriever.get_relevant_functions(step_input)
+            if relevant:
+                biomni_section = relevant + "\n"
+
+        prompt = CODE_GEN_PROMPT.format(
+            step_input=step_input, tool=tool,
+            available_files=available, biomni_functions=biomni_section,
+        )
         try:
             code = self.advanced_llm.generate(prompt)
             return _strip_fences(code)

@@ -55,6 +55,7 @@ class AiAssistance:
         workflow.add_node("dag_scheduler", self._dag_scheduler_node)
         workflow.add_node("step_executor", self.agents.step_executor)
         workflow.add_node("sync_node",     self.agents.sync_node)
+        workflow.add_node("replanner",     self.agents.replanner)
         workflow.add_node("aggregator",    self.agents.aggregate_responses)
         workflow.add_node("finalizer",     self.agents.finalize_response)
 
@@ -77,11 +78,18 @@ class AiAssistance:
         # Each step_executor instance → sync_node (barrier, waits for all parallel instances)
         workflow.add_edge("step_executor", "sync_node")
 
-        # sync_node decides: more steps → dag_scheduler, all done → aggregator
+        # sync_node: more steps ready → dag_scheduler, plan complete (first time) → replanner
         workflow.add_conditional_edges(
             "sync_node",
             self.agents.should_continue_dag,
-            {"dag_scheduler": "dag_scheduler", "aggregator": "aggregator"},
+            {"dag_scheduler": "dag_scheduler", "replanner": "replanner", "aggregator": "aggregator"},
+        )
+
+        # replanner: added new steps → dag_scheduler, nothing to add → aggregator
+        workflow.add_conditional_edges(
+            "replanner",
+            self.agents.after_replan,
+            ["dag_scheduler", "aggregator"],
         )
 
         workflow.add_edge("aggregator", "finalizer")
@@ -132,6 +140,7 @@ class AiAssistance:
             "step_outputs": {},
             "step_agent_outputs": [],
             "action_retry_count": 0,
+            "replan_count": 0,
             "agents_to_run": [],
             "agents_completed": [],
             "suggested_questions": None,

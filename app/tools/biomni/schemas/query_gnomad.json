@@ -1,0 +1,11 @@
+{
+  "name": "query_gnomad",
+  "module": "database_connectors",
+  "description": "Get population allele frequencies and variant statistics from gnomAD for a variant",
+  "usage": "from app.tools.biomni.database_connectors import query_gnomad; result = query_gnomad('rs113488022')",
+  "parameters": {
+    "variant_id": "str — rs ID or chr-pos-ref-alt format (e.g. '1-55516888-G-GA')"
+  },
+  "returns": "dict with keys: variant_id, allele_freq, population_frequencies (dict by ancestry), n_homozygotes, source",
+  "tags": ["gnomad", "allele frequency", "population genetics", "variant", "af", "exac", "population frequency", "ancestry"]
+}

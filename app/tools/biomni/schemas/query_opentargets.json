@@ -1,0 +1,12 @@
+{
+  "name": "query_opentargets",
+  "module": "database_connectors",
+  "description": "Get drug targets and disease associations from Open Targets platform for a gene",
+  "usage": "from app.tools.biomni.database_connectors import query_opentargets; result = query_opentargets('ENSG00000141510', top_k=10)",
+  "parameters": {
+    "gene_id": "str — Ensembl gene ID (e.g. 'ENSG00000141510') or gene symbol",
+    "top_k": "int — number of top disease and drug associations to return (default 10)"
+  },
+  "returns": "dict with keys: gene_id, diseases (list of {disease, score, datatypes}), drugs (list of {drug, mechanism, phase}), source",
+  "tags": ["open targets", "drug target", "disease association", "gwas", "genetics", "therapeutic target", "drug pipeline"]
+}

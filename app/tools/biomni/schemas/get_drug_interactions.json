@@ -1,0 +1,12 @@
+{
+  "name": "get_drug_interactions",
+  "module": "pharmacology",
+  "description": "Drug-drug interaction lookup from DDInter database",
+  "usage": "from app.tools.biomni.pharmacology import get_drug_interactions; result = get_drug_interactions('warfarin')",
+  "parameters": {
+    "drug_name": "str — drug name to look up",
+    "top_k": "int — number of interactions to return (default 20)"
+  },
+  "returns": "dict with keys: drug, interactions (list of {interacting_drug, severity, mechanism})",
+  "tags": ["drug interactions", "ddi", "pharmacology", "drug safety", "warfarin", "contraindication"]
+}
