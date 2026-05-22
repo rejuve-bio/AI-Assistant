@@ -1,0 +1,252 @@
+name: CD - Governance
+
+on:
+  workflow_run:
+    workflows: ["CD - Progressive Delivery"]
+    types: [completed]
+  schedule:
+    - cron: '0 8 * * 0'  # Every Sunday at 8am UTC
+  workflow_dispatch:
+
+jobs:
+  # JOB 1: Policy-as-code — validate docker-compose.yml against best practices
+  policy-check:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install yq
+      run: |
+        wget -q https://github.com/mikefarah/yq/releases/download/v4.40.5/yq_linux_amd64 -O /usr/local/bin/yq
+        chmod +x /usr/local/bin/yq
+        yq --version
+
+    - name: Run docker-compose policy checks
+      run: |
+        echo "=== Policy checks on docker-compose.yml ==="
+        VIOLATIONS=0
+        WARNINGS=0
+
+        # Check: assistant service has a restart policy
+        RESTART=$(yq '.services.assistant.restart' docker-compose.yml)
+        if [[ "$RESTART" == "always" || "$RESTART" == "unless-stopped" || "$RESTART" == "on-failure" ]]; then
+          echo "[PASS] assistant has restart policy: $RESTART"
+        else
+          echo "[DENY] assistant must define a restart policy (always/unless-stopped/on-failure)"
+          VIOLATIONS=$((VIOLATIONS + 1))
+        fi
+
+        # Check: assistant service exposes a port
+        PORTS=$(yq '.services.assistant.ports' docker-compose.yml)
+        if [[ "$PORTS" != "null" && -n "$PORTS" ]]; then
+          echo "[PASS] assistant exposes ports"
+        else
+          echo "[DENY] assistant must expose at least one port"
+          VIOLATIONS=$((VIOLATIONS + 1))
+        fi
+
+        # Check: mongodb has a volume for persistence
+        MONGO_VOL=$(yq '.services.mongodb.volumes' docker-compose.yml)
+        if [[ "$MONGO_VOL" != "null" && -n "$MONGO_VOL" ]]; then
+          echo "[PASS] mongodb has persistent volume"
+        else
+          echo "[DENY] mongodb must define a persistent volume"
+          VIOLATIONS=$((VIOLATIONS + 1))
+        fi
+
+        # Check: qdrant has a volume for vector data persistence
+        QDRANT_VOL=$(yq '.services.qdrant.volumes' docker-compose.yml)
+        if [[ "$QDRANT_VOL" != "null" && -n "$QDRANT_VOL" ]]; then
+          echo "[PASS] qdrant has persistent volume"
+        else
+          echo "[DENY] qdrant must define a persistent volume for vector data"
+          VIOLATIONS=$((VIOLATIONS + 1))
+        fi
+
+        # Warn: assistant should have a depends_on for its dependencies
+        DEPENDS=$(yq '.services.assistant.depends_on' docker-compose.yml)
+        if [[ "$DEPENDS" != "null" && -n "$DEPENDS" ]]; then
+          echo "[PASS] assistant defines depends_on"
+        else
+          echo "[WARN] assistant should declare depends_on for qdrant, redis, mongodb"
+          WARNINGS=$((WARNINGS + 1))
+        fi
+
+        # Warn: redis should have a restart policy
+        REDIS_RESTART=$(yq '.services.redis.restart' docker-compose.yml)
+        if [[ "$REDIS_RESTART" != "null" && -n "$REDIS_RESTART" ]]; then
+          echo "[PASS] redis has restart policy: $REDIS_RESTART"
+        else
+          echo "[WARN] redis should define a restart policy"
+          WARNINGS=$((WARNINGS + 1))
+        fi
+
+        echo ""
+        echo "=== Policy Summary ==="
+        echo "  Violations : $VIOLATIONS"
+        echo "  Warnings   : $WARNINGS"
+
+        if [[ "$VIOLATIONS" -gt 0 ]]; then
+          echo "[FAILED] $VIOLATIONS policy violation(s) found"
+          exit 1
+        fi
+        echo "[PASSED] All policy checks passed"
+
+    - name: Generate policy report
+      if: always()
+      run: |
+        echo "Policy check completed on $(date -u)" > policy-report.txt
+        echo "Repository: ${{ github.repository }}" >> policy-report.txt
+        echo "Workflow run: ${{ github.run_id }}" >> policy-report.txt
+
+    - name: Upload policy report
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: policy-report
+        path: policy-report.txt
+
+  # JOB 2: SLO quality gate — check live staging latency and error rate
+  slo-quality-gate:
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+
+    steps:
+    - name: Run SLO check against live staging deployment
+      run: |
+        BASE_URL="http://${{ secrets.STAGING_SERVER_IP }}:${{ secrets.FLASK_HOST_PORT }}"
+        echo "=== SLO Quality Gate — 10 requests to $BASE_URL ==="
+
+        TOTAL_TIME=0
+        FAILED=0
+        RESULTS=""
+
+        for i in {1..10}; do
+          RESPONSE=$(curl -o /dev/null -s -w "%{http_code}:%{time_total}" \
+            --max-time 5 "${BASE_URL}/health" 2>/dev/null || echo "000:5.000")
+
+          HTTP_CODE=$(echo $RESPONSE | cut -d: -f1)
+          TIME=$(echo $RESPONSE | cut -d: -f2)
+          TOTAL_TIME=$(echo "$TOTAL_TIME + $TIME" | bc)
+
+          if [[ "$HTTP_CODE" != "200" ]]; then
+            FAILED=$((FAILED + 1))
+            RESULTS="${RESULTS}\n  Request $i: HTTP $HTTP_CODE — ${TIME}s [FAIL]"
+          else
+            RESULTS="${RESULTS}\n  Request $i: HTTP $HTTP_CODE — ${TIME}s [PASS]"
+          fi
+        done
+
+        AVG_TIME=$(echo "scale=3; $TOTAL_TIME / 10" | bc)
+        ERROR_RATE=$((FAILED * 10))
+
+        echo -e "$RESULTS"
+        echo ""
+        echo "=== SLO Results ==="
+        echo "  Avg latency : ${AVG_TIME}s  (SLO threshold: 2.0s)"
+        echo "  Error rate  : ${ERROR_RATE}%  (SLO threshold: 0%)"
+
+        LATENCY_BREACHED=$(echo "$AVG_TIME > 2.0" | bc)
+
+        if [[ "$LATENCY_BREACHED" == "1" ]]; then
+          echo "[SLO BREACH] Avg latency ${AVG_TIME}s exceeds 2.0s threshold"
+          exit 1
+        fi
+
+        if [[ "$FAILED" -ge "1" ]]; then
+          echo "[SLO BREACH] Error rate ${ERROR_RATE}% — any failure exceeds threshold"
+          exit 1
+        fi
+
+        echo "[SUCCESS] All SLO thresholds met"
+
+  # JOB 3: Compliance report — audit pipeline runs
+  compliance-report:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Fetch recent pipeline runs
+      run: |
+        curl -s \
+          -H "Authorization: Bearer ${{ secrets.PAT_TOKEN }}" \
+          -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=30" \
+          > workflow_runs.json
+
+    - name: Generate compliance report
+      run: |
+        REPORT_DATE=$(date -u '+%Y-%m-%d %H:%M UTC')
+        TOTAL=$(cat workflow_runs.json | jq '.total_count')
+        SUCCESS=$(cat workflow_runs.json | jq '[.workflow_runs[] | select(.conclusion=="success")] | length')
+        FAILED=$(cat workflow_runs.json | jq '[.workflow_runs[] | select(.conclusion=="failure")] | length')
+        CANCELLED=$(cat workflow_runs.json | jq '[.workflow_runs[] | select(.conclusion=="cancelled")] | length')
+
+        cat > compliance-report.md << EOF
+        # CI/CD Compliance Report
+        **Generated:** ${REPORT_DATE}
+        **Repository:** ${{ github.repository }}
+
+        ---
+
+        ## Pipeline Run Summary (last 30 runs)
+
+        | Status | Count |
+        |--------|-------|
+        | Successful | ${SUCCESS} |
+        | Failed | ${FAILED} |
+        | Cancelled | ${CANCELLED} |
+        | Total | ${TOTAL} |
+
+        ## Recent Pipeline Runs
+
+        $(cat workflow_runs.json | jq -r '
+          .workflow_runs[] |
+          "| " + .name + " | " + .head_branch + " | " + (.conclusion // "in_progress") + " | " + .created_at + " |"
+        ' | head -20)
+
+        ---
+        *Generated by cd-governance.yml — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}*
+        EOF
+
+        echo "=== Compliance Report ==="
+        cat compliance-report.md
+
+    - name: Upload compliance report
+      uses: actions/upload-artifact@v4
+      with:
+        name: compliance-report-${{ github.run_number }}
+        path: compliance-report.md
+
+  # Notify on SLO breach
+  notify-slo-breach:
+    runs-on: ubuntu-latest
+    needs: [slo-quality-gate]
+    if: failure()
+
+    steps:
+    - name: Send SLO breach notification
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 587
+        username: ${{ secrets.EMAIL_USERNAME }}
+        password: ${{ secrets.EMAIL_PASSWORD }}
+        subject: "SLO BREACH - AI-Assistant Staging"
+        to: ${{ secrets.RECIEVER_EMAIL }}
+        from: GitHub Actions <${{ secrets.EMAIL_USERNAME }}>
+        body: |
+          SLO Quality Gate Failed!
+
+          The live AI-Assistant staging deployment is not meeting SLO thresholds.
+
+          Thresholds:
+          - Avg latency must be < 2.0s
+          - Error rate must be 0% (no failures allowed)
+
+          Repository: ${{ github.repository }}
+          View logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

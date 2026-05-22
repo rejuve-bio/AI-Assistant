@@ -1,0 +1,328 @@
+name: CD - Progressive Delivery
+
+on:
+  workflow_run:
+    workflows: ["CD - Deploy AI Assistant (Staging Only)"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options: [promote, rollback]
+      image_tag:
+        description: 'Image tag to promote (promote only)'
+        required: false
+        default: 'ai-assistant:staging'
+      reason:
+        description: 'Reason for manual rollback (rollback only)'
+        required: false
+        default: 'manual-trigger'
+
+env:
+  IMAGE_REPO: ${{ secrets.DOCKER_HUB_USERNAME }}/ai-assistant
+  STAGING_TAG: ${{ secrets.DOCKER_HUB_USERNAME }}/ai-assistant:staging
+  STABLE_TAG: ${{ secrets.DOCKER_HUB_USERNAME }}/ai-assistant:staging-stable
+
+jobs:
+  # JOB 1: Validate green deployment + promote to staging-stable
+  blue-green-validate:
+    runs-on: self-hosted
+    if: |
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'promote')
+    outputs:
+      image-tag: ${{ steps.set-image-tag.outputs.image-tag }}
+
+    steps:
+    - name: Set image tag
+      id: set-image-tag
+      run: |
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          IMAGE_TAG="${{ github.event.inputs.image_tag }}"
+        else
+          IMAGE_TAG="${{ env.STAGING_TAG }}"
+        fi
+        echo "image-tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+        echo "Green image: $IMAGE_TAG"
+
+    - name: Verify green container is running
+      id: verify-green
+      run: |
+        EXPECTED_IMAGE="${{ steps.set-image-tag.outputs.image-tag }}"
+
+        RUNNING_IMAGE=$(docker inspect ai-assistant-assistant-1 \
+          --format='{{.Config.Image}}' 2>/dev/null || echo "not-found")
+
+        echo "Expected green image  : $EXPECTED_IMAGE"
+        echo "Currently running     : $RUNNING_IMAGE"
+
+        if [[ "$RUNNING_IMAGE" == "$EXPECTED_IMAGE" ]]; then
+          echo "[SUCCESS] Green is live — new image confirmed"
+        else
+          echo "[WARNING] Image mismatch — container may still be pulling or restarting"
+          echo "[INFO] Proceeding with smoke tests regardless"
+        fi
+
+    # Smoke tests against live staging deployment
+    - name: Smoke test green deployment
+      id: smoke-tests
+      run: |
+        BASE_URL="http://localhost:${{ secrets.FLASK_HOST_PORT }}"
+        echo "=== Smoke tests against $BASE_URL ==="
+
+        echo "=== Smoke Test 1: Health check ==="
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+          --max-time 15 "${BASE_URL}/health" 2>/dev/null || echo "000")
+
+        if [[ "$HTTP_CODE" != "200" ]]; then
+          echo "[FAIL] GET /health — HTTP $HTTP_CODE"
+          exit 1
+        fi
+        echo "[PASS] GET /health — HTTP $HTTP_CODE"
+
+        echo "=== Smoke Test 2: Root endpoint ==="
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+          --max-time 15 "${BASE_URL}/" 2>/dev/null || echo "000")
+
+        if [[ "$HTTP_CODE" =~ ^(200|302|404)$ ]]; then
+          echo "[PASS] GET / — HTTP $HTTP_CODE"
+        else
+          echo "[FAIL] GET / — HTTP $HTTP_CODE"
+          exit 1
+        fi
+
+        echo "=== Smoke Test 3: Auth endpoint reachable ==="
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+          --max-time 15 -X POST "${BASE_URL}/api/auth/login" \
+          -H "Content-Type: application/json" \
+          -d '{"username":"smoke-test","password":"smoke-test"}' \
+          2>/dev/null || echo "000")
+
+        if [[ "$HTTP_CODE" =~ ^(200|400|401|422)$ ]]; then
+          echo "[PASS] POST /api/auth/login — HTTP $HTTP_CODE (endpoint reachable)"
+        else
+          echo "[FAIL] POST /api/auth/login — HTTP $HTTP_CODE"
+          exit 1
+        fi
+
+        echo "[SUCCESS] All smoke tests passed — green deployment is healthy"
+
+    - name: Login to Docker Hub
+      if: steps.smoke-tests.outcome == 'success'
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_HUB_USERNAME }}
+        password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+    - name: Promote green to staging-stable
+      if: steps.smoke-tests.outcome == 'success'
+      run: |
+        IMAGE_TAG="${{ steps.set-image-tag.outputs.image-tag }}"
+        STABLE_TAG="${{ env.STABLE_TAG }}"
+
+        docker pull $IMAGE_TAG
+        docker tag $IMAGE_TAG $STABLE_TAG
+        docker push $STABLE_TAG
+
+        echo "[SUCCESS] Green promoted to staging-stable"
+        echo "  Green  : $IMAGE_TAG"
+        echo "  Stable : $STABLE_TAG"
+
+    - name: Notify manual rollback required
+      if: failure()
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 587
+        username: ${{ secrets.EMAIL_USERNAME }}
+        password: ${{ secrets.EMAIL_PASSWORD }}
+        subject: "ACTION REQUIRED — Green deployment failed, manual rollback needed"
+        to: ${{ secrets.RECIEVER_EMAIL }}
+        from: GitHub Actions <${{ secrets.EMAIL_USERNAME }}>
+        body: |
+          Green deployment validation failed — manual rollback required!
+
+          Smoke tests or image verification did not pass.
+          The previous stable version has NOT been restored automatically.
+
+          To roll back, go to:
+          ${{ github.server_url }}/${{ github.repository }}/actions/workflows/cd-progressive-delivery.yml
+
+          Click "Run workflow" and select:
+            action = rollback
+            reason = smoke-test-failure (or describe what failed)
+
+          View failure logs:
+          ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  # JOB 2: Manual rollback — re-deploys staging-stable via Ansible
+  rollback:
+    runs-on: self-hosted
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'rollback'
+
+    steps:
+    - name: Log rollback trigger
+      run: |
+        echo "Manual rollback triggered by: ${{ github.actor }}"
+        echo "Reason: ${{ github.event.inputs.reason }}"
+
+    - name: Record current image before rollback
+      run: |
+        CURRENT_IMAGE=$(docker inspect ai-assistant-assistant-1 \
+          --format='{{.Config.Image}}' 2>/dev/null || echo "unknown")
+        echo "Rolling back from: $CURRENT_IMAGE"
+
+    - name: Checkout current repository
+      uses: actions/checkout@v4
+
+    - name: Checkout Ansible repository
+      uses: actions/checkout@v4
+      with:
+        repository: rejuve-bio/ansible-deploy
+        path: ansible-deploy
+
+    - name: Create .env file with stable image
+      run: |
+        mkdir -p $HOME/services/AI-Assistant
+        cat > $HOME/services/AI-Assistant/.env << EOF
+        FLASK_HOST_PORT=${{ secrets.FLASK_HOST_PORT }}
+        FLASK_INTERNAL_PORT=${{ secrets.FLASK_INTERNAL_PORT }}
+        REDIS_HOST_PORT=${{ secrets.REDIS_HOST_PORT }}
+        REDIS_INTERNAL_PORT=${{ secrets.REDIS_INTERNAL_PORT }}
+        MONGODB_HOST_PORT=${{ secrets.MONGODB_HOST_PORT }}
+        MONGODB_INTERNAL_PORT=${{ secrets.MONGODB_INTERNAL_PORT }}
+        QDRANT_HOST_PORT=${{ secrets.QDRANT_HOST_PORT }}
+        QDRANT_INTERNAL_PORT=${{ secrets.QDRANT_INTERNAL_PORT }}
+        QDRANT_GRPC_HOST_PORT=${{ secrets.QDRANT_GRPC_HOST_PORT }}
+        QDRANT_GRPC_INTERNAL_PORT=${{ secrets.QDRANT_GRPC_INTERNAL_PORT }}
+        BASIC_LLM_PROVIDER=${{ secrets.BASIC_LLM_PROVIDER }}
+        BASIC_LLM_VERSION=${{ secrets.BASIC_LLM_VERSION }}
+        ADVANCED_LLM_PROVIDER=${{ secrets.ADVANCED_LLM_PROVIDER }}
+        ADVANCED_LLM_VERSION=${{ secrets.ADVANCED_LLM_VERSION }}
+        GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+        OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+        JWT_SECRET=${{ secrets.JWT_SECRET }}
+        MODEL_PATH=${{ secrets.MODEL_PATH }}
+        VECTOR_COLLECTION=${{ secrets.VECTOR_COLLECTION }}
+        MONGO_USERNAME=${{ secrets.MONGO_USERNAME }}
+        MONGO_PASSWORD=${{ secrets.MONGO_PASSWORD }}
+        MONGO_DATABASE=${{ secrets.MONGO_DATABASE }}
+        MONGO_URL=mongodb://${{ secrets.MONGO_USERNAME }}:${{ secrets.MONGO_PASSWORD }}@mongodb:${{ secrets.MONGODB_INTERNAL_PORT }}/
+        ai_assistant_staging=${{ env.STABLE_TAG }}
+        EOF
+
+    - name: Create dynamic inventory
+      run: |
+        cd ansible-deploy
+        mkdir -p inventory
+        CURRENT_USER=$(whoami)
+        cat > inventory/hosts.ini <<EOL
+        [AI_Assistant_Remote]
+        localhost ansible_connection=local ansible_user=$CURRENT_USER ansible_become=false ansible_user_dir=$HOME
+        EOL
+
+    - name: Create rollback playbook
+      run: |
+        cd ansible-deploy
+        mkdir -p playbooks
+        cat > playbooks/deploy_ai_assistant.yml <<EOL
+        ---
+        - name: Deploy AI Assistant Service
+          hosts: AI_Assistant_Remote
+          tags: AI_Assistant_Remote
+          become: no
+          tasks:
+            - include_role:
+                name: AI_Assistant
+                tasks_from: staging-production-deploy.yml
+        EOL
+
+    - name: Ansible configuration
+      run: |
+        cd ansible-deploy
+        cat > ansible.cfg <<EOL
+        [defaults]
+        interpreter_python = /usr/bin/python3
+        host_key_checking = False
+        inventory = inventory/hosts.ini
+        become = false
+        remote_user = $(whoami)
+        EOL
+
+    - name: Rollback via Ansible (re-deploy staging-stable)
+      run: |
+        cd ansible-deploy
+        ansible-playbook -i inventory/hosts.ini playbooks/deploy_ai_assistant.yml \
+          --tags "AI_Assistant_Remote" \
+          -e "install_dir=$HOME/services/AI-Assistant" \
+          -e "ansible_user_id=$(whoami)" \
+          -e "ansible_user_dir=$HOME" \
+          -v
+        echo "[SUCCESS] Rolled back to staging-stable"
+
+    - name: Verify rollback health
+      run: |
+        sleep 15
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+          --max-time 10 \
+          "http://localhost:${{ secrets.FLASK_HOST_PORT }}/health" 2>/dev/null || echo "000")
+
+        if [[ "$HTTP_CODE" == "200" ]]; then
+          echo "[SUCCESS] Rollback verified — app is healthy (HTTP $HTTP_CODE)"
+        else
+          echo "[WARNING] App returned HTTP $HTTP_CODE after rollback — check manually"
+        fi
+
+  # Notifications
+  notify-success:
+    runs-on: ubuntu-latest
+    needs: [blue-green-validate]
+    if: needs.blue-green-validate.result == 'success'
+
+    steps:
+    - name: Send success notification
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 587
+        username: ${{ secrets.EMAIL_USERNAME }}
+        password: ${{ secrets.EMAIL_PASSWORD }}
+        subject: "CD Blue-Green SUCCESS - AI-Assistant Promoted"
+        to: ${{ secrets.RECIEVER_EMAIL }}
+        from: GitHub Actions <${{ secrets.EMAIL_USERNAME }}>
+        body: |
+          Blue-Green Deployment Validated Successfully!
+
+          Green passed smoke tests and has been promoted to staging-stable.
+
+          Repository: ${{ github.repository }}
+          Promoted: ${{ env.STAGING_TAG }} → ${{ env.STABLE_TAG }}
+
+          Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  notify-failure:
+    runs-on: ubuntu-latest
+    needs: [blue-green-validate]
+    if: failure()
+
+    steps:
+    - name: Send failure notification
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 587
+        username: ${{ secrets.EMAIL_USERNAME }}
+        password: ${{ secrets.EMAIL_PASSWORD }}
+        subject: "CD Blue-Green FAILED - AI-Assistant Manual Rollback Required"
+        to: ${{ secrets.RECIEVER_EMAIL }}
+        from: GitHub Actions <${{ secrets.EMAIL_USERNAME }}>
+        body: |
+          Blue-Green Deployment Validation Failed!
+
+          Green failed validation. The previous stable version has NOT been restored automatically.
+          Review the logs and trigger a manual rollback if required.
+
+          Repository: ${{ github.repository }}
+          View logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
