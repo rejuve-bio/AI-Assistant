@@ -39,6 +39,8 @@ class AiAssistance:
             embedding_model=embedding_model,
             mongo_db_manager=mongo_db_manager,
         )
+        # In-memory store for pending annotation confirmations: {user_id: pending_json}
+        self._pending_confirmations: Dict[str, Any] = {}
 
         logger.info(f"AiAssistance initialized: {type(advanced_llm).__name__}")
         self.workflow = self._create_workflow()
@@ -174,6 +176,31 @@ class AiAssistance:
 
         try:
             emit_to_user(user=user_id, message="Analyzing...")
+
+            # Check if this message is a reply to a pending annotation confirmation
+            pending = self._pending_confirmations.get(user_id)
+            if pending:
+                verdict = self._classify_confirmation(query)
+                if verdict == "confirm":
+                    resolved_json = self._apply_pending_substitutions(pending, apply=True)
+                    text = "Got it! I've built the annotation structure using the confirmed match. The structured data is ready."
+                    del self._pending_confirmations[user_id]
+                    self._save_history(user_id, query, text, graph_id, content_ids, urls, ["annotation_agent"])
+                    resp = {"text": text, "json_format": resolved_json, "agents_completed": ["annotation_agent"]}
+                    emit_to_user(user=user_id, message=resp, status="completed")
+                    return resp
+                elif verdict == "reject":
+                    resolved_json = self._apply_pending_substitutions(pending, apply=False)
+                    text = "Understood! I've built the annotation structure without the unidentified node. The structured data is ready."
+                    del self._pending_confirmations[user_id]
+                    self._save_history(user_id, query, text, graph_id, content_ids, urls, ["annotation_agent"])
+                    resp = {"text": text, "json_format": resolved_json, "agents_completed": ["annotation_agent"]}
+                    emit_to_user(user=user_id, message=resp, status="completed")
+                    return resp
+                else:
+                    # New unrelated query — clear stale pending state
+                    del self._pending_confirmations[user_id]
+
             past = self.store.retrieve_user_history(user_id, limit=2) if self.store else {}
             conversation_history = list(reversed(past.get(str(user_id), [])))  # oldest first
             agent_resp = self.agent(
@@ -183,9 +210,23 @@ class AiAssistance:
             )
             if not isinstance(agent_resp, dict):
                 agent_resp = {"text": str(agent_resp), "agents_completed": []}
+
             answer = agent_resp.get("text", "")
             agents_used = agent_resp.get("agents_completed", [])
+
+            # If the annotation pipeline needs confirmation, hold pending_json in memory
+            if agent_resp.get("needs_confirmation"):
+                pending_json = agent_resp.pop("pending_json", None)
+                agent_resp.pop("unconfirmed_nodes", None)
+                if pending_json:
+                    self._pending_confirmations[user_id] = pending_json
+
             self._save_history(user_id, query, answer, graph_id, content_ids, urls, agents_used)
+
+            # Strip any remaining pending fields before returning to caller
+            agent_resp.pop("pending_json", None)
+            agent_resp.pop("unconfirmed_nodes", None)
+
             emit_to_user(user=user_id, message=agent_resp, status="completed")
             return agent_resp
 
@@ -211,3 +252,55 @@ class AiAssistance:
             )
         except Exception as e:
             logger.error(f"Failed to save history: {e}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Confirmation flow helpers
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _classify_confirmation(self, message: str) -> str:
+        """Returns 'confirm', 'reject', or 'new_query' using the LLM."""
+        prompt = (
+            f"The assistant asked a yes/no confirmation question about substituting an unrecognized "
+            f"gene name with a suggested match. The user replied:\n\n\"{message}\"\n\n"
+            f"Classify the reply as exactly one of:\n"
+            f"- confirm  (user agrees to use the suggested match)\n"
+            f"- reject   (user wants to skip/exclude it and build without it)\n"
+            f"- new_query  (user is asking something unrelated, not answering the confirmation)\n\n"
+            f"Reply with only one word: confirm, reject, or new_query."
+        )
+        try:
+            result = self.agents.basic_llm.generate(prompt)
+            verdict = result.strip().lower().split()[0] if result else "new_query"
+            if verdict in ("confirm", "reject", "new_query"):
+                return verdict
+            return "new_query"
+        except Exception:
+            return "new_query"
+
+    def _apply_pending_substitutions(self, pending_json: dict, apply: bool = True) -> dict:
+        import copy
+        result = copy.deepcopy(pending_json)
+        for node in result.get("nodes", []):
+            subs = node.pop("pending_substitutions", {})
+            node.pop("needs_confirmation", None)
+            node.pop("all_list_values", None)
+            node.pop("not_validated", None)
+
+            props = node.get("properties", {})
+            if apply and subs:
+                for prop_key, prop_val in list(props.items()):
+                    if isinstance(prop_val, str):
+                        items = [v.strip() for v in prop_val.split(",") if v.strip()]
+                        # Single value: replace if it matches
+                        if len(items) == 1 and items[0] in subs:
+                            props[prop_key] = subs[items[0]]
+                        else:
+                            # List: append confirmed substitutions
+                            confirmed = [subs[orig] for orig in subs if orig not in items]
+                            props[prop_key] = ", ".join(items + confirmed)
+            elif not apply and subs:
+                # Rejection: originals were already excluded from the list; nothing to add
+                pass
+
+            node["status"] = True
+        return result

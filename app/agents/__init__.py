@@ -367,6 +367,9 @@ class Orchestrator:
                 "json_format": result.get("json_format"),
                 "files": result.get("files", []),
                 "provenance": result.get("provenance"),
+                "needs_confirmation": result.get("needs_confirmation"),
+                "pending_json": result.get("pending_json"),
+                "unconfirmed_nodes": result.get("unconfirmed_nodes"),
             }],
             "agents_completed": [agent_name],
         }
@@ -499,6 +502,18 @@ class Orchestrator:
             pipeline_resp = self.annotation_graph.process_annotation_query(
                 query=step_input, user_id=state["user_id"], query_type=query_type
             )
+
+            # Node(s) not found exactly — need user confirmation before building JSON
+            if pipeline_resp.get("needs_confirmation"):
+                return {
+                    "text": None,
+                    "json_format": None,
+                    "source": "annotation database",
+                    "needs_confirmation": True,
+                    "pending_json": pipeline_resp.get("pending_json"),
+                    "unconfirmed_nodes": pipeline_resp.get("unconfirmed_nodes", []),
+                }
+
             if pipeline_resp.get("success"):
                 json_format = pipeline_resp.get("json_format")
                 provenance = pipeline_resp.get("provenance")
@@ -802,6 +817,23 @@ class Orchestrator:
         # Sort by step_id to preserve logical order
         step_agent_outputs = sorted(step_agent_outputs, key=lambda x: x.get("step_id", 0))
 
+        # If any step needs user confirmation before building the JSON, return early
+        for o in step_agent_outputs:
+            if o.get("needs_confirmation"):
+                conf_text = self._build_confirmation_text(
+                    o.get("unconfirmed_nodes", []),
+                    o.get("pending_json"),
+                )
+                return {
+                    "response": {
+                        "text": conf_text,
+                        "json_format": None,
+                        "needs_confirmation": True,
+                        "pending_json": o.get("pending_json"),
+                        "unconfirmed_nodes": o.get("unconfirmed_nodes"),
+                    }
+                }
+
         json_format = next(
             (o["json_format"] for o in step_agent_outputs if o.get("json_format")), None
         )
@@ -934,12 +966,41 @@ class Orchestrator:
             except Exception as e:
                 logger.error(f"Clarifying questions error: {e}")
 
-        emit_to_user(user=user_id, message=response, status="completed")
+        # Strip pending fields before emitting to frontend (main.py uses them internally)
+        emit_payload = {k: v for k, v in response.items() if k not in ("pending_json", "unconfirmed_nodes")}
+        emit_to_user(user=user_id, message=emit_payload, status="completed")
         return {"response": response}
 
     # ─────────────────────────────────────────────────────────────────────────
     # Helpers
     # ─────────────────────────────────────────────────────────────────────────
+
+    def _build_confirmation_text(self, unconfirmed_nodes: list, pending_json: dict) -> str:
+        if not unconfirmed_nodes:
+            return "I need some clarification before building the annotation structure."
+
+        parts = []
+        for u in unconfirmed_nodes:
+            original = u["original"]
+            suggestion = u["suggestion"]
+            all_vals = u.get("all_list_values", [])
+            known_vals = [v for v in all_vals if v != original] if all_vals else []
+
+            if known_vals:
+                known_str = ", ".join(known_vals)
+                parts.append(
+                    f'I couldn\'t find **"{original}"** in the database. '
+                    f'The closest match I found is **"{suggestion}"**. '
+                    f'Should I go ahead and use **"{suggestion}"** in place of **"{original}"**? '
+                    f'Or would you like me to build the annotation without it, using only the identified genes: {known_str}?'
+                )
+            else:
+                parts.append(
+                    f'I couldn\'t find **"{original}"** in the database. '
+                    f'The closest match I found is **"{suggestion}"**. '
+                    f'Should I use **"{suggestion}"** instead?'
+                )
+        return "\n\n".join(parts)
 
     def _prepare_dependency_context(self, dep_output: str, dependency_id: int) -> str:
         MAX_CHARS = 1500

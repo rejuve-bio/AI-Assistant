@@ -70,10 +70,10 @@ class MongoManager:
     # ==================== CONVERSATION HISTORY METHODS ====================
     
     def create_history(
-        self, 
-        user_id: str, 
-        user_message: str, 
-        assistant_answer: str, 
+        self,
+        user_id: str,
+        user_message: str,
+        assistant_answer: str,
         graph_id_referenced: str = None,
         content_ids: list = None,
         urls: list = None,
