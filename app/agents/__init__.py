@@ -863,6 +863,12 @@ class Orchestrator:
             }
 
         combined = "\n\n".join(sources_info)
+
+        # Short-circuit: single source with no json_format → pass through directly,
+        # skip the extra LLM aggregation call.
+        if len(sources_info) == 1 and not json_format and not all_output_files:
+            return {"response": {"text": sources_info[0].split("]: ", 1)[-1], "json_format": None, "files": []}}
+
         json_note = "\n\nNote: Structured annotation data is also available." if json_format else ""
 
         files_note = ""

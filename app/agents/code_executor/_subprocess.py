@@ -68,6 +68,15 @@ class Subprocess:
 
         interpreter, script_arg = TOOL_CMD.get(tool, ("python3", "script.py"))
 
+        # Add project root to PYTHONPATH so generated scripts can import
+        # app.tools.biomni.* and any other app modules directly.
+        project_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..")
+        )
+        env = os.environ.copy()
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{project_root}:{existing}" if existing else project_root
+
         logger.info(f"Running {interpreter} {script_arg} in {workdir} files={len(file_paths or [])}")
 
         try:
@@ -77,6 +86,7 @@ class Subprocess:
                 text=True,
                 timeout=TIMEOUT_SECONDS,
                 cwd=workdir,
+                env=env,
                 preexec_fn=_set_resource_limits,
             )
             output_files = self._collect_outputs(output_dir, user_id, session_id, step_id)

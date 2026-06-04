@@ -15,7 +15,7 @@ TOOL_EXT = {
     "bash":   "script.sh",
 }
 
-CODE_GEN_PROMPT = """You are an expert bioinformatics programmer.
+CODE_GEN_PROMPT = """You are an expert bioinformatics programmer working inside the Rejuve AI Assistant platform.
 
 Task instruction:
 {step_input}
@@ -23,21 +23,37 @@ Task instruction:
 Available input files in the input/ directory:
 {available_files}
 
+── BIOMNI PLATFORM TOOLS (use these instead of reimplementing) ──────────────
 {biomni_functions}
+
+All Biomni tools are importable in your Python script. Import paths:
+  from app.tools.biomni.database_connectors import (
+      query_uniprot, query_alphafold, query_string, query_kegg,
+      query_opentargets, query_clinvar, query_gnomad, query_ensembl,
+      query_cbioportal, query_reactome, query_gwas_catalog, query_openfda,
+      query_chembl, query_pdb, query_gtex, query_encode, blast_sequence,
+      run_deseq2
+  )
+  from app.tools.biomni.genetics import run_finemapping, liftover, identify_tf_binding_sites
+  from app.tools.biomni.genomics import run_gsea, annotate_scrna, compute_scrna_embeddings
+  from app.tools.biomni.pharmacology import predict_admet, get_drug_interactions, predict_binding_affinity, run_docking, drug_repurposing
+  from app.tools.biomni.molecular_biology import design_sgrna, design_primers, simulate_restriction_digest
+  from app.tools.biomni.literature import search_pubmed, search_arxiv, search_scholar, get_doi_supplementary, search_clinical_trials, extract_url_content
+  from app.tools.biomni.data_lake import query_depmap, query_disgenets, query_bindingdb, query_msigdb, query_omim
+
+ALWAYS prefer Biomni tools over reimplementing database queries or analysis from scratch.
+──────────────────────────────────────────────────────────────────────────────
+
 Write a complete, self-contained {tool} script that performs this task.
 
 Rules:
-- Input files are in the relative path input/ (e.g. input/myfile.vcf) — do NOT use absolute paths
-- Write all output files to the relative path output/
+- Input files are in the relative path input/ — do NOT use absolute paths
+- Write all output files to output/
 - Print a clear, human-readable summary of results to stdout
-- To find input files dynamically use: glob.glob("input/*") in Python, list.files("input/") in R, or ls input/ in bash
-- For PLINK scripts: use plink2 directly (it is on PATH); prefix output with output/result
-- Use only libraries commonly available in standard bioinformatics environments:
-  Python: pandas, numpy, scipy, matplotlib, seaborn, scikit-learn, gseapy, networkx, biopython, statsmodels
-  R: ggplot2, dplyr, DESeq2, limma, edgeR, WGCNA, igraph, survival, Seurat (if needed)
-  PLINK: standard plink2 CLI commands in a bash script
-- If a Biomni function above fits the task, import and use it directly instead of reimplementing the logic
-- Handle missing files gracefully with informative error messages
+- For PLINK scripts: use plink2 (on PATH); prefix output with output/result
+- Standard Python libraries available: pandas, numpy, scipy, matplotlib, seaborn,
+  scikit-learn, gseapy, networkx, biopython, statsmodels, scanpy, anndata, pydeseq2
+- Standard R libraries: ggplot2, dplyr, DESeq2, limma, edgeR, WGCNA, survival
 - Do NOT include markdown fences, just raw code
 
 Write the complete code now:"""
@@ -178,8 +194,11 @@ class CodeExecutor:
         else:
             available = "  (no files uploaded — generate example data or use public datasets)"
 
+        # Inject relevant Biomni tool signatures for Python scripts.
+        # R/bash/plink scripts can call Python tools via subprocess if needed,
+        # but the primary integration path is Python.
         biomni_section = ""
-        if self.biomni_retriever and tool == "python":
+        if self.biomni_retriever:
             relevant = self.biomni_retriever.get_relevant_functions(step_input)
             if relevant:
                 biomni_section = relevant + "\n"
