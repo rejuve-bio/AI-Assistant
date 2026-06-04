@@ -236,10 +236,22 @@ PLANNING RULES:
    - Query mentions specific tools: PLINK, GSEApy, GSCA, Python, R, WGCNA, NetworkX
    - ALWAYS pair with informative agents: use biogpt_agent AFTER for biological interpretation
 
-3. WHEN TO USE content_retrieval_agent:
-   - content_summaries is non-empty (user has uploaded files)
-   - Query mentions "my file", "my data", "uploaded", "my gene list", "my VCF"
-   - Place as an EARLY step since other steps may need the file content
+3. WHEN UPLOADED FILES ARE PRESENT — always plan both knowledge AND analysis:
+   User uploads can be TWO different things stored separately:
+   a) PDFs / web pages → vectorized in Qdrant → searchable by rag_agent
+   b) Bioinfo files (.csv, .tsv, .vcf, .h5ad etc.) → saved to disk → used by biomni_agent tools
+
+   RULE: When content_ids are present, check what the user is asking:
+   - If asking about KNOWLEDGE in a document (methods, results, background):
+     → add rag_agent step to search the PDF content
+   - If asking for ANALYSIS on a data file:
+     → add biomni_agent step with the right tool (run_finemapping, run_deseq2_r, plot_manhattan etc.)
+   - If BOTH (e.g. "use the methods from my paper to analyse my data"):
+     → Step 1: rag_agent (find the methods) — no dependency
+     → Step 2: biomni_agent (run the analysis) — depends_on [1] so it gets the method context
+     → Step 3: biogpt_agent — depends_on [2] to interpret results in context of the paper
+   - If asking about the data file content directly ("what genes are in my file"):
+     → rag_agent (if PDF), OR biomni_agent with appropriate tool, OR content_retrieval_agent
 
 4. WHEN TO USE web_search_agent:
    - Query mentions PubMed, papers, literature, studies, research → sub_type: "pubmed"
