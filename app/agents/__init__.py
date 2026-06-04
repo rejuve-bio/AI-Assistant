@@ -728,19 +728,43 @@ class Orchestrator:
 
             # ── Resolve file paths for tools that need input files ──────────
             # Any kwarg ending in _path may reference a user-uploaded file.
-            # Try to resolve from content_ids → actual disk path.
+            # Strategy:
+            #   1. If kwarg value matches an uploaded filename (partial or exact) → use that file
+            #   2. If only one file uploaded → use it regardless of name the LLM put
+            #   3. If multiple files → pick best match by extension or first match
             file_params = [k for k in kwargs if k.endswith("_path")]
             if file_params:
                 resolved = self._resolve_file_paths(state["user_id"], state.get("content_ids"))
                 if resolved:
                     for key in file_params:
-                        val = kwargs.get(key, "")
-                        # If the LLM put a bare filename, find the matching upload
-                        basename = os.path.basename(str(val))
+                        val = str(kwargs.get(key, "")).lower()
+                        # Try exact basename match first
                         match = next(
-                            (p for p in resolved if os.path.basename(p) == basename),
-                            resolved[0],  # fallback: first uploaded file
+                            (p for p in resolved if os.path.basename(p).lower() == os.path.basename(val)),
+                            None,
                         )
+                        if not match:
+                            # Try partial name match (LLM may shorten the filename)
+                            match = next(
+                                (p for p in resolved if os.path.basename(val).split(".")[0] in p.lower()),
+                                None,
+                            )
+                        if not match:
+                            # Extension-based fallback for known GWAS/bioinfo types
+                            ext_hints = {
+                                "sumstats_path": [".tsv", ".txt", ".csv"],
+                                "counts_path":   [".csv", ".tsv"],
+                                "expression_path": [".csv", ".tsv"],
+                                "adata_path":    [".h5ad"],
+                                "data_path":     [".csv", ".tsv"],
+                                "metadata_path": [".csv"],
+                                "sequence":      [".fa", ".fasta", ".txt"],
+                            }
+                            preferred_exts = ext_hints.get(key, [])
+                            match = next(
+                                (p for p in resolved if any(p.lower().endswith(e) for e in preferred_exts)),
+                                resolved[0],  # final fallback: first uploaded file
+                            )
                         kwargs[key] = match
                         logger.info(f"biomni_lookup: resolved {key} → {match}")
 
