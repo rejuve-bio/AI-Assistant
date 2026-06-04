@@ -4,7 +4,7 @@ import logging
 import os
 import requests
 from dotenv import load_dotenv
-from app.tools.platform.annotation.neo4j_handler import Neo4jConnection
+from app.tools.platform.annotation.parquet_handler import ParquetAnnotationLookup
 from app.tools.platform.annotation.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import LLMInterface
 from app.prompts.annotation_prompts import (
@@ -55,11 +55,9 @@ class Graph:
         self.enhanced_schema = (
             schema_handler.enhanced_schema
         )  # Enhanced or preprocessed schema
-        self.neo4j = Neo4jConnection(
-            uri=os.getenv("NEO4J_URI"),
-            username=os.getenv("NEO4J_USERNAME"),
-            password=os.getenv("NEO4J_PASSWORD"),
-        )
+        # Parquet-based lookup — no Neo4j credentials needed in the app.
+        # Reads neo4j_property_values.parquet from BIOMNI_DATA_LAKE.
+        self.neo4j = ParquetAnnotationLookup()
         self.kg_service_url = os.getenv("ANNOTATION_SERVICE_URL", "")
 
     def query_knowledge_graph(self, json_query, token):
@@ -396,7 +394,19 @@ class Graph:
             raise
 
     def execute_cypher_query(self, cypher_query):
-        # Execute a Cypher query against the Neo4j database and return structured results
+        # Direct Cypher execution requires a live Neo4j connection.
+        # This is disabled — the app no longer holds Neo4j credentials.
+        # annotation_general queries are handled via the annotation service (ANNOTATION_SERVICE_URL).
+        # To re-enable: implement via the annotation microservice layer.
+        return {
+            "success": False,
+            "data": {"nodes": [], "relationships": [], "counts": {}, "records": []},
+            "error": "Direct Cypher execution is disabled. Use the annotation service endpoint.",
+            "cypher_query": cypher_query,
+        }
+
+    def _execute_cypher_query_legacy(self, cypher_query):
+        # Kept for reference — requires live Neo4j connection (not available in app)
         try:
             logger.info(f"Executing Cypher query: {cypher_query}")
 

@@ -62,6 +62,7 @@ pyliftover = ">=1.0"
 feedparser = ">=6.0.0"
 scholarly = ">=1.7.0"
 primer3-py = ">=2.0.0"
+rapidfuzz = ">=3.0.0"
 
 # optimum = {extras = ["openvino"], version = "^2.1.0"}  # heavy — uncomment when BioGPT needed
 
