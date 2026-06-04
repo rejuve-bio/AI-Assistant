@@ -83,9 +83,9 @@ def create_app():
 
     # Initialize SchemaHandler
     schema_handler = SchemaHandler(
-        schema_config_path="./config/schema_config.yaml",
-        biocypher_config_path="./config/biocypher_config.yaml",
-        enhanced_schema_path="./config/enhanced_schema.txt",
+        schema_config_path="./app/tools/platform/annotation/config/schema_config.yaml",
+        biocypher_config_path="./app/tools/platform/annotation/config/biocypher_config.yaml",
+        enhanced_schema_path="./app/tools/platform/annotation/config/enhanced_schema.txt",
     )
     logger.info("SchemaHandler initialized")
 
