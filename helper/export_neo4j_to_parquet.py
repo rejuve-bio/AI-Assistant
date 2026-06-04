@@ -2,22 +2,31 @@
 """
 Neo4j → Parquet Export Script
 ==============================
-Exports key Rejuve Atomspace entities to parquet files so the code executor
-can query them safely (no credentials, read-only, fast).
+Exports Rejuve Atomspace entities to parquet files so the AI assistant can
+query them without Neo4j credentials. Files land in BIOMNI_DATA_LAKE/neo4j/.
 
-Run this on your server periodically to keep the exports fresh.
-The files land in BIOMNI_DATA_LAKE alongside the other data lake files.
+The running app auto-detects file changes — no restart needed after export.
+Optionally call POST /admin/reload-parquet to pre-warm the cache immediately.
+
+── AUTOMATION ────────────────────────────────────────────────────────────────
+Option A: Run after every Neo4j import (recommended)
+  Add to your Neo4j import pipeline as a post-step:
+    python /AI-Assistant/helper/export_neo4j_to_parquet.py --only genes pathways
+    curl -X POST http://ai-assistant:5002/admin/reload-parquet -H "Authorization: Bearer $TOKEN"
+
+Option B: Cron job (weekly / after each monthly import)
+  Add to crontab on the server that has Neo4j access:
+    0 3 * * 0  cd /AI-Assistant && NEO4J_URI=bolt://... NEO4J_USERNAME=... NEO4J_PASSWORD=... python helper/export_neo4j_to_parquet.py --only genes pathways
+
+Option C: Watch for a trigger file written by the Neo4j import pipeline
+  Your import pipeline writes: touch /data/biomni/.neo4j_updated
+  A cron job checks: if file is newer than parquets → re-export → delete trigger file
+──────────────────────────────────────────────────────────────────────────────
 
 Usage:
     python helper/export_neo4j_to_parquet.py
-
-    # Custom output directory:
     BIOMNI_DATA_LAKE=/data/biomni python helper/export_neo4j_to_parquet.py
-
-    # Export specific tables only:
     python helper/export_neo4j_to_parquet.py --only genes pathways
-
-    # Re-export even if files exist:
     python helper/export_neo4j_to_parquet.py --force
 """
 

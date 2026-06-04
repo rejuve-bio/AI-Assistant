@@ -674,6 +674,25 @@ def serve_output_file(current_user_id, auth_token, rel_path):
     return send_from_directory(os.path.dirname(target), os.path.basename(target))
 
 
+@main_bp.route("/admin/reload-parquet", methods=["POST"])
+@token_required
+def reload_parquet(current_user_id, auth_token):
+    """
+    Signal the annotation lookup to reload from updated parquet files.
+    Call this after running helper/export_neo4j_to_parquet.py on the server.
+    The reload happens lazily on the next annotation request.
+    """
+    try:
+        ai_assistant = current_app.config["ai_assistant"]
+        # Walk down: AiAssistance → Orchestrator → annotation_graph → parquet lookup
+        lookup = ai_assistant.agents.annotation_graph.neo4j
+        lookup.reload()
+        return jsonify(message="Annotation lookup marked for reload. Will take effect on next annotation request."), 200
+    except Exception as e:
+        current_app.logger.error(f"Parquet reload error: {e}")
+        return jsonify(error=str(e)), 500
+
+
 @main_bp.route("/", methods=["GET"])
 def health_check():
     return jsonify("This is health check")

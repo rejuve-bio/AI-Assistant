@@ -25,16 +25,14 @@ class ParquetAnnotationLookup:
 
     def __init__(self, neo4j_dir: str = None):
         self._neo4j_dir = neo4j_dir or NEO4J_DIR
-        self._df = None          # lazy-loaded DataFrame
-        self._value_index = {}   # (node_type, property_key) → sorted list of values
+        self._df = None
+        self._value_index = {}
+        self._file_mtime = None   # track file modification time for auto-reload
 
     # ── Loading ───────────────────────────────────────────────────────────────
 
     def _load(self):
-        """Load property values parquet once, build index."""
-        if self._df is not None:
-            return True
-
+        """Load property values parquet. Auto-reloads if the file changed on disk."""
         path = os.path.join(self._neo4j_dir, PROPERTY_VALUES_FILE)
         if not os.path.exists(path):
             logger.warning(
@@ -44,20 +42,35 @@ class ParquetAnnotationLookup:
             )
             return False
 
+        # Check if file changed since last load (auto-reload when Neo4j exports run)
+        try:
+            current_mtime = os.path.getmtime(path)
+        except OSError:
+            return False
+
+        if self._df is not None and self._file_mtime == current_mtime:
+            return True  # up to date, use cached version
+
         try:
             import pandas as pd
             self._df = pd.read_parquet(path)
-            # Build index: (node_type, property_key) → list of values
+            self._file_mtime = current_mtime
+            self._value_index = {}
             for (nt, pk), group in self._df.groupby(["node_type", "property_key"]):
                 self._value_index[(nt, pk)] = group["value"].dropna().tolist()
             logger.info(
-                f"Loaded property values: {len(self._df)} rows, "
-                f"{len(self._value_index)} (node_type, property_key) combinations"
+                f"{'Reloaded' if self._file_mtime else 'Loaded'} property values: "
+                f"{len(self._df)} rows, {len(self._value_index)} lookup keys"
             )
             return True
         except Exception as e:
             logger.error(f"Failed to load property values parquet: {e}")
             return False
+
+    def reload(self):
+        """Force reload on next request (call after re-exporting parquet files)."""
+        self._file_mtime = None
+        logger.info("ParquetAnnotationLookup: marked for reload on next request")
 
     # ── Similarity search ─────────────────────────────────────────────────────
 
