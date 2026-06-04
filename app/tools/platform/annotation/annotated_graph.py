@@ -205,7 +205,7 @@ class Graph:
             if "nodes" not in updated_json:
                 raise ValueError("The input JSON must contain a 'nodes' key.")
 
-            # Pre-pass: collect all values that need Neo4j lookup grouped by (node_type, property_key)
+            # Pre-pass: collect all values that need similarity lookup grouped by (node_type, property_key)
             lookup_needed = {}  # (node_type, property_key) -> set of string values
             for node in updated_json.get("nodes"):
                 node_type = node.get("type")
@@ -223,7 +223,7 @@ class Graph:
                     elif isinstance(property_value, str):
                         lookup_needed.setdefault((node_type, property_key), set()).add(property_value)
 
-            # Run one batch Neo4j query per (node_type, property_key)
+            # Run one batch parquet similarity lookup per (node_type, property_key)
             similarity_cache = {}  # (node_type, property_key, value) -> [(similar_value, score), ...]
             for (node_type, property_key), values in lookup_needed.items():
                 batch = self.neo4j.get_similar_property_values_batch(node_type, property_key, list(values))
