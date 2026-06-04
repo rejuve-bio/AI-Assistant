@@ -68,14 +68,25 @@ class Subprocess:
 
         interpreter, script_arg = TOOL_CMD.get(tool, ("python3", "script.py"))
 
-        # Add project root to PYTHONPATH so generated scripts can import
-        # app.tools.biomni.* and any other app modules directly.
+        # Build subprocess environment:
+        # 1. PYTHONPATH → project root so scripts can import app.tools.biomni.*
+        # 2. BIOMNI_DATA_LAKE → parquet data directory (inherited from app env)
+        # 3. R_LIBS_USER → ensure R finds Bioconductor packages installed in Docker
         project_root = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..", "..")
         )
         env = os.environ.copy()
-        existing = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = f"{project_root}:{existing}" if existing else project_root
+
+        existing_py = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{project_root}:{existing_py}" if existing_py else project_root
+
+        # Ensure BIOMNI_DATA_LAKE is forwarded (may be set in .env or docker-compose)
+        if "BIOMNI_DATA_LAKE" not in env:
+            env["BIOMNI_DATA_LAKE"] = "/data/biomni"
+
+        # Help R find system-installed Bioconductor packages
+        if "R_LIBS_SITE" not in env:
+            env["R_LIBS_SITE"] = "/usr/local/lib/R/library:/usr/lib/R/library"
 
         logger.info(f"Running {interpreter} {script_arg} in {workdir} files={len(file_paths or [])}")
 

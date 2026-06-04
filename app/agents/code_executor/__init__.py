@@ -23,16 +23,15 @@ Task instruction:
 Available input files in the input/ directory:
 {available_files}
 
-── BIOMNI PLATFORM TOOLS (use these instead of reimplementing) ──────────────
+── BIOMNI PLATFORM TOOLS (Python only — use these instead of reimplementing) ─
 {biomni_functions}
 
-All Biomni tools are importable in your Python script. Import paths:
+All Biomni tools are importable in any Python script:
   from app.tools.biomni.database_connectors import (
       query_uniprot, query_alphafold, query_string, query_kegg,
       query_opentargets, query_clinvar, query_gnomad, query_ensembl,
       query_cbioportal, query_reactome, query_gwas_catalog, query_openfda,
-      query_chembl, query_pdb, query_gtex, query_encode, blast_sequence,
-      run_deseq2
+      query_chembl, query_pdb, query_gtex, query_encode, blast_sequence, run_deseq2
   )
   from app.tools.biomni.genetics import run_finemapping, liftover, identify_tf_binding_sites
   from app.tools.biomni.genomics import run_gsea, annotate_scrna, compute_scrna_embeddings
@@ -40,6 +39,20 @@ All Biomni tools are importable in your Python script. Import paths:
   from app.tools.biomni.molecular_biology import design_sgrna, design_primers, simulate_restriction_digest
   from app.tools.biomni.literature import search_pubmed, search_arxiv, search_scholar, get_doi_supplementary, search_clinical_trials, extract_url_content
   from app.tools.biomni.data_lake import query_depmap, query_disgenets, query_bindingdb, query_msigdb, query_omim
+
+DATA LAKE (local parquet files — faster than API, available if BIOMNI_DATA_LAKE is set):
+  The above data_lake functions check BIOMNI_DATA_LAKE automatically.
+  Direct access in Python: import os, pandas as pd
+    data_dir = os.environ.get("BIOMNI_DATA_LAKE", "/data/biomni")
+    df = pd.read_parquet(os.path.join(data_dir, "disgenets_gene_disease.parquet"))
+  Available files (if mounted): disgenets_gene_disease.parquet, msigdb_h.parquet,
+    msigdb_c2.parquet, msigdb_c5.parquet, omim_gene_disorders.parquet,
+    depmap_gene_dependency.parquet, bindingdb_affinities.parquet,
+    txgnn_repurposing.parquet, precision_medicine_kg.parquet
+
+DATA LAKE in R scripts (use arrow package):
+  library(arrow); data_dir <- Sys.getenv("BIOMNI_DATA_LAKE", "/data/biomni")
+  df <- read_parquet(file.path(data_dir, "disgenets_gene_disease.parquet"))
 
 ALWAYS prefer Biomni tools over reimplementing database queries or analysis from scratch.
 ──────────────────────────────────────────────────────────────────────────────
@@ -51,9 +64,10 @@ Rules:
 - Write all output files to output/
 - Print a clear, human-readable summary of results to stdout
 - For PLINK scripts: use plink2 (on PATH); prefix output with output/result
-- Standard Python libraries available: pandas, numpy, scipy, matplotlib, seaborn,
-  scikit-learn, gseapy, networkx, biopython, statsmodels, scanpy, anndata, pydeseq2
-- Standard R libraries: ggplot2, dplyr, DESeq2, limma, edgeR, WGCNA, survival
+- Python libraries available: pandas, numpy, scipy, matplotlib, seaborn,
+  scikit-learn, gseapy, networkx, biopython, statsmodels, scanpy, anndata, pydeseq2, arrow
+- R libraries available: ggplot2, dplyr, tidyr, DESeq2, limma, edgeR, WGCNA,
+  survival, igraph, arrow (for parquet), BiocManager
 - Do NOT include markdown fences, just raw code
 
 Write the complete code now:"""

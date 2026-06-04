@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ── R packages — CRAN + Bioconductor ─────────────────────────────────────────
 RUN Rscript -e "\
     options(repos = c(CRAN = 'https://cloud.r-project.org')); \
-    install.packages(c('BiocManager', 'ggplot2', 'dplyr', 'tidyr', 'survival', 'WGCNA'), \
+    install.packages(c('BiocManager', 'ggplot2', 'dplyr', 'tidyr', 'survival', 'WGCNA', 'arrow', 'igraph'), \
                      Ncpus = 4, quiet = TRUE); \
     BiocManager::install(c('DESeq2', 'limma', 'edgeR', 'Biostrings', 'GenomicRanges'), \
                          ask = FALSE, update = FALSE, Ncpus = 4); \
