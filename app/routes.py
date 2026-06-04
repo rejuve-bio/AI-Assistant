@@ -1,5 +1,5 @@
 from app.lib.auth import token_required
-from flask import Blueprint, request, current_app, jsonify, Response
+from flask import Blueprint, request, current_app, jsonify, Response, send_from_directory
 from dotenv import load_dotenv
 import traceback
 import json
@@ -652,6 +652,26 @@ def get_faq_answer(current_user_id,auth_token,question_id):
         current_app.logger.error(f"Error in FAQ answer: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+@main_bp.route("/outputs/<path:rel_path>", methods=["GET"])
+@token_required
+def serve_output_file(current_user_id, auth_token, rel_path):
+    """Serve a code-executor generated output file.
+    Path format: {user_id}/{session_id}/{step_id}/{filename}
+    First segment must match the authenticated user.
+    """
+    if not rel_path.split("/")[0] == str(current_user_id):
+        return jsonify(error="Unauthorized"), 403
+
+    base = os.path.abspath("uploads/outputs")
+    target = os.path.abspath(os.path.join("uploads/outputs", rel_path))
+    if not target.startswith(base + os.sep):
+        return jsonify(error="Invalid path"), 403
+    if not os.path.isfile(target):
+        return jsonify(error="File not found"), 404
+
+    return send_from_directory(os.path.dirname(target), os.path.basename(target))
 
 
 @main_bp.route("/", methods=["GET"])

@@ -10,7 +10,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget curl \
     libcurl4-openssl-dev libssl-dev libxml2-dev \
     libhdf5-dev zlib1g-dev libbz2-dev liblzma-dev \
+    # R base
+    r-base r-base-dev \
+    # BLAST+
+    ncbi-blast+ \
     && rm -rf /var/lib/apt/lists/*
+
+# ── R packages — CRAN + Bioconductor ─────────────────────────────────────────
+RUN Rscript -e "\
+    options(repos = c(CRAN = 'https://cloud.r-project.org')); \
+    install.packages(c('BiocManager', 'ggplot2', 'dplyr', 'tidyr', 'survival', 'WGCNA'), \
+                     Ncpus = 4, quiet = TRUE); \
+    BiocManager::install(c('DESeq2', 'limma', 'edgeR', 'Biostrings', 'GenomicRanges'), \
+                         ask = FALSE, update = FALSE, Ncpus = 4); \
+    cat('R packages installed\n')"
 
 # ── PLINK2 via miniforge/bioconda ─────────────────────────────────────────────
 RUN wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/mf.sh \
