@@ -69,13 +69,29 @@ def annotate_scrna(adata_path: str, methods: list = None, output_dir: str = "out
 
         out_path = os.path.join(output_dir, "annotated.h5ad")
         adata.write_h5ad(out_path)
+        output_files = [out_path]
+
+        # Save UMAP plot coloured by cell type / cluster
+        try:
+            import matplotlib
+            matplotlib.use("Agg")  # non-interactive backend, safe in server
+            import matplotlib.pyplot as plt
+            color_key = "majority_voting" if "majority_voting" in adata.obs else "leiden"
+            if color_key in adata.obs:
+                sc.pl.umap(adata, color=color_key, show=False)
+                umap_path = os.path.join(output_dir, "umap_cell_types.png")
+                plt.savefig(umap_path, dpi=150, bbox_inches="tight")
+                plt.close()
+                output_files.append(umap_path)
+        except Exception as plot_err:
+            logger.warning(f"UMAP plot failed (non-fatal): {plot_err}")
 
         return {
             "n_cells": len(adata),
             "n_genes": adata.n_vars,
             "methods_run": list(results.keys()),
             "annotations": results,
-            "output_files": [out_path],
+            "output_files": output_files,
         }
     except ImportError:
         return {"error": "scanpy not installed. Run: pip install scanpy"}
@@ -113,12 +129,38 @@ def run_gsea(gene_list: list, gene_sets: str = "MSigDB_Hallmark_2020",
             ["Term", "Overlap", "Adjusted P-value", "Genes"]
         ].to_dict("records")
 
+        # Collect all files gseapy wrote (includes auto-generated bar chart PNGs)
+        output_files = []
+        if os.path.isdir(output_dir):
+            for fname in os.listdir(output_dir):
+                output_files.append(os.path.join(output_dir, fname))
+
+        # If gseapy didn't auto-plot, generate a bar chart ourselves
+        bar_path = os.path.join(output_dir, "enrichment_barplot.png")
+        if not any(f.endswith(".png") for f in output_files):
+            try:
+                import matplotlib
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as plt
+                sig = enr.results[enr.results["Adjusted P-value"] < 0.05].head(15)
+                if not sig.empty:
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    ax.barh(sig["Term"], -sig["Adjusted P-value"].apply(lambda x: __import__("math").log10(x + 1e-300)))
+                    ax.set_xlabel("-log10(Adjusted P-value)")
+                    ax.set_title(f"Top enriched gene sets — {gene_sets}")
+                    plt.tight_layout()
+                    plt.savefig(bar_path, dpi=150, bbox_inches="tight")
+                    plt.close()
+                    output_files.append(bar_path)
+            except Exception as plot_err:
+                logger.warning(f"Bar chart generation failed (non-fatal): {plot_err}")
+
         return {
             "gene_set_library": gene_sets,
             "n_genes_input": len(gene_list),
             "significant_terms": len(enr.results[enr.results["Adjusted P-value"] < 0.05]),
             "top_enriched": top,
-            "output_files": [os.path.join(output_dir, f"{gene_sets}.txt")],
+            "output_files": output_files,
         }
     except ImportError:
         return {"error": "gseapy not installed. Run: pip install gseapy"}
@@ -172,6 +214,22 @@ def compute_scrna_embeddings(adata_path: str, method: str = "scvi",
 
         out_path = os.path.join(output_dir, f"embedded_{method}.h5ad")
         adata.write_h5ad(out_path)
+        output_files = [out_path]
+
+        # Compute and save UMAP plot
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            sc.pp.neighbors(adata, use_rep=f"X_{method}" if method != "pca" else "X_pca")
+            sc.tl.umap(adata)
+            sc.pl.umap(adata, show=False)
+            plot_path = os.path.join(output_dir, f"umap_{method}.png")
+            plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+            plt.close()
+            output_files.append(plot_path)
+        except Exception as plot_err:
+            logger.warning(f"Embedding plot failed (non-fatal): {plot_err}")
 
         key = f"X_{method}" if method != "pca" else "X_pca"
         shape = adata.obsm.get(key, np.array([])).shape
@@ -179,7 +237,7 @@ def compute_scrna_embeddings(adata_path: str, method: str = "scvi",
         return {
             "method": method,
             "embedding_shape": list(shape),
-            "output_files": [out_path],
+            "output_files": output_files,
         }
     except ImportError:
         return {"error": "scanpy not installed. Run: pip install scanpy"}

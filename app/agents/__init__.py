@@ -726,21 +726,50 @@ class Orchestrator:
                 first_key = next(iter(params), None)
                 kwargs = {first_key: step_input} if first_key else {}
 
+            # For tools that write output files, provide a managed output directory
+            user_id = state.get("user_id", "unknown")
+            session_id = state.get("session_id", "0")
+            step_id = state.get("current_step", {}).get("id", 0)
+            out_dir = os.path.join("uploads/outputs", str(user_id), str(session_id), f"biomni_{step_id}")
+            os.makedirs(out_dir, exist_ok=True)
+            if "output_dir" in schema.get("parameters", {}):
+                kwargs.setdefault("output_dir", out_dir)
+
             # Dynamically import and call the function
             mod = importlib.import_module(f"app.tools.biomni.{schema['module']}")
             func = getattr(mod, schema["name"])
             logger.info(f"biomni_lookup: calling {schema['module']}.{schema['name']}({kwargs})")
             result = func(**kwargs)
 
-            # Format result as text
-            text = json.dumps(result, indent=2, default=str)
+            # Capture output files (images, tables, h5ad files)
+            raw_files = result.get("output_files", [])
+            output_files = []
+            _base = os.path.abspath("uploads/outputs")
+            for f in raw_files:
+                abs_f = os.path.abspath(f)
+                if abs_f.startswith(_base + os.sep):
+                    rel = os.path.relpath(abs_f, _base)
+                    output_files.append(f"/outputs/{rel}")
+                else:
+                    output_files.append(f)
+
+            # Format result as text (exclude output_files from JSON since we handle them separately)
+            result_for_text = {k: v for k, v in result.items() if k != "output_files"}
+            text = json.dumps(result_for_text, indent=2, default=str)
+
             provenance = {
                 "database": f"Biomni — {schema['name']}",
                 "biomni_apis": [schema["name"]],
                 "source_databases": [result.get("source", schema["module"])],
                 "node_types_queried": [],
             }
-            return {"text": text, "source": f"biomni:{schema['name']}", "json_format": None, "provenance": provenance}
+            return {
+                "text": text,
+                "source": f"biomni:{schema['name']}",
+                "json_format": None,
+                "provenance": provenance,
+                "files": output_files,
+            }
 
         except Exception as e:
             logger.error(f"Biomni lookup step error: {e}", exc_info=True)
