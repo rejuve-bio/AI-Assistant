@@ -33,7 +33,8 @@ import time
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger(__name__)
 
-DATA_DIR = os.environ.get("BIOMNI_DATA_LAKE", "./data/biomni")
+_BASE    = os.environ.get("BIOMNI_DATA_LAKE", "./data/biomni")
+DATA_DIR = os.path.join(_BASE, "external")  # External API data goes in external/ subfolder
 CHUNK = 1024 * 1024  # 1 MB download chunks
 
 

@@ -78,12 +78,14 @@ Read them with pandas or arrow — no credentials needed:
   import os, pandas as pd
   data_dir = os.environ.get("BIOMNI_DATA_LAKE", "/data/biomni")
   # Available Rejuve exports:
-  genes    = pd.read_parquet(os.path.join(data_dir, "neo4j_genes.parquet"))
-  variants = pd.read_parquet(os.path.join(data_dir, "neo4j_variants.parquet"))
-  pathways = pd.read_parquet(os.path.join(data_dir, "neo4j_pathways.parquet"))
-  eqtls    = pd.read_parquet(os.path.join(data_dir, "neo4j_eqtls.parquet"))
-  coexpr   = pd.read_parquet(os.path.join(data_dir, "neo4j_coexpression.parquet"))
-  # In R: library(arrow); df <- read_parquet(file.path(Sys.getenv("BIOMNI_DATA_LAKE"), "neo4j_genes.parquet"))
+  neo4j_dir = os.path.join(data_dir, "neo4j")
+  genes    = pd.read_parquet(os.path.join(neo4j_dir, "neo4j_genes.parquet"))
+  variants = pd.read_parquet(os.path.join(neo4j_dir, "neo4j_variants.parquet"))
+  pathways = pd.read_parquet(os.path.join(neo4j_dir, "neo4j_pathways.parquet"))
+  eqtls    = pd.read_parquet(os.path.join(neo4j_dir, "neo4j_eqtls.parquet"))
+  coexpr   = pd.read_parquet(os.path.join(neo4j_dir, "neo4j_coexpression.parquet"))
+  # In R: library(arrow); neo4j_dir <- file.path(Sys.getenv("BIOMNI_DATA_LAKE"), "neo4j")
+  #        df <- read_parquet(file.path(neo4j_dir, "neo4j_genes.parquet"))
 Use Biomni external tools only for things not in the Neo4j exports (drugs, structures, literature).""",
 }
 

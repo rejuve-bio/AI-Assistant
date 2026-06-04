@@ -12,7 +12,8 @@ from typing import List, Dict, Tuple
 
 logger = logging.getLogger(__name__)
 
-DATA_LAKE = os.environ.get("BIOMNI_DATA_LAKE", "/data/biomni")
+_BASE = os.environ.get("BIOMNI_DATA_LAKE", "/data/biomni")
+NEO4J_DIR = os.path.join(_BASE, "neo4j")          # Rejuve Atomspace exports
 PROPERTY_VALUES_FILE = "neo4j_property_values.parquet"
 
 
@@ -22,8 +23,8 @@ class ParquetAnnotationLookup:
     Reads from parquet files — no Neo4j URI, username, or password needed.
     """
 
-    def __init__(self, data_lake_path: str = None):
-        self._data_lake = data_lake_path or DATA_LAKE
+    def __init__(self, neo4j_dir: str = None):
+        self._neo4j_dir = neo4j_dir or NEO4J_DIR
         self._df = None          # lazy-loaded DataFrame
         self._value_index = {}   # (node_type, property_key) → sorted list of values
 
@@ -34,7 +35,7 @@ class ParquetAnnotationLookup:
         if self._df is not None:
             return True
 
-        path = os.path.join(self._data_lake, PROPERTY_VALUES_FILE)
+        path = os.path.join(self._neo4j_dir, PROPERTY_VALUES_FILE)
         if not os.path.exists(path):
             logger.warning(
                 f"Property values parquet not found at {path}. "

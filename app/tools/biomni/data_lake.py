@@ -11,7 +11,8 @@ import os
 import requests
 
 logger = logging.getLogger(__name__)
-DATA_LAKE = os.environ.get("BIOMNI_DATA_LAKE", "/data/biomni")
+_BASE = os.environ.get("BIOMNI_DATA_LAKE", "/data/biomni")
+DATA_LAKE = os.path.join(_BASE, "external")   # external API data lives here
 _TIMEOUT = 15
 
 
