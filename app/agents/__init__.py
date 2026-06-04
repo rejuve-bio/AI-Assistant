@@ -726,7 +726,25 @@ class Orchestrator:
                 first_key = next(iter(params), None)
                 kwargs = {first_key: step_input} if first_key else {}
 
-            # For tools that write output files, provide a managed output directory
+            # ── Resolve file paths for tools that need input files ──────────
+            # Any kwarg ending in _path may reference a user-uploaded file.
+            # Try to resolve from content_ids → actual disk path.
+            file_params = [k for k in kwargs if k.endswith("_path")]
+            if file_params:
+                resolved = self._resolve_file_paths(state["user_id"], state.get("content_ids"))
+                if resolved:
+                    for key in file_params:
+                        val = kwargs.get(key, "")
+                        # If the LLM put a bare filename, find the matching upload
+                        basename = os.path.basename(str(val))
+                        match = next(
+                            (p for p in resolved if os.path.basename(p) == basename),
+                            resolved[0],  # fallback: first uploaded file
+                        )
+                        kwargs[key] = match
+                        logger.info(f"biomni_lookup: resolved {key} → {match}")
+
+            # ── Managed output directory for tools that write files ─────────
             user_id = state.get("user_id", "unknown")
             session_id = state.get("session_id", "0")
             step_id = state.get("current_step", {}).get("id", 0)

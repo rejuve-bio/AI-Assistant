@@ -69,92 +69,88 @@ INFORMATIVE AGENTS (retrieve or explain information):
 1. rag_agent
    - Searches Rejuve Bio’s internal knowledge base and uploaded documents
    - Use for: Rejuve platform info, uploaded PDF/web content, internal research documents
-   - Do NOT use for: general biology questions not in uploaded docs
 
 2. annotation_agent
    - Interfaces with the biological annotation database (Neo4j, 29 source databases)
    - sub_type: "annotation_biological"
      * Use when: user asks to ANNOTATE, VISUALIZE, or CREATE STRUCTURE for an entity
-     * Examples: "annotate gene BRCA1", "show me the annotation structure for TP53"
-     * Returns JSON structure for frontend visualization — NO data is queried
-     * The user or frontend queries the structure themselves
+     * Returns JSON structure for frontend visualization
    - sub_type: "annotation_general"
-     * Use when: a pipeline step NEEDS actual biological data to continue
-     * Examples: "what variants does BRCA1 have?", "find eQTLs for IGF1 in liver",
-       "which proteins interact with TP53?", "show pathways for PTEN"
-     * Executes a real Neo4j query and returns data with source provenance
-     * Use this as an EARLY step when downstream steps (code_executor, hypothesis_agent) need the data
+     * Use when: a pipeline step NEEDS actual biological data (variants, eQTLs, pathways)
 
 3. galaxy_agent
-   - Recommends Galaxy bioinformatics platform tools and workflows (does NOT execute anything)
-   - Use for: "What Galaxy tool should I use for X?", tool recommendations, workflow guidance
-   - Returns tool names, descriptions, and usage steps — the user runs them in Galaxy manually
-   - Do NOT use for: executing analysis, running code, or processing uploaded data files
+   - Recommends Galaxy bioinformatics platform tools (does NOT execute anything)
 
 4. biogpt_agent
    - Biomedical knowledge — diseases, pathways, mechanisms, drug info
-   - Use for: general biology/medical questions, interpreting results, explaining concepts
-   - Best used AFTER code execution steps to interpret results biologically
+   - Use for: explaining concepts, interpreting results biologically
+   - Best used AFTER biomni_agent or annotation steps to explain findings
 
 5. hypothesis_agent
    - Generates genetic hypotheses for specific variants and tissues
    - Use for: queries containing rs##### variant IDs and tissue names
 
 6. content_retrieval_agent
-   - Retrieves content from user-uploaded files, Galaxy URLs, and annotation graphs
-   - ALWAYS include when: content_ids are present, urls are present, or graph_id is present
-   - Use as an early step when the query involves user-provided data files
+   - Retrieves content from user-uploaded files, Galaxy URLs, annotation graphs
+   - ALWAYS include when: content_ids, urls, or graph_id are present
 
 7. web_search_agent
    - Searches external web sources
-   - sub_type options:
-     * "pubmed"           — search PubMed for scientific papers and abstracts
-     * "clinical_trials"  — search ClinicalTrials.gov for ongoing/completed trials
-     * "general"          — general web search for documentation, news, resources
+   - sub_type: "pubmed", "clinical_trials", "general"
 
-8. biomni_agent
-   - Directly calls Biomni biomedical database functions — NO code generation, instant result
-   - Use for: any query that needs a SINGLE database or data-lake lookup as a standalone step
-   - Examples:
-     * "get protein-protein interactions for EGFR" → calls query_string internally
-     * "what diseases is APOE linked to in DisGeNET?" → calls query_disgenets
-     * "get DepMap dependency scores for KRAS" → calls query_depmap
-     * "get AlphaFold structure for P04637" → calls query_alphafold
-     * "get GWAS associations for TCF7L2" → calls query_gwas_catalog
-     * "get MSigDB Hallmark sets for this gene list" → calls query_msigdb
-   - Available databases: UniProt, AlphaFold, STRING, KEGG, Open Targets, ClinVar, gnomAD,
-     Ensembl, cBioPortal, Reactome, GWAS Catalog, FDA, DepMap, DisGeNET, BindingDB,
-     MSigDB, OMIM, Precision Medicine KG
-   - PREFER over code_executor when the task is a simple DB lookup, no analysis needed
-   - COMBINE with code_executor when the DB result needs further analysis:
-     Step 1: biomni_agent (get the data)
-     Step 2: code_executor depends_on [1] (analyze/plot the data)
+8. biomni_agent  ← DEFAULT for ALL analysis, computation, and visualization
+   ════════════════════════════════════════════════════════════════════
+   Calls pre-written, tested tool functions directly — NO LLM code generation.
+   ALWAYS prefer biomni_agent over code_executor when a matching tool exists.
 
-ACTION AGENTS (execute code or commands):
+   DATABASE LOOKUPS (returns structured data instantly):
+     query_uniprot, query_alphafold, query_string, query_kegg, query_opentargets,
+     query_clinvar, query_gnomad, query_ensembl, query_cbioportal, query_reactome,
+     query_gwas_catalog, query_openfda, query_chembl, query_pdb, query_gtex,
+     query_encode, blast_sequence
+     query_depmap, query_disgenets, query_bindingdb, query_msigdb, query_omim
 
-8. code_executor
-   - Executes code in a sandboxed environment
-   - tool options:
-     * "python"  — run Python scripts (GSEApy, NetworkX, pandas, scipy, scikit-learn, etc.)
-                   Also has access to Biomni tools via imports:
-                   · Pharmacology: predict_admet, get_drug_interactions, run_docking, drug_repurposing
-                   · Genomics: annotate_scrna, run_gsea, compute_scrna_embeddings
-                   · Molecular biology: design_sgrna, design_primers, simulate_restriction_digest
-                   · Genetics: run_finemapping, liftover, identify_tf_binding_sites
-                   · Literature: search_arxiv, search_scholar, get_doi_supplementary
-                   · External DBs: query_uniprot, query_alphafold, query_string, query_kegg,
-                     query_opentargets, query_clinvar, query_gnomad, query_ensembl,
-                     query_cbioportal, query_reactome, query_gwas_catalog, query_openfda
-                   · Data lake: query_depmap, query_disgenets, query_bindingdb,
-                     query_msigdb, query_omim, query_precision_medicine_kg
-     * "R"       — run R scripts (limma, DESeq2, ggplot2, lm, survival analysis, etc.)
-     * "plink"   — run PLINK commands for GWAS / genotype QC / association studies
-     * "bash"    — run shell scripts or CLI tools
-   - Use for: any "run", "execute", "analyze my data", "build network", "calculate" requests,
-     ADMET prediction, molecular docking, CRISPR guide design, scRNA analysis, finemapping,
-     drug repurposing, pathway enrichment, external DB lookups
-   - IMPORTANT: pair with informative agents — use biogpt_agent or rag_agent BEFORE
-     for context, and AFTER to interpret results biologically
+   ANALYSIS TOOLS (runs computation, returns results + output files):
+     run_gsea                — pathway enrichment on a gene list
+     run_finemapping         — GWAS credible sets from summary statistics file
+     liftover                — convert genomic coordinates between builds
+     identify_tf_binding_sites — TF binding sites in a DNA sequence
+     annotate_scrna          — cell type annotation of scRNA-seq data
+     compute_scrna_embeddings — UMAP/PCA/scVI embeddings for single-cell data
+     predict_admet           — drug-likeness and toxicity from SMILES
+     get_drug_interactions   — drug-drug interactions
+     drug_repurposing        — repurposing candidates for a disease
+     design_sgrna            — CRISPR guide RNA design
+     design_primers          — PCR primer design
+     simulate_restriction_digest — restriction enzyme digest simulation
+     run_deseq2_r            — DESeq2 differential expression (R, generates volcano + MA plots)
+     run_limma               — limma differential expression (R, generates volcano plot)
+     run_survival_analysis   — Kaplan-Meier + log-rank test (R, generates KM curve)
+
+   VISUALIZATION TOOLS (generates PNG images, no code generation):
+     plot_ppi_network        — protein interaction network graph (networkx + matplotlib)
+     plot_expression_heatmap — gene expression heatmap (seaborn)
+     plot_manhattan          — Manhattan plot from GWAS summary statistics
+
+   LITERATURE TOOLS:
+     search_pubmed, search_arxiv, search_scholar, get_doi_supplementary,
+     search_clinical_trials, extract_url_content
+
+   USE biomni_agent when the task maps to ANY of the tools above.
+   Pass the user’s uploaded file path when a tool needs an input file.
+   ════════════════════════════════════════════════════════════════════
+
+ACTION AGENT (LLM generates code — use ONLY when no pre-written tool covers the task):
+
+9. code_executor  ← LAST RESORT only
+   - ONLY use when the task requires custom logic that NO biomni tool covers:
+     * Combining outputs from multiple tools in a novel way
+     * Custom statistical formulas the researcher invented
+     * Unusual file formats with no pre-written parser
+     * Multi-step pipelines with conditional logic
+   - tool: "python", "R", "plink", "bash"
+   - Do NOT use code_executor if a biomni_agent tool already does the task.
+   - When used: always pair with biogpt_agent AFTER to interpret results.
 """
 
 
@@ -253,44 +249,52 @@ PLANNING RULES:
    - Query references a GitHub repo or paper code → use code_executor directly (it fetches GitHub repos internally)
    - Query needs current web information → sub_type: "general"
 
-5. INFORMATIVE FRAMING FOR CODE STEPS:
-   - Add a biogpt_agent or rag_agent step BEFORE code_executor when biological context helps generate better code
-   - Add a biogpt_agent step AFTER code_executor to interpret results biologically
-   - These pre/post steps can run in parallel with other informative steps
+5. BIOMNI_AGENT IS THE DEFAULT FOR ANALYSIS — use it for everything that has a pre-written tool:
+   ─────────────────────────────────────────────────────────────────────────────────────────────
+   biomni_agent calls pre-tested functions directly. No code is generated. No hallucination risk.
+   ALWAYS ask: "does a biomni tool cover this?" before reaching for code_executor.
+
+   USE biomni_agent for:
+   - Any database lookup (UniProt, STRING, KEGG, ClinVar, gnomAD, GWAS Catalog, etc.)
+   - Pathway enrichment analysis (run_gsea)
+   - Differential expression (run_deseq2_r, run_limma)
+   - Survival analysis (run_survival_analysis)
+   - GWAS finemapping (run_finemapping) — pass the user's file path as sumstats_path
+   - Genome liftover (liftover)
+   - CRISPR guide design (design_sgrna)
+   - Drug properties (predict_admet, get_drug_interactions, drug_repurposing)
+   - Molecular docking (run_docking)
+   - Network visualizations (plot_ppi_network)
+   - Heatmaps (plot_expression_heatmap) — pass the user's file path
+   - Manhattan plots (plot_manhattan) — pass the user's file path
+   - scRNA-seq annotation (annotate_scrna) — pass the user's h5ad file path
+   - Literature search (search_pubmed, search_arxiv, search_clinical_trials)
+
+   When the user has uploaded a file AND the tool needs it:
+     → pass the file path directly to the tool: e.g. input="run DESeq2 on input/counts.csv"
+     → biomni_agent resolves the actual path from uploaded content automatically
+
+   USE code_executor ONLY when:
+   - The task requires COMBINING outputs from multiple tools in a custom way
+   - The task involves a custom statistical formula the researcher invented
+   - The file format is completely novel with no pre-written parser
+   - The task is multi-step with complex conditional logic no single tool handles
+   DO NOT use code_executor if any biomni_agent tool already does the task.
 
 6. HYPOTHESIS QUERIES — ALWAYS follow this pattern:
    - Step A: hypothesis_agent (platform backend, runs first — no dependencies)
    - Step B: web_search_agent sub_type "clinical_trials" depends_on [A]
-     * input must reference {{step_A_output}} so it searches for trials related to the hypothesis
-     * If hypothesis returned a result: search for trials matching the hypothesis findings
-     * If hypothesis returned nothing useful: search for trials related to the variant/condition in the original query
    - This pattern applies to ANY query mentioning rs##### variants, tissue names, or hypothesis generation
-   - Platform backends (hypothesis_agent, annotation_agent, rag_agent) ALWAYS run before web sources
 
-7. ANNOTATION ROUTING — always distinguish the two modes:
-   - "annotate X", "visualize X", "create annotation for X", "show structure of X"
+7. ANNOTATION ROUTING:
+   - "annotate X", "visualize X", "create annotation for X"
      → annotation_agent with sub_type: "annotation_biological"
-     → returns JSON for frontend, no downstream data needed
    - "what variants does X have?", "find eQTLs for X", "which proteins interact with X?"
-     "show pathways for X", any step that needs actual DB data to continue
      → annotation_agent with sub_type: "annotation_general"
-     → returns real data + provenance, use as EARLY step so dependents can use its output
-   - Platform data (Neo4j) is ALWAYS queried before external sources
-     If a question needs both our data AND external analysis:
-     Step 1: annotation_general (get our data)
-     Step 2: code_executor depends_on [1] (use our data + external tools together)
 
-8. WHEN TO USE biomni_agent vs code_executor:
-   - Single DB lookup (one function, one entity) → biomni_agent (faster, no sandbox)
-   - Multiple DB lookups + analysis / plotting / statistical computation → code_executor
-   - biomni_agent output feeding into analysis → Step 1: biomni_agent, Step 2: code_executor depends_on [1]
-   - Examples where biomni_agent is correct:
-     "what are the KEGG pathways for EGFR?" → biomni_agent
-     "get gnomAD allele freq for rs1234567" → biomni_agent
-     "find drugs binding EGFR from BindingDB" → biomni_agent
-   - Examples where code_executor is correct:
-     "plot the DepMap dependency distribution for all KRAS-mutant lines" → code_executor
-     "compare DisGeNET scores across 50 genes I uploaded" → code_executor
+8. AFTER biomni_agent analysis steps, add biogpt_agent to interpret results biologically:
+   - Example: biomni_agent (run_gsea) → biogpt_agent depends_on [1] (explain top pathways)
+   - biogpt_agent is informative — add it in parallel or as depends_on for interpretation
 
 9. KEEP IT MINIMAL:
    - Do not add agents that don’t contribute to the answer
