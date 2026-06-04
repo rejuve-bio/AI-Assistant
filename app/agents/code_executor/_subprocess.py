@@ -68,23 +68,42 @@ class Subprocess:
 
         interpreter, script_arg = TOOL_CMD.get(tool, ("python3", "script.py"))
 
-        # Build subprocess environment:
-        # 1. PYTHONPATH → project root so scripts can import app.tools.biomni.*
-        # 2. BIOMNI_DATA_LAKE → parquet data directory (inherited from app env)
-        # 3. R_LIBS_USER → ensure R finds Bioconductor packages installed in Docker
+        # ── Sandbox environment ───────────────────────────────────────────────
+        # Start from a clean copy of the process env, then:
+        #   1. Strip ALL credentials and internal service URLs — generated code
+        #      must never be able to reach Neo4j, MongoDB, Redis, or any API key.
+        #      This applies whether running locally or on e2b.
+        #   2. Add PYTHONPATH so scripts can import app.tools.biomni.*
+        #   3. Forward BIOMNI_DATA_LAKE (parquet files only — no credentials)
+        #   4. Set R library path for Bioconductor packages
+
+        _STRIP = {
+            # Database credentials
+            "NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD",
+            "MONGO_URL", "MONGO_USERNAME", "MONGO_PASSWORD", "MONGO_DATABASE",
+            "REDIS_URL", "REDIS_HOST", "REDIS_PORT",
+            "QDRANT_CLIENT",
+            # API keys
+            "OPENAI_API_KEY", "GEMINI_API_KEY",
+            # Internal service endpoints
+            "ANNOTATION_SERVICE_URL",
+            "HYPOTHESIS_CHAT_ENDPOINT", "HYPOTHESIS_MAIN_ENDPOINT", "HYPOTHESIS_DATA_API",
+            "GALAXY_MCP_SERVER",
+            # Auth
+            "JWT_SECRET",
+        }
+
+        env = {k: v for k, v in os.environ.items() if k not in _STRIP}
+
         project_root = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..", "..")
         )
-        env = os.environ.copy()
-
         existing_py = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = f"{project_root}:{existing_py}" if existing_py else project_root
 
-        # Ensure BIOMNI_DATA_LAKE is forwarded (may be set in .env or docker-compose)
         if "BIOMNI_DATA_LAKE" not in env:
             env["BIOMNI_DATA_LAKE"] = "/data/biomni"
 
-        # Help R find system-installed Bioconductor packages
         if "R_LIBS_SITE" not in env:
             env["R_LIBS_SITE"] = "/usr/local/lib/R/library:/usr/lib/R/library"
 

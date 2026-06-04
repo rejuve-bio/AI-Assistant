@@ -23,7 +23,11 @@ Task instruction:
 Available input files in the input/ directory:
 {available_files}
 
-── BIOMNI PLATFORM TOOLS (Python only — use these instead of reimplementing) ─
+── DATA MODE: {data_mode} ────────────────────────────────────────────────────
+{data_mode_instructions}
+──────────────────────────────────────────────────────────────────────────────
+
+── BIOMNI PLATFORM TOOLS (always available regardless of data mode) ──────────
 {biomni_functions}
 
 All Biomni tools are importable in any Python script:
@@ -39,22 +43,6 @@ All Biomni tools are importable in any Python script:
   from app.tools.biomni.molecular_biology import design_sgrna, design_primers, simulate_restriction_digest
   from app.tools.biomni.literature import search_pubmed, search_arxiv, search_scholar, get_doi_supplementary, search_clinical_trials, extract_url_content
   from app.tools.biomni.data_lake import query_depmap, query_disgenets, query_bindingdb, query_msigdb, query_omim
-
-DATA LAKE (local parquet files — faster than API, available if BIOMNI_DATA_LAKE is set):
-  The above data_lake functions check BIOMNI_DATA_LAKE automatically.
-  Direct access in Python: import os, pandas as pd
-    data_dir = os.environ.get("BIOMNI_DATA_LAKE", "/data/biomni")
-    df = pd.read_parquet(os.path.join(data_dir, "disgenets_gene_disease.parquet"))
-  Available files (if mounted): disgenets_gene_disease.parquet, msigdb_h.parquet,
-    msigdb_c2.parquet, msigdb_c5.parquet, omim_gene_disorders.parquet,
-    depmap_gene_dependency.parquet, bindingdb_affinities.parquet,
-    txgnn_repurposing.parquet, precision_medicine_kg.parquet
-
-DATA LAKE in R scripts (use arrow package):
-  library(arrow); data_dir <- Sys.getenv("BIOMNI_DATA_LAKE", "/data/biomni")
-  df <- read_parquet(file.path(data_dir, "disgenets_gene_disease.parquet"))
-
-ALWAYS prefer Biomni tools over reimplementing database queries or analysis from scratch.
 ──────────────────────────────────────────────────────────────────────────────
 
 Write a complete, self-contained {tool} script that performs this task.
@@ -68,9 +56,36 @@ Rules:
   scikit-learn, gseapy, networkx, biopython, statsmodels, scanpy, anndata, pydeseq2, arrow
 - R libraries available: ggplot2, dplyr, tidyr, DESeq2, limma, edgeR, WGCNA,
   survival, igraph, arrow (for parquet), BiocManager
+- Do NOT use os.environ to read credentials — none are available in this sandbox
 - Do NOT include markdown fences, just raw code
 
 Write the complete code now:"""
+
+# Instructions injected into the prompt based on CODING_DATA_MODE
+_DATA_MODE_INSTRUCTIONS = {
+    "external": """\
+Use Biomni external API tools for all biological data lookups.
+These call live public databases (UniProt, KEGG, OpenTargets, GTEx v10, etc.)
+and always return current data with a clear source label.
+  Example: from app.tools.biomni.database_connectors import query_opentargets
+           result = query_opentargets("FOXO3")  # returns disease associations""",
+
+    "neo4j": """\
+Use the Rejuve Neo4j data lake (parquet exports) for biological data.
+These files contain Rejuve's curated Atomspace data: 78K genes, 37M SNPs,
+63M eQTLs, 220M coexpression links, pathways, regulatory elements.
+Read them with pandas or arrow — no credentials needed:
+  import os, pandas as pd
+  data_dir = os.environ.get("BIOMNI_DATA_LAKE", "/data/biomni")
+  # Available Rejuve exports:
+  genes    = pd.read_parquet(os.path.join(data_dir, "neo4j_genes.parquet"))
+  variants = pd.read_parquet(os.path.join(data_dir, "neo4j_variants.parquet"))
+  pathways = pd.read_parquet(os.path.join(data_dir, "neo4j_pathways.parquet"))
+  eqtls    = pd.read_parquet(os.path.join(data_dir, "neo4j_eqtls.parquet"))
+  coexpr   = pd.read_parquet(os.path.join(data_dir, "neo4j_coexpression.parquet"))
+  # In R: library(arrow); df <- read_parquet(file.path(Sys.getenv("BIOMNI_DATA_LAKE"), "neo4j_genes.parquet"))
+Use Biomni external tools only for things not in the Neo4j exports (drugs, structures, literature).""",
+}
 
 FIX_PROMPT = """Fix the following {tool} code.
 
@@ -208,18 +223,22 @@ class CodeExecutor:
         else:
             available = "  (no files uploaded — generate example data or use public datasets)"
 
-        # Inject relevant Biomni tool signatures for Python scripts.
-        # R/bash/plink scripts can call Python tools via subprocess if needed,
-        # but the primary integration path is Python.
         biomni_section = ""
         if self.biomni_retriever:
             relevant = self.biomni_retriever.get_relevant_functions(step_input)
             if relevant:
                 biomni_section = relevant + "\n"
 
+        data_mode = os.environ.get("CODING_DATA_MODE", "external")
+        data_mode_instructions = _DATA_MODE_INSTRUCTIONS.get(
+            data_mode, _DATA_MODE_INSTRUCTIONS["external"]
+        )
+
         prompt = CODE_GEN_PROMPT.format(
             step_input=step_input, tool=tool,
             available_files=available, biomni_functions=biomni_section,
+            data_mode=data_mode,
+            data_mode_instructions=data_mode_instructions,
         )
         try:
             code = self.advanced_llm.generate(prompt)
