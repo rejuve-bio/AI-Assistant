@@ -1,7 +1,3 @@
-import eventlet
-eventlet.monkey_patch()
-
-
 import os
 import logging
 from logging.handlers import TimedRotatingFileHandler

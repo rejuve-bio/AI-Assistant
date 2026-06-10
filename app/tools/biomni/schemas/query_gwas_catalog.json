@@ -1,10 +1,10 @@
 {
   "name": "query_gwas_catalog",
   "module": "database_connectors",
-  "description": "Get GWAS associations from NHGRI-EBI GWAS Catalog for a gene including trait associations and p-values",
+  "description": "Get GWAS associations from NHGRI-EBI GWAS Catalog for a gene or trait including trait associations and p-values",
   "usage": "from app.tools.biomni.database_connectors import query_gwas_catalog; result = query_gwas_catalog('APOE', p_value_threshold=5e-8)",
   "parameters": {
-    "gene_name": "str — gene symbol (e.g. 'APOE', 'TCF7L2')",
+    "gene_or_trait": "str — gene symbol or trait keyword (e.g. 'APOE', 'obesity', 'aging')",
     "p_value_threshold": "float — significance threshold (default 5e-8)"
   },
   "returns": "dict with keys: gene, associations (list of {trait, snp_id, p_value, or_beta, mapped_gene}), n_associations, source",

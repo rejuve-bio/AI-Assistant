@@ -15,6 +15,7 @@ from app.tools.platform.galaxy.galaxy import GalaxyHandler
 from app.tools.platform.biogpt.biogpt import BioGPTAgentOpenVINO
 from app.tools.platform.web_search import WebSearch
 from app.tools.biomni import BiomniFunctionRetriever
+from app.llm_handle.llm_models import model as sentence_transformer_model
 from .code_executor import CodeExecutor
 from typing import TypedDict, List, Annotated, Any, Dict, Optional
 from langgraph.types import Send
@@ -34,11 +35,17 @@ Task: {task}
 Function: {function_name}
 Parameters: {params}
 
+RULES:
+- Use ONLY the parameter names listed above — do NOT invent new names.
+- Extract the actual biological value (gene symbol, trait keyword, number) from the task — do NOT copy the task description as a value.
+- Omit optional parameters unless the task explicitly specifies them.
+
 Respond with ONLY a JSON object of argument values. No explanation, no markdown.
 Examples:
   {{"gene_name": "BRCA1"}}
   {{"gene_list": ["TP53", "MYC", "KRAS"], "collection": "H"}}
-  {{"target_gene": "EGFR", "top_k": 20}}"""
+  {{"target_gene": "EGFR", "top_k": 20}}
+  {{"gene_or_trait": "aging"}}"""
 
 # ── Dynamic replanner ───────────────────────────────────────────────────────
 REPLAN_PROMPT = """You are checking whether a multi-step biomedical query is fully answered.
@@ -146,7 +153,7 @@ class Orchestrator:
         self.galaxy_handler = GalaxyHandler(advanced_llm, qdrant_client, embedding_model)
         self.biogpt = BioGPTAgentOpenVINO(llm=advanced_llm)
         self.web_search = WebSearch(advanced_llm)
-        biomni_retriever = BiomniFunctionRetriever(embedding_model)
+        biomni_retriever = BiomniFunctionRetriever(sentence_transformer_model)
         self.code_executor = CodeExecutor(advanced_llm, basic_llm, biomni_retriever=biomni_retriever)
 
         logger.info(f"Orchestrator initialized with llm: {type(advanced_llm).__name__}")
@@ -710,9 +717,15 @@ class Orchestrator:
             params = schema.get("parameters", {})
             params_desc = ", ".join(f"{k}: {v}" for k, v in params.items())
 
+            # Strip "query_foo for ..." prefix the planner adds to the step input
+            clean_input = step_input
+            fn_prefix = schema["name"].lower()
+            if clean_input.lower().startswith(fn_prefix):
+                clean_input = clean_input[len(fn_prefix):].lstrip(" :,for").strip()
+
             # Ask LLM to extract argument values
             arg_prompt = BIOMNI_ARG_EXTRACT_PROMPT.format(
-                task=step_input,
+                task=clean_input,
                 function_name=schema["name"],
                 params=params_desc,
             )

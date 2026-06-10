@@ -102,7 +102,7 @@ def query_disgenets(gene_name: str, top_k: int = 20) -> dict:
     # Fallback: Open Targets covers most DisGeNET content
     try:
         from .database_connectors import query_opentargets
-        result = query_opentargets(gene_name, limit=top_k)
+        result = query_opentargets(gene_name, top_k=top_k)
         if not result.get("error"):
             result["source"] = "Open Targets (DisGeNET fallback)"
             return result
@@ -227,7 +227,7 @@ def query_omim(gene_name: str) -> dict:
 
     try:
         from .database_connectors import query_opentargets
-        result = query_opentargets(gene_name, limit=15)
+        result = query_opentargets(gene_name, top_k=15)
         if not result.get("error"):
             result["note"] = "Sourced from Open Targets (local OMIM data not mounted)"
             return result

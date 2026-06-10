@@ -10,7 +10,7 @@ import tempfile
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GALAXY_MCP_SERVER = os.getenv("GALAXY_MCP_SERVER")
-advanced_llm_provider = os.getenv("ADVANCED_LLM_PROVIDER", "gemini")  # gemini | openai | ollama
+advanced_llm_provider = os.getenv("ADVANCED_LLM_PROVIDER", "gemini")  # gemini | openai | local_model
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -161,7 +161,7 @@ Please provide a clear, professional, and concise answer to the user's query bas
         if advanced_llm_provider == "openai":
             logger.info("Using async MCP path (OpenAI)")
             return self._handle_mcp_async(query, token)
-        elif advanced_llm_provider in ("gemini", "ollama"):
+        elif advanced_llm_provider in ("gemini", "local_model"):
             logger.info(f"Using subprocess MCP path ({advanced_llm_provider} — avoids async conflicts)")
             return self._handle_mcp_subprocess(query, token)
         else:
@@ -169,7 +169,7 @@ Please provide a clear, professional, and concise answer to the user's query bas
             return self._rag_fallback(query)
 
     def _handle_mcp_subprocess(self, query, token):
-        """Runs MCP agent in a subprocess — works for both Gemini and Ollama."""
+        """Runs MCP agent in a subprocess — works for both Gemini and local model."""
         logger.info(f"_handle_mcp_subprocess called | provider='{advanced_llm_provider}' | query='{query}'")
 
         try:
@@ -181,12 +181,13 @@ Please provide a clear, professional, and concise answer to the user's query bas
                     "from langchain_google_genai import ChatGoogleGenerativeAI\n"
                     "model = ChatGoogleGenerativeAI(model='gemini-2.5-flash')"
                 )
-            elif advanced_llm_provider == "ollama":
-                ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-                ollama_model = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+            elif advanced_llm_provider == "local_model":
+                local_model_host = os.getenv("LOCAL_MODEL_HOST", "http://localhost:8002")
+                local_model_name = os.getenv("LOCAL_MODEL", "gemma4")
+                local_model_api_key = os.getenv("LOCAL_MODEL_API_KEY", "")
                 model_setup = (
                     f"from langchain_openai import ChatOpenAI\n"
-                    f"model = ChatOpenAI(model='{ollama_model}', base_url='{ollama_host}/v1', api_key='ollama', temperature=0)"
+                    f"model = ChatOpenAI(model='{local_model_name}', base_url='{local_model_host}/v1', api_key='{local_model_api_key}', temperature=0)"
                 )
             else:
                 return {"text": f"Unsupported provider for subprocess path: {advanced_llm_provider}"}
