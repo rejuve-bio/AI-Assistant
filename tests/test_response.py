@@ -74,6 +74,19 @@ def test_health_check(client):
     assert response.status_code == 200
     assert response.json == "This is health check"
 
+
+def test_dependency_health_check(client):
+    response = client.get('/health')
+    assert response.status_code in (200, 503)
+    assert response.json["status"] in ("ok", "degraded")
+    assert set(response.json["services"]) == {
+        "neo4j",
+        "mongodb",
+        "qdrant",
+        "redis",
+    }
+
+
 def test_query_endpoint(client, auth_headers):
     """Test endpoint with valid token"""
     response = client.post(

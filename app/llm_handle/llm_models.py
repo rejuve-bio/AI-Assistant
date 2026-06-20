@@ -7,6 +7,12 @@ import json
 from typing import Any, Dict
 from sentence_transformers import SentenceTransformer
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from app.utils.langsmith_tracking import (
+    current_usage_tracker,
+    extract_usage_metadata,
+    normalize_usage,
+    wrap_openai_client,
+)
 
 
 logging.basicConfig(
@@ -133,10 +139,11 @@ class LocalModel(LLMInterface):
         self.model_provider = "local_model"
         host = os.getenv("LOCAL_MODEL_HOST")
         api_key = os.getenv("LOCAL_MODEL_API_KEY", "")
-        self.client = openai.OpenAI(
+        client = openai.OpenAI(
             base_url=f"{host}/v1",
             api_key=api_key
         )
+        self.client, self._langsmith_wrapped = wrap_openai_client(client)
         logger.info(f"LocalModel initialized: {self.model_name} at {host}")
 
     def generate(self, prompt: str, system_prompt=None, **kwargs) -> Dict[str, Any]:
@@ -145,18 +152,65 @@ class LocalModel(LLMInterface):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=messages,
-            temperature=0,
-            max_tokens=1000,
-        )
-        content = response.choices[0].message.content
-        json_content = self._extract_json_from_codeblock(content)
+        tracker = current_usage_tracker()
+        request_kwargs = {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": 0,
+            "max_tokens": 1000,
+        }
+        if tracker and self._langsmith_wrapped:
+            request_kwargs["langsmith_extra"] = tracker.langsmith_extra(
+                provider=self.model_provider,
+                model=self.model_name,
+                operation="generate",
+            )
+        started_at = time.time()
+
         try:
-            return json.loads(json_content)
-        except json.JSONDecodeError:
-            return json_content
+            response = self.client.chat.completions.create(**request_kwargs)
+            content = response.choices[0].message.content
+            self._record_usage(tracker, response, prompt, content, started_at)
+            json_content = self._extract_json_from_codeblock(content)
+            try:
+                return json.loads(json_content)
+            except json.JSONDecodeError:
+                return json_content
+        except Exception as exc:
+            self._record_usage(
+                tracker,
+                None,
+                prompt,
+                "",
+                started_at,
+                error=str(exc),
+            )
+            raise
+
+    def _record_usage(
+        self,
+        tracker,
+        response,
+        prompt,
+        content,
+        started_at,
+        error=None,
+    ):
+        if not tracker:
+            return
+        usage = normalize_usage(
+            extract_usage_metadata(response) if response is not None else None,
+            prompt_text=prompt,
+            completion_text=content,
+        )
+        tracker.record_llm_call(
+            provider=self.model_provider,
+            model=self.model_name,
+            operation="generate",
+            usage=usage,
+            elapsed_ms=int((time.time() - started_at) * 1000),
+            error=error,
+        )
 
     def _extract_json_from_codeblock(self, content: str) -> str:
         start = content.find("```json")
@@ -174,6 +228,7 @@ class GeminiModel(LLMInterface):
             temperature=0,
         )
         self.model_provider = model_provider
+        self.model_name = model_name
 
     def generate(self, prompt: str, system_prompt=None, top_k=1) -> Dict[str, Any]:
         messages = []
@@ -181,13 +236,54 @@ class GeminiModel(LLMInterface):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response = self.model.invoke(messages)
-        content = getattr(response, "content", response)
-        json_content = self._extract_json_from_codeblock(content)
+        tracker = current_usage_tracker()
+        config = (
+            tracker.langchain_config(
+                provider=self.model_provider,
+                model=self.model_name,
+                operation="generate",
+            )
+            if tracker
+            else None
+        )
+        started_at = time.time()
         try:
-            return json.loads(json_content)
-        except json.JSONDecodeError:
-            return json_content
+            response = self.model.invoke(messages, config=config)
+            content = getattr(response, "content", response)
+            if tracker:
+                usage = normalize_usage(
+                    extract_usage_metadata(response),
+                    prompt_text=prompt,
+                    completion_text=content,
+                )
+                tracker.record_llm_call(
+                    provider=self.model_provider,
+                    model=self.model_name,
+                    operation="generate",
+                    usage=usage,
+                    elapsed_ms=int((time.time() - started_at) * 1000),
+                )
+            json_content = self._extract_json_from_codeblock(content)
+            try:
+                return json.loads(json_content)
+            except json.JSONDecodeError:
+                return json_content
+        except Exception as exc:
+            if tracker:
+                usage = normalize_usage(
+                    None,
+                    prompt_text=prompt,
+                    completion_text="",
+                )
+                tracker.record_llm_call(
+                    provider=self.model_provider,
+                    model=self.model_name,
+                    operation="generate",
+                    usage=usage,
+                    elapsed_ms=int((time.time() - started_at) * 1000),
+                    error=str(exc),
+                )
+            raise
 
     def _extract_json_from_codeblock(self, content: str) -> str:
         start = content.find("```json")
@@ -202,32 +298,67 @@ class OpenAIModel(LLMInterface):
         self.api_key = api_key
         self.model_name = model_name
         self.model_provider = model_provider
-        openai.api_key = self.api_key
+        client = openai.OpenAI(api_key=self.api_key)
+        self.client, self._langsmith_wrapped = wrap_openai_client(client)
 
     def generate(self, prompt: str, system_prompt=None) -> Dict[str, Any]:
+        messages = []
         if system_prompt:
-            response = openai.chat.completions.create(
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        tracker = current_usage_tracker()
+        request_kwargs = {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": 0,
+            "max_tokens": 1000,
+        }
+        if tracker and self._langsmith_wrapped:
+            request_kwargs["langsmith_extra"] = tracker.langsmith_extra(
+                provider=self.model_provider,
                 model=self.model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0,
-                max_tokens=1000,
+                operation="generate",
             )
-        else:
-            response = openai.chat.completions.create(
-                model=self.model_name,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                max_tokens=1000,
-            )
-        content = response.choices[0].message.content
-        json_content = self._extract_json_from_codeblock(content)
+
+        started_at = time.time()
         try:
-            return json.loads(json_content)
-        except json.JSONDecodeError:
-            return json_content
+            response = self.client.chat.completions.create(**request_kwargs)
+            content = response.choices[0].message.content
+            if tracker:
+                usage = normalize_usage(
+                    extract_usage_metadata(response),
+                    prompt_text=prompt,
+                    completion_text=content,
+                )
+                tracker.record_llm_call(
+                    provider=self.model_provider,
+                    model=self.model_name,
+                    operation="generate",
+                    usage=usage,
+                    elapsed_ms=int((time.time() - started_at) * 1000),
+                )
+            json_content = self._extract_json_from_codeblock(content)
+            try:
+                return json.loads(json_content)
+            except json.JSONDecodeError:
+                return json_content
+        except Exception as exc:
+            if tracker:
+                usage = normalize_usage(
+                    None,
+                    prompt_text=prompt,
+                    completion_text="",
+                )
+                tracker.record_llm_call(
+                    provider=self.model_provider,
+                    model=self.model_name,
+                    operation="generate",
+                    usage=usage,
+                    elapsed_ms=int((time.time() - started_at) * 1000),
+                    error=str(exc),
+                )
+            raise
 
     def _extract_json_from_codeblock(self, content: str) -> str:
         start = content.find("```json")
