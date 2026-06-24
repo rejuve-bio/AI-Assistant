@@ -46,7 +46,6 @@ def _biomni_runtime_bundle() -> bytes:
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("app/__init__.py", "")
         archive.writestr("app/tools/__init__.py", "")
-        # Avoid importing the host-only retriever and SentenceTransformer.
         archive.writestr("app/tools/biomni/__init__.py", "")
         for source_path in source_dir.rglob("*"):
             if not source_path.is_file():
