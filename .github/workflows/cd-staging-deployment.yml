@@ -75,7 +75,7 @@ jobs:
           LOCAL_MODEL_API_KEY=${{ secrets.LOCAL_MODEL_API_KEY }}
 
           # === Docker Images ===
-          ai_assistant_staging=${{ secrets.DOCKER_HUB_USERNAME }}/ai-assistant:staging
+          ai_assistant_staging=rejuvebio/ai-assistant:staging
           EOF
 
       - name: Create dynamic inventory
