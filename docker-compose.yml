@@ -2,12 +2,13 @@ services:
   assistant:
     build: .
     volumes:
-      - .:/AI-Assistant:rw                 
-      - ./logfiles:/AI-Assistant/logfiles 
-      - static:/static    
+      - .:/AI-Assistant:rw
+      - ./logfiles:/AI-Assistant/logfiles
+      - static:/static
+      - hf_cache:/root/.cache/huggingface
     ports:
       - "${FLASK_PORT}:${FLASK_PORT}"
-    command: gunicorn -w 4 --bind 0.0.0.0:$FLASK_PORT --timeout 600 --log-level debug run:app
+    command: gunicorn -w 4 --preload --bind 0.0.0.0:$FLASK_PORT --timeout 600 --log-level debug run:app
     restart: always
     depends_on:
       - qdrant
@@ -46,3 +47,4 @@ volumes:
   vectordata:
   static:
   mongodb_data:
+  hf_cache:
