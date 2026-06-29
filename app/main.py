@@ -95,7 +95,6 @@ class AiAssistance:
         self.galaxy_handler = GalaxyHandler(advanced_llm, qdrant_client, embedding_model)
         self.embedding_model = embedding_model
         self.biogpt = BioGPTAgentOpenVINO(llm=advanced_llm)
-        self.biogpt._load_if_needed()  # eagerly load before Gunicorn forks workers
 
         logger.info(
             f"AiAssistance initialized with advanced_llm: {type(self.advanced_llm).__name__}"
