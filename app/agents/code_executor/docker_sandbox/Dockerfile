@@ -26,6 +26,7 @@ RUN groupadd --gid 1000 sandbox \
         requests \
         networkx \
         statsmodels \
+        # bio informatics packages
         gseapy \
         anndata \
         scanpy \

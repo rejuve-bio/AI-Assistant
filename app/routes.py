@@ -737,6 +737,20 @@ def _check_redis():
     return {"enabled": True}
 
 
+_neo4j_health_driver = None
+
+def _get_neo4j_health_driver(uri, username, password):
+    global _neo4j_health_driver
+    if _neo4j_health_driver is None:
+        from neo4j import GraphDatabase
+        _neo4j_health_driver = GraphDatabase.driver(
+            uri,
+            auth=(username, password),
+            connection_timeout=float(os.getenv("HEALTH_CHECK_TIMEOUT", "5")),
+        )
+    return _neo4j_health_driver
+
+
 def _check_neo4j():
     uri = os.getenv("NEO4J_URI")
     username = os.getenv("NEO4J_USERNAME") or os.getenv("NEO4J_USER")
@@ -745,20 +759,12 @@ def _check_neo4j():
     if uri:
         if not username or not password:
             raise RuntimeError("Neo4j credentials are incomplete")
-        from neo4j import GraphDatabase
 
-        driver = GraphDatabase.driver(
-            uri,
-            auth=(username, password),
-            connection_timeout=float(os.getenv("HEALTH_CHECK_TIMEOUT", "5")),
-        )
-        try:
-            with driver.session() as session:
-                record = session.run("RETURN 1 AS ok").single()
-                if record is None or record["ok"] != 1:
-                    raise RuntimeError("Neo4j connectivity query failed")
-        finally:
-            driver.close()
+        driver = _get_neo4j_health_driver(uri, username, password)
+        with driver.session() as session:
+            record = session.run("RETURN 1 AS ok").single()
+            if record is None or record["ok"] != 1:
+                raise RuntimeError("Neo4j connectivity query failed")
         return {"configured": True, "mode": "live"}
 
     ai_assistant = current_app.config.get("ai_assistant")
