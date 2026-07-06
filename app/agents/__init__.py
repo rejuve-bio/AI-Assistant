@@ -130,6 +130,9 @@ class AgentState(TypedDict):
     agents_to_run: List[str]
     suggested_questions: Optional[List[str]]
 
+    # Shared across parallel LangGraph nodes for per-query LLM accounting.
+    _usage_tracker: Optional[Any]
+
 
 class Orchestrator:
     def __init__(

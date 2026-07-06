@@ -6,6 +6,7 @@ import json
 import os
 import uuid
 import shutil
+import time
 from datetime import datetime
 from app.tools.platform.rag.utils.tts_utils import tts_manager
 from app.storage.redis import redis_manager
@@ -693,6 +694,119 @@ def reload_parquet(current_user_id, auth_token):
         return jsonify(error=str(e)), 500
 
 
-@main_bp.route("/", methods=["GET"])
+def _run_service_check(check):
+    started_at = time.perf_counter()
+    try:
+        details = check() or {}
+        return {
+            "status": details.pop("status", "ok"),
+            "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+            **details,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+            "error": str(exc),
+        }
+
+
+def _check_mongo():
+    manager = current_app.config.get("mongo_db_manager") or mongo_db_manager
+    if manager is None or manager.client is None:
+        raise RuntimeError("MongoDB client is not initialized")
+    manager.client.admin.command("ping")
+    return {"database": os.getenv("MONGO_DATABASE", "ai_assistant")}
+
+
+def _check_qdrant():
+    manager = current_app.config.get("qdrant_client")
+    client = getattr(manager, "client", None)
+    if client is None:
+        raise RuntimeError("Qdrant client is not initialized")
+    collections = client.get_collections()
+    return {"collections": len(getattr(collections, "collections", []) or [])}
+
+
+def _check_redis():
+    client = redis_manager.client
+    if client is None:
+        raise RuntimeError("Redis client is not initialized")
+    if not client.ping():
+        raise RuntimeError("Redis ping failed")
+    return {"enabled": True}
+
+
+_neo4j_health_driver = None
+
+def _get_neo4j_health_driver(uri, username, password):
+    global _neo4j_health_driver
+    if _neo4j_health_driver is None:
+        from neo4j import GraphDatabase
+        _neo4j_health_driver = GraphDatabase.driver(
+            uri,
+            auth=(username, password),
+            connection_timeout=float(os.getenv("HEALTH_CHECK_TIMEOUT", "5")),
+        )
+    return _neo4j_health_driver
+
+
+def _check_neo4j():
+    uri = os.getenv("NEO4J_URI")
+    username = os.getenv("NEO4J_USERNAME") or os.getenv("NEO4J_USER")
+    password = os.getenv("NEO4J_PASSWORD")
+
+    if uri:
+        if not username or not password:
+            raise RuntimeError("Neo4j credentials are incomplete")
+
+        driver = _get_neo4j_health_driver(uri, username, password)
+        with driver.session() as session:
+            record = session.run("RETURN 1 AS ok").single()
+            if record is None or record["ok"] != 1:
+                raise RuntimeError("Neo4j connectivity query failed")
+        return {"configured": True, "mode": "live"}
+
+    ai_assistant = current_app.config.get("ai_assistant")
+    lookup = getattr(
+        getattr(
+            getattr(ai_assistant, "agents", None),
+            "annotation_graph",
+            None,
+        ),
+        "neo4j",
+        None,
+    )
+    if lookup is None or not hasattr(lookup, "is_available"):
+        raise RuntimeError("Neo4j is not configured and parquet lookup is unavailable")
+    if not lookup.is_available():
+        raise RuntimeError("Neo4j is not configured and parquet snapshot is unavailable")
+    return {
+        "configured": False,
+        "mode": "parquet_snapshot",
+        "detail": "Live Neo4j is disabled; annotation uses exported parquet data.",
+    }
+
+
+@main_bp.route("/health", methods=["GET"])
 def health_check():
+    services = {
+        "neo4j": _run_service_check(_check_neo4j),
+        "mongodb": _run_service_check(_check_mongo),
+        "qdrant": _run_service_check(_check_qdrant),
+        "redis": _run_service_check(_check_redis),
+    }
+    healthy = all(service["status"] == "ok" for service in services.values())
+    return (
+        jsonify({
+            "status": "ok" if healthy else "degraded",
+            "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "services": services,
+        }),
+        200 if healthy else 503,
+    )
+
+
+@main_bp.route("/", methods=["GET"])
+def root_health_check():
     return jsonify("This is health check")

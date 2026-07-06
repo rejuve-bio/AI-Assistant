@@ -5,6 +5,12 @@ from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
 from langgraph.types import Send
 from langchain_core.messages import HumanMessage
+from app.utils.langsmith_tracking import (
+    current_usage_tracker,
+    llm_usage_step,
+    start_query_tracking,
+    tracked_node,
+)
 import json
 import os
 import uuid
@@ -53,13 +59,34 @@ class AiAssistance:
     def _create_workflow(self) -> StateGraph:
         workflow = StateGraph(AgentState)
 
-        workflow.add_node("classifier",    self.agents.classify_query)
-        workflow.add_node("dag_scheduler", self._dag_scheduler_node)
-        workflow.add_node("step_executor", self.agents.step_executor)
-        workflow.add_node("sync_node",     self.agents.sync_node)
-        workflow.add_node("replanner",     self.agents.replanner)
-        workflow.add_node("aggregator",    self.agents.aggregate_responses)
-        workflow.add_node("finalizer",     self.agents.finalize_response)
+        workflow.add_node(
+            "classifier",
+            tracked_node("classifier", self.agents.classify_query),
+        )
+        workflow.add_node(
+            "dag_scheduler",
+            tracked_node("dag_scheduler", self._dag_scheduler_node),
+        )
+        workflow.add_node(
+            "step_executor",
+            tracked_node("step_executor", self.agents.step_executor),
+        )
+        workflow.add_node(
+            "sync_node",
+            tracked_node("sync_node", self.agents.sync_node),
+        )
+        workflow.add_node(
+            "replanner",
+            tracked_node("replanner", self.agents.replanner),
+        )
+        workflow.add_node(
+            "aggregator",
+            tracked_node("aggregator", self.agents.aggregate_responses),
+        )
+        workflow.add_node(
+            "finalizer",
+            tracked_node("finalizer", self.agents.finalize_response),
+        )
 
         workflow.set_entry_point("classifier")
 
@@ -148,6 +175,7 @@ class AiAssistance:
             "suggested_questions": None,
             "session_id": str(uuid.uuid4()),
             "conversation_history": conversation_history or [],
+            "_usage_tracker": current_usage_tracker(),
         }
 
         try:
@@ -171,6 +199,40 @@ class AiAssistance:
                            urls: Optional[List[str]] = None,
                            content_ids: Optional[List[str]] = None,
                            resource: Optional[Any] = None) -> Dict[str, Any]:
+        query = query or ""
+        metadata = {
+            "graph_id": graph_id,
+            "resource": resource,
+            "content_count": len(content_ids or []),
+            "url_count": len(urls or []),
+        }
+        with start_query_tracking(
+            user_id=str(user_id),
+            query=query or "",
+            metadata=metadata,
+        ) as tracker:
+            response = self._assistant_response_impl(
+                query=query,
+                user_id=user_id,
+                token=token,
+                graph_id=graph_id,
+                urls=urls,
+                content_ids=content_ids,
+                resource=resource,
+            )
+            if not isinstance(response, dict):
+                response = {
+                    "text": str(response),
+                    "json_format": None,
+                }
+            response["usage"] = tracker.as_dict()
+            return response
+
+    def _assistant_response_impl(self, query: str, user_id: str, token: str,
+                                 graph_id: Optional[str] = None,
+                                 urls: Optional[List[str]] = None,
+                                 content_ids: Optional[List[str]] = None,
+                                 resource: Optional[Any] = None) -> Dict[str, Any]:
 
         logger.info(f"assistant_response(): user={user_id} query={query[:80]}")
 
@@ -269,7 +331,8 @@ class AiAssistance:
             f"Reply with only one word: confirm, reject, or new_query."
         )
         try:
-            result = self.agents.basic_llm.generate(prompt)
+            with llm_usage_step("confirmation_classifier"):
+                result = self.agents.basic_llm.generate(prompt)
             verdict = result.strip().lower().split()[0] if result else "new_query"
             if verdict in ("confirm", "reject", "new_query"):
                 return verdict

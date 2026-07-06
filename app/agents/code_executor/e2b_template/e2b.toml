@@ -1,0 +1,6 @@
+[template]
+name = "rejuv-ai-sandbox"
+dockerfile = false
+
+[template.setup]
+script = "setup.sh"
