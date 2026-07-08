@@ -56,7 +56,9 @@ def mock_external_services():
 @pytest.fixture
 def client():
     """Create test client with test config"""
+    import os
     from unittest.mock import patch
+    os.environ["REDIS_URL"] = "memory://"
     with patch("app.biogpt_agent.biogpt.BioGPTAgentOpenVINO._load_if_needed"):
         from app import create_app
         app, socket = create_app()
