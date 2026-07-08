@@ -56,8 +56,10 @@ def mock_external_services():
 @pytest.fixture
 def client():
     """Create test client with test config"""
-    from app import create_app
-    app, socket = create_app()
+    from unittest.mock import patch
+    with patch("app.biogpt_agent.biogpt.BioGPTAgentOpenVINO._load_if_needed"):
+        from app import create_app
+        app, socket = create_app()
     with app.test_client() as client:
         yield client
 
