@@ -1,14 +1,38 @@
-from transformers import BioGptTokenizer, BioGptForCausalLM
 import torch
 import logging
-from threading import Lock
+import time
+from threading import Lock, Semaphore
 import os
 from transformers import AutoTokenizer
-from optimum.intel import OVModelForCausalLM
 from optimum.intel import OVModelForCausalLM
 import psutil
 
 logger = logging.getLogger(__name__)
+
+def _compute_biogpt_concurrency():
+    """
+    Auto-scale BioGPT CPU usage based on available cores, reserving a fraction
+    for other production services running on the same server.
+
+    BIOGPT_CPU_FRACTION  — share of total cores available to BioGPT (default 0.5)
+    BIOGPT_THREADS       — CPU threads per single inference (default: biogpt_cores // 4, min 1)
+    BIOGPT_MAX_CONCURRENT — max parallel inferences (default: biogpt_cores // threads, min 1)
+    All three are overridable via env vars for any deployment.
+    """
+    total_cores = os.cpu_count() or 1
+    fraction = float(os.getenv("BIOGPT_CPU_FRACTION", "0.1"))
+    biogpt_cores = max(1, int(total_cores * fraction))
+
+    threads = int(os.getenv("BIOGPT_THREADS", str(max(1, biogpt_cores // 2))))
+    max_concurrent = int(os.getenv("BIOGPT_MAX_CONCURRENT", "1"))
+
+    logger.info(
+        f"BioGPT CPU allocation: {biogpt_cores}/{total_cores} cores "
+        f"({fraction*100:.0f}%), {threads} threads/inference, "
+        f"{max_concurrent} max concurrent"
+    )
+    return threads, max_concurrent
+
 
 class BioGPTAgentOpenVINO:
     """
@@ -21,21 +45,23 @@ class BioGPTAgentOpenVINO:
     _device = "CPU"
     _lock = Lock()
 
+    _threads_per_inference, _max_concurrent = _compute_biogpt_concurrency()
+    _inference_semaphore: Semaphore = Semaphore(_max_concurrent)
+    # In-memory response cache: {normalized_query: (timestamp, answer)}
+    _response_cache: dict = {}
+    _cache_ttl: int = int(os.getenv("BIOGPT_CACHE_TTL", "3600"))
+
     def __init__(self, llm=None, model_name="kirubel1738/biogpt-bioqa-8bit-openvino"):
         self.model_name = model_name
-        self.llm = llm  
-        
-        # Performance settings for minimal RAM and optimized CPU inference
-        # Use environment variable for threads to allow scaling between local and server
-        num_threads = os.getenv("BIOGPT_THREADS", "1")
-        
+        self.llm = llm
+
         self.ultra_lean_config = {
             "PERFORMANCE_HINT": "LATENCY",
             "ENABLE_MMAP": "YES",
-            "CACHE_DIR": "",
-            "INFERENCE_NUM_THREADS": num_threads,         
-            "NUM_STREAMS": "1",                  
-            "KV_CACHE_PRECISION": "u8",          
+            "CACHE_DIR": os.getenv("BIOGPT_CACHE_DIR", "/root/.cache/huggingface/openvino_cache"),
+            "INFERENCE_NUM_THREADS": str(BioGPTAgentOpenVINO._threads_per_inference),
+            "NUM_STREAMS": "1",
+            "KV_CACHE_PRECISION": "u8",
         }
 
     def _get_ram_usage(self):
@@ -118,45 +144,41 @@ class BioGPTAgentOpenVINO:
                     logger.info(f"OpenVINO BioGPT loaded successfully.")
                     logger.info(f"RAM after loading: {after_load_ram:.2f} MB (Added: {after_load_ram - start_ram:.2f} MB)")
 
-    def generate_answer(self, query: str, max_length: int = 50) -> str:
-        """
-        Generate answer using OpenVINO-optimized BioGPT model.
-        
-        Args:
-            query: The biomedical question
-            max_length: Maximum length for generation (default: 256)
-            
-        Returns:
-            Generated answer text
-        """
+    def generate_answer(self, query: str, max_length: int = 200) -> str:
+        """Generate answer using OpenVINO-optimized BioGPT model."""
+        cache_key = query.strip().lower()
+
+        # Return cached answer if still fresh
+        cached = BioGPTAgentOpenVINO._response_cache.get(cache_key)
+        if cached:
+            ts, answer = cached
+            if time.time() - ts < BioGPTAgentOpenVINO._cache_ttl:
+                logger.info(f"BioGPT cache hit for: {query[:80]}")
+                return answer
+
         try:
             self._load_if_needed()
 
-            # Encode input
-            inputs = BioGPTAgentOpenVINO._tokenizer(query, return_tensors="pt")
-            
-            # Generate with optimized parameters
             logger.info(f"Generating answer for: {query}")
-            with torch.no_grad():
-                output_ids = BioGPTAgentOpenVINO._model.generate(
-                    **inputs,
-                    max_new_tokens=max_length,  # Generate up to 150 new tokens
-                    pad_token_id=BioGPTAgentOpenVINO._tokenizer.eos_token_id,
-                    use_cache=True,      # Enable key/value cache for faster generation
-                    do_sample=False,      # Enable sampling for non-deterministic responses
-                )
+            with BioGPTAgentOpenVINO._inference_semaphore:
+                inputs = BioGPTAgentOpenVINO._tokenizer(query, return_tensors="pt")
+                with torch.no_grad():
+                    output_ids = BioGPTAgentOpenVINO._model.generate(
+                        **inputs,
+                        max_new_tokens=max_length,
+                        pad_token_id=BioGPTAgentOpenVINO._tokenizer.eos_token_id,
+                        use_cache=True,
+                        do_sample=False,
+                    )
 
-            # Decode the generated text
             generated_text = BioGPTAgentOpenVINO._tokenizer.decode(output_ids[0], skip_special_tokens=True)
-            
-            # Extract answer by removing the input query
             answer = generated_text[len(query):].strip()
-            
-            # Additional cleanup: sometimes the model repeats the question
             if answer.startswith(query):
                 answer = answer[len(query):].strip()
-            
-            return answer.strip()
+            answer = answer.strip()
+
+            BioGPTAgentOpenVINO._response_cache[cache_key] = (time.time(), answer)
+            return answer
 
         except Exception as e:
             logger.error(f"Error in BioGPT generation: {str(e)}", exc_info=True)

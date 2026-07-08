@@ -5,6 +5,7 @@ Literature search tools: PubMed and ClinicalTrials.gov
 import logging
 import os
 import requests
+import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +55,6 @@ def search_pubmed(query: str, max_results: int = 10, min_year: int = None) -> di
             timeout=15,
         )
         fetch.raise_for_status()
-
-        import xml.etree.ElementTree as ET
 
         root = ET.fromstring(fetch.content)
 

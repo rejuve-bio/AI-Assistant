@@ -6,7 +6,6 @@ import logging
 import re
 import asyncio
 import os
-import openai
 import uuid
 import requests
 import trafilatura

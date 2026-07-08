@@ -8,6 +8,8 @@ import os
 import subprocess
 import json
 import tempfile
+import socket
+from urllib.parse import urlparse
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GALAXY_MCP_SERVER = os.getenv("GALAXY_MCP_SERVER")
@@ -17,13 +19,33 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+def _check_mcp_reachable() -> bool:
+    """Quick TCP probe to see if the MCP server is reachable. Runs once at startup."""
+    if not GALAXY_MCP_SERVER:
+        return False
+    try:
+        parsed = urlparse(GALAXY_MCP_SERVER)
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        with socket.create_connection((host, port), timeout=2):
+            return True
+    except Exception:
+        return False
+
+_MCP_AVAILABLE = _check_mcp_reachable()
+if not _MCP_AVAILABLE:
+    logging.getLogger(__name__).warning(
+        f"Galaxy MCP server unreachable at startup ({GALAXY_MCP_SERVER}) — will use LLM fallback for all Galaxy queries"
+    )
+
+
 class GalaxyHandler:
     def __init__(self, llm, qdrant_client=None, embedding_model=None):
         self.llm = llm
         self.qdrant_client = qdrant_client
         self.embedding_model = embedding_model
         self.collection_name = "1_AI_ASSISTANT_GALAXY_DATASETS"
-        logger.info(f"GalaxyHandler initialized with provider='{advanced_llm_provider}'")
+        logger.info(f"GalaxyHandler initialized with provider='{advanced_llm_provider}', mcp_available={_MCP_AVAILABLE}")
 
     def get_galaxy_info(self, query, user_id, token, urls=None):
         """Main entry point: returns text only for Flask"""
@@ -166,6 +188,9 @@ Please provide a clear, professional, and concise answer to the user's query bas
 
     # ── FIX: renamed from `handle_mcp` → `_handle_mcp` (missing underscore caused AttributeError) ──
     def _handle_mcp(self, query, token):
+        if not _MCP_AVAILABLE:
+            logger.info("MCP server unavailable (checked at startup) — returning config error for aggregator LLM fallback")
+            return {"text": "Configuration error: Galaxy MCP server is unavailable."}
         if advanced_llm_provider == "openai":
             logger.info("Using async MCP path (OpenAI)")
             return self._handle_mcp_async(query, token)
