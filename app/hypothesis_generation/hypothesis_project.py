@@ -282,7 +282,7 @@ class HypothesisProjectMixin:
             f"{tissue_list if tissue_list else '(none available)'}\n\nJust pick one and I'll get started."
         )}
 
-    def _format_non_sample_project_error(self, error_details: Dict[str, Any], variant) -> Dict[str, Any]:
+    def _format_non_sample_project_error(self, error_details: Dict[str, Any]) -> Dict[str, Any]:
         project_name = error_details.get("project_name", "your project")
         sample_info = error_details.get("sample_info")
         sample_name = sample_info["name"] if sample_info else "the sample project"
@@ -324,7 +324,7 @@ class HypothesisProjectMixin:
         if error_type == "existing_hypothesis":
             return self._format_existing_hypothesis_error(error_details, variant)
         if error_type == "non_sample_project":
-            return self._format_non_sample_project_error(error_details, variant)
+            return self._format_non_sample_project_error(error_details)
         if error_type == "tissue_not_found":
             return self._format_tissue_not_found_error(error_details, tissue)
 
