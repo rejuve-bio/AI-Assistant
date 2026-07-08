@@ -198,8 +198,8 @@ Please provide a clear, professional, and concise answer to the user's query bas
             logger.info(f"Using subprocess MCP path ({advanced_llm_provider} — avoids async conflicts)")
             return self._handle_mcp_subprocess(query, token)
         else:
-            logger.warning(f"Unknown provider '{advanced_llm_provider}', falling back to RAG")
-            return self._rag_fallback(query)
+            logger.warning(f"Unknown provider '{advanced_llm_provider}' — Galaxy MCP unavailable")
+            return {"text": "Configuration error: Galaxy MCP server is unavailable."}
 
     def _handle_mcp_subprocess(self, query, token):
         """Runs MCP agent in a subprocess — works for both Gemini and local model."""
@@ -354,9 +354,9 @@ asyncio.run(run_mcp())
             return {"text": "Request timed out after 120 seconds. Please try again."}
 
         except Exception as e:
-            logger.error(f"MCP subprocess failed, falling back to RAG: {e}")
+            logger.error(f"MCP subprocess failed: {e}")
             traceback.print_exc()
-            return self._rag_fallback(query)
+            return {"text": "Configuration error: Galaxy MCP server is unavailable."}
 
     def _handle_mcp_async(self, query: str, token: str) -> dict:
         """Run MCP directly via asyncio — works fine with OpenAI (no eventlet)."""
@@ -365,7 +365,7 @@ asyncio.run(run_mcp())
         except Exception as e:
             logger.error(f"Async MCP failed: {e}")
             traceback.print_exc()
-            return self._rag_fallback(query)
+            return {"text": "Configuration error: Galaxy MCP server is unavailable."}
 
     async def _run_mcp_openai(self, query: str, token: str) -> dict:
         from langgraph.prebuilt import create_react_agent
@@ -392,38 +392,3 @@ asyncio.run(run_mcp())
                 break
         return {"text": output or str(response)}
 
-    def _rag_fallback(self, query: str) -> dict:
-        """Falls back to Qdrant vector search when MCP is unavailable."""
-        logger.info("Attempting RAG fallback")
-        try:
-            from app.prompts.rag_prompts import RETRIEVE_PROMPT
-            from qdrant_client import QdrantClient
-
-            GALAXY_TOOLS_RECOMMEND_COLLECTION = os.getenv("GALAXY_TOOLS_RECOMMEND_COLLECTION")
-            qdrant_url = os.getenv("galaxy_QDRANT_CLIENT")
-
-            if not qdrant_url or not GALAXY_TOOLS_RECOMMEND_COLLECTION:
-                logger.error("Missing environment variables for RAG fallback")
-                return {"text": "Configuration error: Unable to process request"}
-
-            client = QdrantClient(url=qdrant_url, port=6333, grpc_port=6334, prefer_grpc=False)
-
-            if not self.embedding_model:
-                logger.error("Embedding model not initialized")
-                return {"text": "Configuration error: Embedding model not available"}
-
-            embedded_text = self.embedding_model(query)
-            result = client.search(
-                collection_name=GALAXY_TOOLS_RECOMMEND_COLLECTION,
-                query_vector=embedded_text,
-                with_payload=True,
-                score_threshold=0.5,
-                limit=5
-            )
-            response = RETRIEVE_PROMPT.format(query=query, retrieved_content=result)
-            return {"text": response}
-
-        except Exception as e:
-            logger.error(f"RAG fallback also failed: {e}")
-            traceback.print_exc()
-            return {"text": "Error: Unable to process request. Please try again later."}
