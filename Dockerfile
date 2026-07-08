@@ -1,5 +1,5 @@
-# Use the official Python 3.10 slim image as the base image
-FROM python:3.10-slim
+# Use the official Python 3.11 slim image as the base image
+FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1
 ENV POETRY_HTTP_TIMEOUT=600
