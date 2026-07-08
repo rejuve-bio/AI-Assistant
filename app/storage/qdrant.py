@@ -1,4 +1,3 @@
-from datetime import datetime
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 import os
@@ -7,9 +6,6 @@ from dotenv import load_dotenv
 import uuid
 import logging
 
-MAX_MEMORY_LIMIT = 10
-USER_COLLECTION = os.getenv("USER_COLLECTION", "USER_COLLECTIONS")
-USER_MEMORY_NAME = "user memories"
 
 logger = logging.getLogger(__name__)
 
@@ -125,8 +121,10 @@ class Qdrant:
             raise ValueError("data must be a list of dictionaries for non-content data")
 
         self.ensure_collection_exists(collection_name)
+        total = len(data)
+        logger.info("Embedding and uploading %d items to '%s'...", total, collection_name)
 
-        for item in data:
+        for i, item in enumerate(data):
             if "content" in item:
                 text = item["content"]
             elif "text" in item:
@@ -136,26 +134,24 @@ class Qdrant:
             else:
                 text = str(item)
 
+            if i % 10 == 0:
+                logger.info("Uploading item %d/%d...", i + 1, total)
+
             embedding = self._get_embeddings([text])[0]
 
-            payload = {
-                # "text": text,
-                "source": "sample_data",
-                **item,
-            }
-
-            point_id = item.get("id", str(uuid.uuid4()))
-
+            payload = {"source": "sample_data", **item}
+            doc_id = item.get("id", str(uuid.uuid4()))
+            chunk_num = item.get("Chunk_Number")
+            if chunk_num is not None:
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{doc_id}-{chunk_num}"))
+            else:
+                point_id = doc_id
             self.client.upsert(
                 collection_name=collection_name,
-                points=[
-                    models.PointStruct(
-                        id=point_id, vector=embedding, payload=payload
-                    )
-                ],
+                points=[models.PointStruct(id=point_id, vector=embedding, payload=payload)],
             )
 
-        logger.info("Sample data saved")
+        logger.info("Sample data saved — %d items uploaded to '%s'", total, collection_name)
         return "Sample Data Successfully Uploaded"
 
     def upsert_data(
@@ -208,10 +204,7 @@ class Qdrant:
                 f"Starting retrieve_similar_content for collection: {collection_name}"
             )
 
-            # Ensure collection exists before searching
-            self.ensure_collection_exists(collection_name)
-
-            # Check if collection has any points
+            # Check existence without creating — avoids empty collections for every querying user
             try:
                 collection_info = self.client.get_collection(collection_name)
                 if collection_info.points_count == 0:
@@ -219,10 +212,11 @@ class Qdrant:
                         f"Collection '{collection_name}' is empty, returning empty results"
                     )
                     return []
-            except Exception as e:
-                logger.warning(
-                    f"Could not check collection info for '{collection_name}': {e}"
+            except Exception:
+                logger.info(
+                    f"Collection '{collection_name}' does not exist, returning empty results"
                 )
+                return []
 
             # If query is a string, embed it
             if isinstance(query, str):
@@ -254,7 +248,7 @@ class Qdrant:
                 limit=top_k,
                 query_filter=query_filter,
                 with_payload=True,
-                score_threshold=0.5 
+                score_threshold=0.35
                 if query_filter is None else None
             )
             logger.info(f"Found {len(hits.points)} hits in collection '{collection_name}'")
@@ -267,124 +261,3 @@ class Qdrant:
             traceback.print_exc()
             return []
 
-    def _create_memory_update_memory(
-        self, user_id, data, embedding, memory_id=None
-    ):
-
-        self.ensure_collection_exists(USER_COLLECTION)
-
-        current_time = datetime.utcnow().isoformat()
-        data = [
-            {
-                "content": data,
-                "user_id": user_id,
-                "created_at_updated_at": current_time,
-                "status": USER_MEMORY_NAME,
-            }
-        ]
-        if memory_id:
-            self.client.upsert(
-                collection_name=USER_COLLECTION,
-                points=models.Batch(
-                    ids=[memory_id],
-                    vectors=embedding,
-                    payloads=data,
-                ),
-            )
-            return memory_id
-        # check if a collection have top 10 collections
-        try:
-            memories = self.client.scroll(USER_COLLECTION, with_payload=True)
-            if len(memories[0]) >= MAX_MEMORY_LIMIT:
-                sorted_memories = sorted(
-                    memories[0],
-                    key=lambda memory: memory.payload["created_at_updated_at"],
-                )
-                # Delete the oldest memory
-                oldest_memory_id = sorted_memories[0].id
-                self._delete_memory(oldest_memory_id)
-
-                logger.info(
-                    f"older memory is being deleted since you have reached the limit {MAX_MEMORY_LIMIT}"
-                )
-
-            logger.info("uploading new memory")
-            memory_id = [str(uuid.uuid4())]
-            self.client.upsert(
-                collection_name=USER_COLLECTION,
-                points=models.Batch(
-                    ids=memory_id,
-                    vectors=embedding,
-                    payloads=data,
-                ),
-            )
-            
-            logger.info("collection updated")
-            return memory_id
-        except Exception:
-            traceback.print_exc()
-
-    def _delete_memory(self, memory_id):
-
-        self.client.delete(
-            collection_name=USER_COLLECTION,
-            points_selector=models.PointIdsList(
-                points=[memory_id],
-            ),
-        )
-        return None
-
-    # def _retrieve_memory(self, user_id, embedding=None):
-    #     try:
-    #         if embedding:
-    #             result = self.client.query_points(
-    #                 collection_name=USER_COLLECTION,
-    #                 query=embedding,
-    #                 with_payload=True,
-    #                 # score threshold of 0.5 will return a similiar memories with similiarity score of more than 0.5
-    #                 score_threshold=0.5,
-    #                 query_filter=models.Filter(
-    #                     must=[
-    #                         models.FieldCondition(
-    #                             key="user_id",
-    #                             match=models.MatchValue(value=user_id),
-    #                         ),
-    #                         models.FieldCondition(
-    #                             key="status",
-    #                             match=models.MatchValue(value=USER_MEMORY_NAME),
-    #                         ),
-    #                     ],
-    #                 ),
-    #                 limit=1000,
-    #             )
-
-    #             if result:
-    #                 response = {}
-    #                 for i, point in enumerate(result):
-    #                     response[i] = {
-    #                         "id": point.id,
-    #                         "content": point.payload.get("content"),
-    #                         "date": point.payload.get("created_at_updated_at"),
-    #                     }
-
-    #                 return [response[0]]
-    #         else:
-    #             data = self.client.scroll(
-    #                 collection_name=USER_COLLECTION,
-    #                 scroll_filter=models.Filter(
-    #                     must=[
-    #                         models.FieldCondition(
-    #                             key="user_id", match=models.MatchValue(value=user_id)
-    #                         ),
-    #                     ]
-    #                 ),
-    #                 limit=100,
-    #                 with_payload=True,
-    #                 with_vectors=False,
-    #             )
-
-    #             data = [record.payload["content"] for record in data[0][::-1]]
-    #             return data
-    #     except:
-    #         traceback.print_exc()
-    #         return None
