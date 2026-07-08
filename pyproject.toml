@@ -55,11 +55,9 @@ optimum = {extras = ["openvino"], version = "^2.1.0"}
 [[tool.poetry.source]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
-priority = "supplemental"
 
 [[tool.poetry.source]]
 name = "PyPI"
-priority = "primary"
 
 [build-system]
 requires = ["poetry-core"]
