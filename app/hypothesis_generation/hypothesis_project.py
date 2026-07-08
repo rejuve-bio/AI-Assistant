@@ -104,12 +104,13 @@ class HypothesisProjectMixin:
         return h.get("id") or h.get("hypothesis_id") or h.get("graph_id") or h.get("hyp_id")
 
     def _evaluate_variant_match(
-        self, token, project_id, project_name, variant, tissue, norm_variant,
+        self, token, project_id, project_name, variant, tissue,
         is_sample, has_variant, has_tissue, project_variants, project_tissues,
         project_hypotheses, projects, variant_found_in
     ):
         if not has_variant:
             return None
+        norm_variant = self._normalize_field(variant)
         actual_v = next((v for v in project_variants if v and self._normalize_field(v) == norm_variant), variant)
         existing_hyp = next(
             (h for h in project_hypotheses
@@ -177,9 +178,8 @@ class HypothesisProjectMixin:
             if not project_variants and not project_tissues:
                 continue
 
-            norm_variant = self._normalize_field(variant)
             result = self._evaluate_variant_match(
-                token, project_id, project_name, variant, tissue, norm_variant,
+                token, project_id, project_name, variant, tissue,
                 is_sample, has_variant, has_tissue, project_variants, project_tissues,
                 project_hypotheses, projects, variant_found_in,
             )
@@ -254,6 +254,58 @@ class HypothesisProjectMixin:
             )}
         return {"text": f"I couldn't find **{variant}** in any of your projects and no other variants are available yet."}
 
+    def _format_tissue_missing_error(self, error_details: Dict[str, Any], variant) -> Dict[str, Any]:
+        project_name = error_details.get("project_name", "your project")
+        tissue_list = "\n".join([f"- {self._tissue_display(t)}" for t in error_details.get("available_tissues", [])])
+        return {"text": (
+            f"Found **{variant}** in your **{project_name}** project — we're one step away from generating a hypothesis! "
+            f"I just need to know which tissue context to run the analysis on. "
+            f"Here's what's available:\n{tissue_list if tissue_list else '(none available)'}\n\n"
+            f"Pick one and I'll take it from there."
+        )}
+
+    def _format_mismatch_error(self, error_details: Dict[str, Any], variant, tissue) -> Dict[str, Any]:
+        variant_projects = error_details.get("variant_projects", [])
+        project_name = variant_projects[0]["project_name"] if variant_projects else "Unknown"
+        available_tissues = variant_projects[0].get("tissues", []) if variant_projects else []
+        tissue_list = "\n".join([f"- {self._tissue_display(t)}" for t in available_tissues])
+        return {"text": (
+            f"**{variant}** is in **{project_name}**, but **{tissue}** was not found in that project.\n\n"
+            f"Available tissues in **{project_name}**:\n{tissue_list if tissue_list else '(none)'}"
+        )}
+
+    def _format_existing_hypothesis_error(self, error_details: Dict[str, Any], variant) -> Dict[str, Any]:
+        tissue_list = "\n".join([f"- {self._tissue_display(t)}" for t in error_details.get("available_tissues", [])])
+        return {"text": (
+            f"There's already a generated hypothesis for **{variant}** in the sample project — pulling it up for you now.\n\n"
+            f"If you'd like to run a new analysis with a different tissue, here's what's available:\n"
+            f"{tissue_list if tissue_list else '(none available)'}\n\nJust pick one and I'll get started."
+        )}
+
+    def _format_non_sample_project_error(self, error_details: Dict[str, Any], variant) -> Dict[str, Any]:
+        project_name = error_details.get("project_name", "your project")
+        sample_info = error_details.get("sample_info")
+        sample_name = sample_info["name"] if sample_info else "the sample project"
+        sample_variant = sample_info["variants"][0] if sample_info and sample_info.get("variants") else None
+        sample_note = (
+            f"\n\nIn the meantime, I can run the full pipeline on **{sample_name}** using **{sample_variant}** "
+            f"so you can see how it works — want to give it a try?"
+        ) if sample_variant else f"\n\nI can walk you through it using **{sample_name}** if you'd like."
+        return {"text": (
+            f"Hypothesis generation for **{project_name}** needs to be kicked off from the platform — "
+            f"I can only run it for the sample project from here."
+            f"{sample_note}"
+        )}
+
+    def _format_tissue_not_found_error(self, error_details: Dict[str, Any], tissue) -> Dict[str, Any]:
+        project_name = error_details.get("project_name", "the sample project")
+        tissue_list = "\n".join([f"- {self._tissue_display(t)}" for t in error_details.get("available_tissues", [])])
+        return {"text": (
+            f"I couldn't find **{tissue}** in **{project_name}**. "
+            f"Here are the available tissues:\n{tissue_list if tissue_list else '(none available)'}\n\n"
+            f"Pick one and I'll run the analysis."
+        )}
+
     def _format_validation_error(self, error_details: Dict[str, Any]) -> Dict[str, Any]:
         error_type = error_details.get("error_type")
         variant = error_details.get("variant")
@@ -266,58 +318,14 @@ class HypothesisProjectMixin:
             return self._format_variant_not_found(variant, error_details.get("all_variants", []))
 
         if error_type == "tissue_missing":
-            project_name = error_details.get("project_name", "your project")
-            available_tissues = error_details.get("available_tissues", [])
-            tissue_list = "\n".join([f"- {self._tissue_display(t)}" for t in available_tissues])
-            return {"text": (
-                f"Found **{variant}** in your **{project_name}** project — we're one step away from generating a hypothesis! "
-                f"I just need to know which tissue context to run the analysis on. "
-                f"Here's what's available:\n{tissue_list if tissue_list else '(none available)'}\n\n"
-                f"Pick one and I'll take it from there."
-            )}
-
+            return self._format_tissue_missing_error(error_details, variant)
         if error_type == "mismatch":
-            variant_projects = error_details.get("variant_projects", [])
-            variant_project_name = variant_projects[0]["project_name"] if variant_projects else "Unknown"
-            available_tissues = variant_projects[0].get("tissues", []) if variant_projects else []
-            tissue_list = "\n".join([f"- {self._tissue_display(t)}" for t in available_tissues])
-            return {"text": (
-                f"**{variant}** is in **{variant_project_name}**, but **{tissue}** was not found in that project.\n\n"
-                f"Available tissues in **{variant_project_name}**:\n{tissue_list if tissue_list else '(none)'}"
-            )}
-
+            return self._format_mismatch_error(error_details, variant, tissue)
         if error_type == "existing_hypothesis":
-            available_tissues = error_details.get("available_tissues", [])
-            tissue_list = "\n".join([f"- {self._tissue_display(t)}" for t in available_tissues])
-            return {"text": (
-                f"There's already a generated hypothesis for **{variant}** in the sample project — pulling it up for you now.\n\n"
-                f"If you'd like to run a new analysis with a different tissue, here's what's available:\n"
-                f"{tissue_list if tissue_list else '(none available)'}\n\nJust pick one and I'll get started."
-            )}
-
+            return self._format_existing_hypothesis_error(error_details, variant)
         if error_type == "non_sample_project":
-            project_name = error_details.get("project_name", "your project")
-            sample_info = error_details.get("sample_info")
-            sample_name = sample_info["name"] if sample_info else "the sample project"
-            sample_variant = sample_info["variants"][0] if sample_info and sample_info.get("variants") else None
-            sample_note = (
-                f"\n\nIn the meantime, I can run the full pipeline on **{sample_name}** using **{sample_variant}** "
-                f"so you can see how it works — want to give it a try?"
-            ) if sample_variant else f"\n\nI can walk you through it using **{sample_name}** if you'd like."
-            return {"text": (
-                f"Hypothesis generation for **{project_name}** needs to be kicked off from the platform — "
-                f"I can only run it for the sample project from here."
-                f"{sample_note}"
-            )}
-
+            return self._format_non_sample_project_error(error_details, variant)
         if error_type == "tissue_not_found":
-            project_name = error_details.get("project_name", "the sample project")
-            available_tissues = error_details.get("available_tissues", [])
-            tissue_list = "\n".join([f"- {self._tissue_display(t)}" for t in available_tissues])
-            return {"text": (
-                f"I couldn't find **{tissue}** in **{project_name}**. "
-                f"Here are the available tissues:\n{tissue_list if tissue_list else '(none available)'}\n\n"
-                f"Pick one and I'll run the analysis."
-            )}
+            return self._format_tissue_not_found_error(error_details, tissue)
 
         return {"text": f"No hypothesis is generated: I couldn't find a project containing both **{variant}** and **{tissue}**."}

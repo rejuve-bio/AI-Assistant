@@ -250,7 +250,7 @@ class HypothesisGeneration(HypothesisAPIMixin, HypothesisProjectMixin):
                     self.set_pending_sample_offer(user_id, variant=failed_variants[0], sample_project_id=sample_info.get("id", ""), sample_tissues=sample_info.get("tissues", []))
         return {"text": "\n\n".join(parts), "agents_completed": ["hypothesis_agent"]}
 
-    def _handle_existing_hypothesis(self, token, user_id, variant, tissue, error_details) -> Dict[str, Any]:
+    def _handle_existing_hypothesis(self, token, user_id, tissue, error_details) -> Dict[str, Any]:
         hypothesis_id = error_details["hypothesis_id"]
         tissue_used = error_details.get("tissue_used", "")
         available_tissues = error_details.get("available_tissues", [])
@@ -309,5 +309,5 @@ class HypothesisGeneration(HypothesisAPIMixin, HypothesisProjectMixin):
             return self._run_enrichment_pipeline(token, params, user_id)
         error_type = error_details.get("error_type") if error_details else None
         if error_type == "existing_hypothesis":
-            return self._handle_existing_hypothesis(token, user_id, variant, tissue, error_details)
+            return self._handle_existing_hypothesis(token, user_id, tissue, error_details)
         return self._handle_single_variant_error(user_id, variant, error_details, error_type)

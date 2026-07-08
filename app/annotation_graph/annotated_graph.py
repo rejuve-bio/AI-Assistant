@@ -235,53 +235,72 @@ class Graph:
             logger.error(f"Failed to extract and convert annotation JSON: {e}")
             raise
 
+    def _collect_node_id_lookup(self, node, node_type, lookup_needed):
+        node_db_id = node.get("id", "")
+        if not node_db_id:
+            return
+        id_prop = self._node_id_property.get(node_type.lower())
+        if id_prop:
+            lookup_needed.setdefault((node_type, id_prop), set()).add(node_db_id)
+
+    def _collect_node_property_lookups(self, node, node_type, lookup_needed):
+        for property_key, property_value in node.get("properties", {}).items():
+            if not property_value and property_value != 0:
+                continue
+            if node.get("is_list") and isinstance(property_value, (str, list)):
+                items = ([i.strip() for i in property_value.split(",") if i.strip()]
+                         if isinstance(property_value, str) else property_value)
+                lookup_needed.setdefault((node_type, property_key), set()).update(items)
+            elif isinstance(property_value, str):
+                lookup_needed.setdefault((node_type, property_key), set()).add(property_value)
+
     def _collect_lookup_values(self, updated_json: dict) -> dict:
         lookup_needed = {}
         for node in updated_json.get("nodes", []):
             node_type = node.get("type")
-            properties = node.get("properties", {})
-            node_db_id = node.get("id", "")
-            if node_db_id:
-                id_prop = self._node_id_property.get(node_type.lower())
-                if id_prop:
-                    lookup_needed.setdefault((node_type, id_prop), set()).add(node_db_id)
-            for property_key, property_value in properties.items():
-                if not property_value and property_value != 0:
-                    continue
-                if node.get("is_list") and isinstance(property_value, (str, list)):
-                    items = ([i.strip() for i in property_value.split(",") if i.strip()]
-                             if isinstance(property_value, str) else property_value)
-                    lookup_needed.setdefault((node_type, property_key), set()).update(items)
-                elif isinstance(property_value, str):
-                    lookup_needed.setdefault((node_type, property_key), set()).add(property_value)
+            self._collect_node_id_lookup(node, node_type, lookup_needed)
+            self._collect_node_property_lookups(node, node_type, lookup_needed)
         return lookup_needed
+
+    def _fill_llm_batch_node_id(self, node, node_type, similarity_cache, batch_for_llm):
+        node_db_id = node.get("id", "")
+        if not node_db_id:
+            return
+        id_prop = self._node_id_property.get(node_type.lower())
+        if not id_prop:
+            return
+        similar = similarity_cache.get((node_type, id_prop, node_db_id), [])
+        if not similar or similar[0][0].lower() != node_db_id.lower():
+            batch_for_llm[node_db_id] = similar
+
+    def _fill_llm_batch_list_value(self, node_type, property_key, property_value, similarity_cache, batch_for_llm):
+        items = ([i.strip() for i in property_value.split(",") if i.strip()]
+                 if isinstance(property_value, str) else property_value)
+        for item in items:
+            similar = similarity_cache.get((node_type, property_key, item), [])
+            if not similar or similar[0][0].lower() != item.lower():
+                batch_for_llm[item] = similar
+
+    def _fill_llm_batch_str_value(self, node_type, property_key, property_value, similarity_cache, batch_for_llm):
+        similar = similarity_cache.get((node_type, property_key, property_value), [])
+        if not similar or similar[0][0].lower() != property_value.lower():
+            batch_for_llm[property_value] = similar
+
+    def _fill_llm_batch_node_properties(self, node, node_type, similarity_cache, batch_for_llm):
+        for property_key, property_value in node.get("properties", {}).items():
+            if not property_value and property_value != 0:
+                continue
+            if node.get("is_list") and isinstance(property_value, (str, list)):
+                self._fill_llm_batch_list_value(node_type, property_key, property_value, similarity_cache, batch_for_llm)
+            elif isinstance(property_value, str):
+                self._fill_llm_batch_str_value(node_type, property_key, property_value, similarity_cache, batch_for_llm)
 
     def _build_llm_batch(self, updated_json: dict, similarity_cache: dict) -> dict:
         batch_for_llm = {}
         for node in updated_json.get("nodes", []):
             node_type = node.get("type")
-            properties = node.get("properties", {})
-            node_db_id = node.get("id", "")
-            if node_db_id:
-                id_prop = self._node_id_property.get(node_type.lower())
-                if id_prop:
-                    similar = similarity_cache.get((node_type, id_prop, node_db_id), [])
-                    if not similar or similar[0][0].lower() != node_db_id.lower():
-                        batch_for_llm[node_db_id] = similar
-            for property_key, property_value in properties.items():
-                if not property_value and property_value != 0:
-                    continue
-                if node.get("is_list") and isinstance(property_value, (str, list)):
-                    items = ([i.strip() for i in property_value.split(",") if i.strip()]
-                             if isinstance(property_value, str) else property_value)
-                    for item in items:
-                        similar = similarity_cache.get((node_type, property_key, item), [])
-                        if not similar or similar[0][0].lower() != item.lower():
-                            batch_for_llm[item] = similar
-                elif isinstance(property_value, str):
-                    similar = similarity_cache.get((node_type, property_key, property_value), [])
-                    if not similar or similar[0][0].lower() != property_value.lower():
-                        batch_for_llm[property_value] = similar
+            self._fill_llm_batch_node_id(node, node_type, similarity_cache, batch_for_llm)
+            self._fill_llm_batch_node_properties(node, node_type, similarity_cache, batch_for_llm)
         return batch_for_llm
 
     def _validate_node_id_field(self, node, node_id, node_type, similarity_cache, llm_picks, validation_report):

@@ -178,6 +178,20 @@ class AiAssistance:
                 sources_info.append(f"From {output.get('source', 'unknown')}: {content}")
         return "\n\n".join(sources_info)
 
+    def _build_fallback_response(self, agent_outputs, json_format, organism, resource_to_save) -> Dict[str, Any]:
+        fallback_parts = []
+        for output in agent_outputs:
+            content = output.get("content", "")
+            if isinstance(content, dict):
+                content = str(content)
+            if content:
+                fallback_parts.append(f"**From {output.get('source', 'unknown')}:**\n{content.strip()}")
+        fallback_text = "\n\n".join(fallback_parts) if fallback_parts else "Annotation data retrieved."
+        return {
+            "response": {"text": fallback_text, "json_format": json_format, "organism": organism},
+            "resource": resource_to_save,
+        }
+
     def _synthesize_agent_outputs(
         self, state, agent_outputs, user_query, json_format, organism,
         needs_confirm, confirmation_text, resource_to_save
@@ -206,18 +220,7 @@ class AiAssistance:
             }
         except Exception as e:
             logger.error("Error in aggregation: %s", str(e), exc_info=True)
-            fallback_parts = []
-            for output in agent_outputs:
-                content = output.get("content", "")
-                if isinstance(content, dict):
-                    content = str(content)
-                if content:
-                    fallback_parts.append(f"**From {output.get('source', 'unknown')}:**\n{content.strip()}")
-            fallback_text = "\n\n".join(fallback_parts) if fallback_parts else "Annotation data retrieved."
-            return {
-                "response": {"text": fallback_text, "json_format": json_format, "organism": organism},
-                "resource": resource_to_save,
-            }
+            return self._build_fallback_response(agent_outputs, json_format, organism, resource_to_save)
 
     def _aggregate_responses(self, state: dict) -> Dict[str, Any]:
         if state.get("stop_pipeline") and state.get("response", {}).get("text"):
