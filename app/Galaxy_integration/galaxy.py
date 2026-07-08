@@ -14,7 +14,9 @@ from urllib.parse import urlparse
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GALAXY_MCP_SERVER = os.getenv("GALAXY_MCP_SERVER")
 advanced_llm_provider = os.getenv("ADVANCED_LLM_PROVIDER", "gemini")  # gemini | openai | local_model
-_GALAXY_MCP_ERROR = "Configuration error: Galaxy MCP server is unavailable."
+_GALAXY_MCP_ERROR = (
+    f"The Galaxy workflow server is currently unreachable, so I cannot look up specific workflows or tools from your Galaxy instance right now."
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
