@@ -1,336 +1,237 @@
-from collections import defaultdict
-import re
-import traceback
+"""
+Summarization pipeline for annotation graphs.
+
+SummaryPipeline handles annotation output formatting:
+  - Annotation graphs: chunk node/edge descriptions → batched LLM summary
+  - Annotation by ID: fetch from KG service → LLM summary (Redis-cached)
+"""
+
 import json
-import tiktoken
 import logging
 import os
 import requests
+import tiktoken
+from collections import defaultdict
+from typing import Any, Dict, List, Optional
+
 from dotenv import load_dotenv
-from app.prompts.summarizer_prompts import SUMMARY_PROMPT, SUMMARY_PROMPT_BASED_ON_USER_QUERY,SUMMARY_PROMPT_CHUNKING,SUMMARY_PROMPT_CHUNKING_USER_QUERY
+from app.prompts.summarizer_prompts import (
+    SUMMARY_PROMPT,
+    SUMMARY_PROMPT_BASED_ON_USER_QUERY,
+    SUMMARY_PROMPT_CHUNKING,
+    SUMMARY_PROMPT_CHUNKING_USER_QUERY,
+)
 from app.storage.redis import redis_manager
-logger = logging.getLogger(__name__)
 
 load_dotenv()
+logger = logging.getLogger(__name__)
+
+_KG_SERVICE_URL = os.getenv("ANNOTATION_SERVICE_URL", "")
 
 
-class GraphSummarizer:
+class SummaryPipeline:
     """
-    Handles graph-related operations like processing nodes, edges, generating responses ...
+    Central summarization pipeline for graphs, annotations, and hypotheses.
+
+    Usage:
+        pipeline = SummaryPipeline(llm)
+
+        # Annotation graph (inline data)
+        result = pipeline.summarize(graph=graph_dict, query="What genes are involved?")
+
+        # Annotation by graph ID (fetches from KG service, Redis-cached)
+        result = pipeline.summarize(graph_id="abc123", token=token, query="...")
     """
 
     def __init__(self, llm) -> None:
         self.llm = llm
-        self.llm = llm
-        self.description = []
-        if self.llm.__class__.__name__ == "GeminiModel":
-            self.max_token = 2000
-        elif self.llm.__class__.__name__ == "OpenAIModel":
-            self.max_token = 100000
+        self.max_tokens = self._resolve_token_limit()
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
-        self.kg_service_url = os.getenv('ANNOTATION_SERVICE_URL')
 
-    def clean_and_format_response(self, desc):
-        desc = desc.strip()
-        desc = re.sub(r"\n\s*\n", "\n", desc)
-        desc = re.sub(r"^\s*[\*\-]\s*", "", desc, flags=re.MULTILINE)
-        lines = desc.split("\n")
+    def _resolve_token_limit(self) -> int:
+        override = os.getenv("SUMMARIZER_TOKEN_LIMIT")
+        if override:
+            return int(override)
+        if self.llm.__class__.__name__ == "OpenAIModel":
+            return 100_000
+        return 2_000
 
-        formatted_lines = []
-        for line in lines:
-            sentences = re.split(r"(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=[.?])\s", line)
-            for sentence in sentences:
-                formatted_lines.append(sentence + "\n")
-        formatted_desc = " ".join(formatted_lines).strip()
-        return formatted_desc
+    # ------------------------------------------------------------------ #
+    #  Public API                                                          #
+    # ------------------------------------------------------------------ #
 
-    def group_edges_by_source(self, edges):
-        """Group edges by source_node."""
-        grouped_edges = defaultdict(list)
-        for edge in edges:
-            source_node_id = edge["source"].split(" ")[-1]  # Extract ID
-            grouped_edges[source_node_id].append(edge)
-        return grouped_edges
+    def summarize(
+        self,
+        graph: Optional[dict] = None,
+        query: Optional[str] = None,
+        graph_id: Optional[str] = None,
+        token: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Main entry point for annotation/graph summarization."""
+        if graph_id:
+            return self._summarize_by_id(graph_id, token, query)
+        if graph:
+            return self._summarize_graph_data(graph, query)
+        return {"text": "No graph data provided."}
 
-    def generate_node_description(self, node):
-        """Generate a description for a node with available attributes."""
-        desc_parts = []
+    def _summarize_by_id(
+        self, graph_id: str, token: str, query: Optional[str]
+    ) -> Dict[str, Any]:
+        """Fetch annotation from KG service and summarize (Redis-cached)."""
+        cached = redis_manager.get_graph_by_id(graph_id)
+        if cached and cached.get("graph_summary"):
+            logger.info("Cache hit for graph_id=%s", graph_id)
+            return {"summary": cached["graph_summary"], "text": None}
 
-        for key, value in node.items():
-            # Attempt to parse JSON-like strings into lists
-            if isinstance(value, str):
-                try:
-                    parsed_value = json.loads(value)
-                    if isinstance(parsed_value, list):
-                        # Limit to top 3 items
-                        top_items = parsed_value[:3]
-                        if top_items:
-                            desc_parts.append(
-                                f"{key.capitalize()}: {', '.join(top_items)}"
-                            )
-                        continue  # Move to the next attribute after processing
-                except json.JSONDecodeError:
-                    pass  # If not a JSON string, treat it as a regular string
-
-            # For non-list attributes, simply add them to the description
-            desc_parts.append(f"{key.capitalize()}: {value}")
-        return " | ".join(desc_parts)
-
-    def generate_grouped_descriptions(self, edges, nodes):
-        grouped_edges = self.group_edges_by_source(edges)
-        descriptions = []
-
-        # Process each source node and its related target nodes
-        for source_node_id, related_edges in grouped_edges.items():
-            source_node = nodes.get(source_node_id, {})
-            source_desc = self.generate_node_description(source_node)
-
-            # Collect descriptions for all target nodes linked to this source node
-            target_descriptions = []
-            for edge in related_edges:
-                target_node_id = edge["target"].split(" ")[-1]
-                target_node = nodes.get(target_node_id, {})
-                target_desc = self.generate_node_description(target_node)
-
-                # Add the relationship and target node description
-                label = edge["label"]
-                target_descriptions.append(
-                    f"{label} -> Target Node ({edge['target']}): {target_desc}"
-                )
-
-            # Combine the source node description with all target node descriptions
-            source_and_targets = (
-                f"Source Node ({source_node_id}): {source_desc}\n"
-                + "\n".join(target_descriptions)
-            )
-            descriptions.append(source_and_targets)
-
-            # If batch processing is required, we can break or yield after each batch
-            # if len(descriptions) >= batch_size:
-            #   break   Process the next batch in another iteration
-
-        return descriptions
-
-    def nodes_description(self, nodes):
-        nodes_descriptions = []
-        for source_node_id in nodes:
-            source_node = nodes.get(source_node_id, {})
-            source_desc = self.generate_node_description(source_node)
-            nodes_descriptions.append(source_desc)
-        return nodes_descriptions
-
-    def num_tokens_from_string(self, encoding_name: str):
-        """Calculates the number of tokens in each description and groups them into batches under a token limit."""
-        encoding = tiktoken.get_encoding(encoding_name)
-        accumulated_tokens = 0
-        grouped_batched_descriptions = []
-        self.current_batch = []
-        for i, desc in enumerate(self.description):
-            desc_tokens = len(encoding.encode(desc))
-            if accumulated_tokens + desc_tokens <= self.max_token:
-                self.current_batch.append(desc)
-                accumulated_tokens += desc_tokens
-            else:
-                grouped_batched_descriptions.append(self.current_batch)
-                self.current_batch = [desc]
-                accumulated_tokens = desc_tokens
-        if self.current_batch:
-            grouped_batched_descriptions.append(self.current_batch)
-        return grouped_batched_descriptions
-
-    def _build_limited_graph_descriptions(self, graph, limited_nodes):
-        limited_node_ids = set()
-        for i in range(min(limited_nodes, len(graph["nodes"]))):
-            limited_node_ids.add(graph["nodes"][i]["data"]["id"])
-
-        limited_nodes_data = [
-            node for node in graph["nodes"] if node["data"]["id"] in limited_node_ids
-        ]
-        limited_edges_data = [
-            edge
-            for edge in graph["edges"]
-            if (
-                edge["data"]["source"] in limited_node_ids
-                and edge["data"]["target"] in limited_node_ids
-            )
-        ]
-
-        limited_graph = {"nodes": limited_nodes_data, "edges": limited_edges_data}
-        nodes = {node["data"]["id"]: node["data"] for node in limited_graph["nodes"]}
-
-        edges = []
-        if len(limited_graph["edges"]) > 0:
-            edges = [
-                {
-                    "source": edge["data"]["source"],
-                    "target": edge["data"]["target"],
-                    "label": edge["data"]["label"],
-                }
-                for edge in limited_graph["edges"]
-            ]
-
-        self.description = self.generate_grouped_descriptions(edges, nodes)
-        self.descriptions = self.num_tokens_from_string("cl100k_base")
-
-    def graph_description(self, graph, limited_nodes=100):
-        if not graph:
-            self.descriptions = "no graph is returned"
-            return self.descriptions
-
-        if isinstance(graph, dict) and "nodes" in graph:
-            if len(graph["nodes"]):
-                self._build_limited_graph_descriptions(graph, limited_nodes)
-            else:
-                self.descriptions = []
-
-            return self.descriptions
-
-    # def annotate_by_id(self,graph_id, token, query=None):
-    #     try:
-    #         cached_graph = redis_manager.get_graph_by_id(graph_id)
-    #         if cached_graph and cached_graph.get("graph_summary"):
-    #             logger.info(f"Cache hit for graph_id={graph_id} {cached_graph}")
-    #             summary = cached_graph["graph_summary"]
-    #             return summary
-
-    #         params = {"source": "ai-assistant"}
-    #         logger.info("querying the graph without user question...")
-    #         response = requests.get(
-    #             self.kg_service_url + "/annotation/" + graph_id,
-    #             headers={"Authorization": token},
-    #         )
-            
-    #         response.raise_for_status()
-    #         json_response = response.json()
-            
-    #         if isinstance(json_response, str):
-    #             try:
-    #                 json_response = json.loads(json_response)
-    #             except json.JSONDecodeError:
-    #                 json_response = {"answer": json_response}
-
-    #         if not isinstance(json_response, dict):
-    #             json_response = {"answer": str(json_response)}
-            
-    #         response = {}
-    #         if json_response.get("summary"):
-    #             response["summary"] = json_response.get("summary")
-    #         else:
-    #             response["text"] = "Graph is too big, No summaries provided to answer your question"
-    #         summary = json_response.get("summary")
-    #         if summary:
-    #             redis_manager.create_graph(graph_id=graph_id, graph_summary=summary)
-    #             if query:
-    #                 response_data = self.llm.generate(f"Please answer the question based on the summary: {summary}.\nQuestion: {query}\nAnswer:")
-    #                 return {"summary": summary, "text": response_data}
-    #             else:
-    #                 return {"summary": summary}
-    #         else:
-    #             return {"text": "Graph is too big, No summaries provided to answer your question"}
-    #     except Exception as e:
-    #         logger.error(f"Error in annotate_by_id: {e}")
-    #         return {"text": "Graph is too big, No summaries provided to answer your question"}
-    def annotate_by_id(self, graph_id, token, query=None):
+        logger.info("Fetching annotation for graph_id=%s", graph_id)
         try:
-            cached_graph = redis_manager.get_graph_by_id(graph_id)
-            if cached_graph and cached_graph.get("graph_summary"):
-                summary = json.loads(cached_graph["graph_summary"])  # Convert JSON string back to dict
-                logger.info(f'Cache hit for graph_id={graph_id} is graph summary of {summary}')
-                return {"summary": cached_graph["graph_summary"], "text": None}
-
-            logger.info("Querying the graph without user question...")
-            http_response = requests.get(
-                f"{self.kg_service_url}/annotation/{graph_id}",
+            resp = requests.get(
+                f"{_KG_SERVICE_URL}/annotation/{graph_id}",
                 headers={"Authorization": f"Bearer {token}"},
             )
-            http_response.raise_for_status()
-
-            json_response = http_response.json()
-            if isinstance(json_response, str):
-                try:
-                    json_response = json.loads(json_response)
-                except json.JSONDecodeError:
-                    json_response = {"summary": None, "answer": json_response}
-
-            if not isinstance(json_response, dict):
-                json_response = {"summary": None, "answer": str(json_response)}
-
-            summary = json_response.get("summary")
-            node_count = json_response.get("node_count", 0)
-            edge_count = json_response.get("edge_count", 0)
-            node_count_by_label = json_response.get("node_count_by_label", {})
-            edge_count_by_label = json_response.get("edge_count_by_label", {})
-            
-            if summary:
-                enhanced_summary = {
-                    "summary": summary,
-                    "node_count": node_count,
-                    "edge_count": edge_count,
-                    "node_count_by_label": node_count_by_label,
-                    "edge_count_by_label": edge_count_by_label
-                }
-                
-                redis_manager.create_graph(graph_id=graph_id, graph_summary=json.dumps(enhanced_summary))                
-                text = None
-                if query:
-                    text = self.llm.generate(
-                        f"Based on this graph data:\n"
-                        f"Summary: {summary}\n"
-                        f"Total nodes: {node_count}\n"
-                        f"Total edges: {edge_count}\n"
-                        f"Node types: {node_count_by_label}\n"
-                        f"Edge types: {edge_count_by_label}\n\n"
-                        f"Question: {query}\nAnswer:"
-                    )
-                return {"summary": enhanced_summary, "text": text}
-            else:
-                return {"summary": None, "text": "Graph is too big, No summaries provided"}
-
+            resp.raise_for_status()
         except requests.exceptions.RequestException as e:
-            logger.error(f"HTTP error in annotate_by_id: {e}")
+            logger.error("HTTP error fetching annotation: %s", e)
             return {"summary": None, "text": f"Failed to contact graph service: {e}"}
-        except Exception as e:
-            logger.error(f"Unexpected error in annotate_by_id: {e}")
-            return {"summary": None, "text": f"Unexpected error: {e}"}
-    
-    def summary(self, graph=None, user_query=None, graph_id=None, token=None):
 
-        try:
-            # send the query and the annotation id for the annotation endpoint for the answer
-            if graph_id:
-                result = self.annotate_by_id(
-                    graph_id=graph_id, query=user_query, token=token
+        data = resp.json()
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except json.JSONDecodeError:
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
+
+        raw_summary = data.get("summary")
+        if not raw_summary:
+            return {"summary": None, "text": "Graph is too big — no summaries provided."}
+
+        enhanced = {
+            "summary": raw_summary,
+            "node_count": data.get("node_count", 0),
+            "edge_count": data.get("edge_count", 0),
+            "node_count_by_label": data.get("node_count_by_label", {}),
+            "edge_count_by_label": data.get("edge_count_by_label", {}),
+        }
+        redis_manager.create_graph(graph_id=graph_id, graph_summary=json.dumps(enhanced))
+
+        text = None
+        if query:
+            text = self.llm.generate(
+                f"Based on this graph:\n"
+                f"Summary: {raw_summary}\n"
+                f"Nodes: {enhanced['node_count']} ({enhanced['node_count_by_label']})\n"
+                f"Edges: {enhanced['edge_count']} ({enhanced['edge_count_by_label']})\n\n"
+                f"Question: {query}\nAnswer:"
+            )
+        return {"summary": enhanced, "text": text}
+
+    def _summarize_graph_data(self, graph: dict, query: Optional[str]) -> Dict[str, Any]:
+        """Chunk raw graph data and run through the LLM in batches."""
+        descriptions = self._build_descriptions(graph)
+        if not descriptions:
+            return {"text": "Empty graph."}
+
+        batches = self._batch_by_tokens(descriptions)
+        prev_summary: List = []
+        result = None
+
+        for batch in batches:
+            if prev_summary:
+                prompt = (
+                    SUMMARY_PROMPT_CHUNKING_USER_QUERY.format(
+                        description=batch, user_query=query, prev_summery=prev_summary
+                    )
+                    if query
+                    else SUMMARY_PROMPT_CHUNKING.format(
+                        description=batch, prev_summery=prev_summary
+                    )
                 )
-                logger.info(f"summary of the graph {graph_id} is {result}")
-                return result
+            else:
+                prompt = (
+                    SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(
+                        description=batch, user_query=query
+                    )
+                    if query
+                    else SUMMARY_PROMPT.format(description=batch)
+                )
+            result = self.llm.generate(prompt)
+            prev_summary = [result]
 
-            if graph:
-                graph = self.graph_description(graph)
+        return {"text": result}
 
-            prev_summery = []
-            for i, batch in enumerate(self.descriptions):
-                if prev_summery:
-                    if user_query:
-                        prompt = SUMMARY_PROMPT_CHUNKING_USER_QUERY.format(
-                            description=batch,
-                            user_query=user_query,
-                            prev_summery=prev_summery,
-                        )
-                    else:
-                        prompt = SUMMARY_PROMPT_CHUNKING.format(
-                            description=batch, prev_summery=prev_summery
-                        )
-                else:
-                    if user_query:
-                        prompt = SUMMARY_PROMPT_BASED_ON_USER_QUERY.format(
-                            description=batch, user_query=user_query
-                        )
-                    else:
-                        prompt = SUMMARY_PROMPT.format(description=batch)
-                    logger.debug(f"Summarization prompt: {prompt}")
+    #  Graph description helpers                                           
+    def _build_descriptions(self, graph: dict, max_nodes: int = 100) -> List[str]:
+        if not graph or "nodes" not in graph or not graph["nodes"]:
+            return []
 
-                response = self.llm.generate(prompt)
-                prev_summery = [response]
-                return {"text": prev_summery}
-        except Exception:
-            traceback.print_exc()
+        node_ids = {
+            graph["nodes"][i]["data"]["id"]
+            for i in range(min(max_nodes, len(graph["nodes"])))
+        }
+        nodes = {
+            n["data"]["id"]: n["data"]
+            for n in graph["nodes"]
+            if n["data"]["id"] in node_ids
+        }
+        edges = [
+            {
+                "source": e["data"]["source"],
+                "target": e["data"]["target"],
+                "label": e["data"]["label"],
+            }
+            for e in graph.get("edges", [])
+            if e["data"]["source"] in node_ids and e["data"]["target"] in node_ids
+        ]
+        return self._group_descriptions(edges, nodes)
+
+    def _node_description(self, node: dict) -> str:
+        parts = []
+        for key, value in node.items():
+            if isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                    if isinstance(parsed, list) and parsed:
+                        parts.append(f"{key.capitalize()}: {', '.join(parsed[:3])}")
+                        continue
+                except json.JSONDecodeError:
+                    pass
+            parts.append(f"{key.capitalize()}: {value}")
+        return " | ".join(parts)
+
+    def _group_descriptions(self, edges: list, nodes: dict) -> List[str]:
+        grouped: Dict[str, list] = defaultdict(list)
+        for edge in edges:
+            grouped[edge["source"].split(" ")[-1]].append(edge)
+
+        descriptions = []
+        for source_id, related in grouped.items():
+            source_desc = self._node_description(nodes.get(source_id, {}))
+            target_lines = [
+                f"{e['label']} -> Target ({e['target']}): "
+                f"{self._node_description(nodes.get(e['target'].split(' ')[-1], {}))}"
+                for e in related
+            ]
+            descriptions.append(
+                f"Source ({source_id}): {source_desc}\n" + "\n".join(target_lines)
+            )
+        return descriptions
+
+    def _batch_by_tokens(self, descriptions: List[str]) -> List[List[str]]:
+        batches: List[List[str]] = []
+        current: List[str] = []
+        accumulated = 0
+
+        for desc in descriptions:
+            count = len(self.tokenizer.encode(desc))
+            if accumulated + count > self.max_tokens and current:
+                batches.append(current)
+                current, accumulated = [desc], count
+            else:
+                current.append(desc)
+                accumulated += count
+
+        if current:
+            batches.append(current)
+        return batches

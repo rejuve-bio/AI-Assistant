@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 import openai
+import requests
 import time
 import os
 import logging
@@ -12,6 +13,9 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+
+LOCAL_EMBEDDING_HOST = os.getenv("LOCAL_EMBEDDING_HOST", "http://localhost:11434")
+LOCAL_EMBEDDING_MODEL = os.getenv("LOCAL_EMBEDDING_MODEL", "mxbai-embed-large:latest")
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 GEMINI_EMBEDDING_MODEL = "models/text-embedding-004"
@@ -65,7 +69,7 @@ def gemini_embedding_model(batch):
                 google_api_key=gemini_api
             )
             response = embeddings_model.embed_documents(batch)
-            embeddings.extend(response["embedding"])
+            embeddings.extend(response)
 
         except Exception as e:
             logger.error(f"An unexpected error occurred: {e}")
@@ -77,9 +81,25 @@ def gemini_embedding_model(batch):
 # Load the SentenceTransformer model once at module level
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# Function to generate sentence transformers embeddings
 def sentence_transformer_embedding_model(batch):
     return model.encode(batch, convert_to_numpy=True).tolist()
+
+
+def local_embedding_model(batch):
+    try:
+        response = requests.post(
+            f"{LOCAL_EMBEDDING_HOST}/api/embed",
+            json={"model": LOCAL_EMBEDDING_MODEL, "input": batch},
+            timeout=120,
+        )
+        response.raise_for_status()
+        embeddings = response.json().get("embeddings", [])
+        if not embeddings:
+            raise ValueError("Empty embeddings returned from local embedding model")
+        return embeddings
+    except Exception as e:
+        logger.error("Local embedding failed (host=%s model=%s): %s", LOCAL_EMBEDDING_HOST, LOCAL_EMBEDDING_MODEL, e)
+        raise
 
 
 def get_embedding_vector_size(embedding_fn):
@@ -89,6 +109,8 @@ def get_embedding_vector_size(embedding_fn):
         return 768
     elif embedding_fn == sentence_transformer_embedding_model:
         return 384
+    elif embedding_fn == local_embedding_model:
+        return int(os.getenv("LOCAL_EMBEDDING_SIZE", "1024"))
     else:
         raise ValueError("Unknown embedding function")
 
@@ -114,6 +136,9 @@ def get_llm_model(model_provider, model_version=None):
         return LocalModel(
             model_name=model_version or os.getenv("LOCAL_MODEL", "gemma4")
         )
+
+    elif model_provider == "ollama":
+        return OllamaModel(model_name=model_version)
 
     else:
         raise ValueError("Invalid model type in configuration")
@@ -146,7 +171,45 @@ class LocalModel(LLMInterface):
             model=self.model_name,
             messages=messages,
             temperature=0,
-            max_tokens=1000,
+            max_tokens=4096,
+        )
+        content = response.choices[0].message.content
+        json_content = self._extract_json_from_codeblock(content)
+        try:
+            return json.loads(json_content)
+        except json.JSONDecodeError:
+            return json_content
+
+    def _extract_json_from_codeblock(self, content: str) -> str:
+        start = content.find(JSON_CODEBLOCK_MARKER)
+        end = content.rfind("```")
+        if start != -1 and end != -1:
+            return content[start + 7 : end].strip()
+        return content
+
+
+class OllamaModel(LLMInterface):
+    def __init__(self, model_name: str = None):
+        self.model_name = model_name or "qwen2.5:14b"
+        self.model_provider = "ollama"
+        host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        self.client = openai.OpenAI(
+            base_url=f"{host}/v1",
+            api_key="ollama",
+        )
+        logger.info(f"OllamaModel initialized: {self.model_name} at {host}")
+
+    def generate(self, prompt: str, system_prompt=None, **kwargs) -> Dict[str, Any]:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            temperature=0,
+            max_tokens=4096,
         )
         content = response.choices[0].message.content
         json_content = self._extract_json_from_codeblock(content)
@@ -210,14 +273,14 @@ class OpenAIModel(LLMInterface):
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0,
-                max_tokens=1000,
+                max_tokens=4096,
             )
         else:
             response = openai.chat.completions.create(
                 model=self.model_name,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
-                max_tokens=1000,
+                max_tokens=4096,
             )
         content = response.choices[0].message.content
         json_content = self._extract_json_from_codeblock(content)
