@@ -1,539 +1,296 @@
-from typing import Dict, Any, Tuple, Optional, List, Union
-from app.prompts.hypothesis_prompt import hypothesis_format_prompt, hypothesis_response
-from app.socket_manager import emit_to_user
 import logging
-import os
-import difflib
-import requests
-import time
+import re
+from typing import Any, Dict, List, Optional
+
+from app.prompts.hypothesis_prompt import go_term_selection_prompt, hypothesis_format_prompt, tissue_selection_prompt
+from app.socket_manager import emit_to_user
+from app.storage.redis import redis_manager
+
+from .hypothesis_api import HypothesisAPIMixin
+from .hypothesis_project import HypothesisProjectMixin
 
 logger = logging.getLogger(__name__)
 
-# Load API endpoints from environment variables
-HYPOTHESIS_MAIN_ENDPOINT = os.getenv('HYPOTHESIS_MAIN_ENDPOINT')
-HYPOTHESIS_DATA_API = os.getenv('HYPOTHESIS_DATA_API')
 
-
-class HypothesisGeneration:
-    """
-    Handles generation and processing of hypotheses based on user queries.
-    Interacts with the Hypothesis API to generate hypotheses and retrieve related information.
-    """
+class HypothesisGeneration(HypothesisAPIMixin, HypothesisProjectMixin):
 
     def __init__(self, llm) -> None:
-        """
-        Initialize the HypothesisGeneration class with an LLM instance.
-        
-        Args:
-            llm: Language model instance for generating formatted queries and responses
-        """
         self.llm = llm
+        self._pending_fallback: Dict[str, Dict[str, Any]] = {}
         logger.info("HypothesisGeneration initialized with LLM")
 
-    def _make_api_request(self,
-                         method: str,
-                         url: str,
-                         token: str,
-                         params: Optional[Dict] = None,
-                         data: Optional[Dict] = None) -> Dict[str, Any]:
-        """
-        Helper method to make API requests with proper error handling.
-        """
-        headers = {
-            "Authorization": f"Bearer {token}"
-        }
+    # --- Pending state (tissue / GO / sample-offer) ---
+
+    def set_pending_tissue(self, user_id: str, variant: str, project_id: str, available_tissues: list) -> None:
+        if redis_manager.is_available:
+            redis_manager.set_pending_hypothesis(user_id, variant, project_id, available_tissues)
+        else:
+            self._pending_fallback[user_id] = {"variant": variant, "project_id": project_id, "available_tissues": available_tissues}
+
+    def has_pending_tissue_for(self, user_id: str) -> bool:
+        return redis_manager.get_pending_hypothesis(user_id) is not None if redis_manager.is_available else user_id in self._pending_fallback
+
+    def clear_pending(self, user_id: str) -> None:
+        redis_manager.clear_pending_hypothesis(user_id) if redis_manager.is_available else self._pending_fallback.pop(user_id, None)
+
+    def _get_pending(self, user_id: str) -> Optional[Dict[str, Any]]:
+        return redis_manager.get_pending_hypothesis(user_id) if redis_manager.is_available else self._pending_fallback.get(user_id)
+
+    def set_pending_go(self, user_id: str, enrich_id: str, hypothesis_id: str, go_terms: list, tissue: str = "", variant: str = "", project_id: str = "") -> None:
+        if redis_manager.is_available:
+            redis_manager.set_pending_go(user_id, enrich_id, hypothesis_id, go_terms, tissue=tissue, variant=variant, project_id=project_id)
+        else:
+            self._pending_fallback[f"go:{user_id}"] = {"enrich_id": enrich_id, "hypothesis_id": hypothesis_id, "go_terms": go_terms, "tissue": tissue, "variant": variant, "project_id": project_id}
+
+    def has_pending_go_for(self, user_id: str) -> bool:
+        return redis_manager.get_pending_go(user_id) is not None if redis_manager.is_available else f"go:{user_id}" in self._pending_fallback
+
+    def _get_pending_go(self, user_id: str) -> Optional[Dict[str, Any]]:
+        return redis_manager.get_pending_go(user_id) if redis_manager.is_available else self._pending_fallback.get(f"go:{user_id}")
+
+    def _clear_pending_go(self, user_id: str) -> None:
+        redis_manager.clear_pending_go(user_id) if redis_manager.is_available else self._pending_fallback.pop(f"go:{user_id}", None)
+
+    def set_pending_sample_offer(self, user_id: str, variant: str, sample_project_id: str, sample_tissues: list) -> None:
+        if redis_manager.is_available:
+            redis_manager.set_pending_sample_offer(user_id, variant, sample_project_id, sample_tissues)
+        else:
+            self._pending_fallback[f"sample_offer:{user_id}"] = {"variant": variant, "sample_project_id": sample_project_id, "sample_tissues": sample_tissues}
+
+    def has_pending_sample_offer_for(self, user_id: str) -> bool:
+        return redis_manager.get_pending_sample_offer(user_id) is not None if redis_manager.is_available else f"sample_offer:{user_id}" in self._pending_fallback
+
+    def _get_pending_sample_offer(self, user_id: str) -> Optional[Dict[str, Any]]:
+        return redis_manager.get_pending_sample_offer(user_id) if redis_manager.is_available else self._pending_fallback.get(f"sample_offer:{user_id}")
+
+    def _clear_pending_sample_offer(self, user_id: str) -> None:
+        redis_manager.clear_pending_sample_offer(user_id) if redis_manager.is_available else self._pending_fallback.pop(f"sample_offer:{user_id}", None)
+
+    # --- Interaction handlers ---
+
+    def handle_sample_offer_response(self, user_id: str, query: str, token: str) -> Optional[Dict[str, Any]]:
+        pending = self._get_pending_sample_offer(user_id)
+        if not pending:
+            return None
+        q = query.lower().strip()
+        is_new = len(query.split()) > 6 or "?" in query or q.startswith(("what", "how", "why", "find", "show", "explain", "tell", "is ", "are ", "can "))
+        if is_new:
+            self._clear_pending_sample_offer(user_id)
+            return None
+        is_no  = any(w in q for w in ("no", "nope", "don't", "dont", "not now", "skip", "cancel", "never mind", "nevermind"))
+        is_yes = any(w in q for w in ("yes", "sure", "okay", "ok", "go ahead", "yeah", "yep", "please", "start", "let's", "lets", "do it"))
+        if is_no:
+            self._clear_pending_sample_offer(user_id)
+            return {"text": "No problem! When you're ready, you can set up your own project on the platform first.", "agents_completed": ["hypothesis_agent"]}
+        if is_yes:
+            self._clear_pending_sample_offer(user_id)
+            tissues = pending["sample_tissues"]
+            if tissues:
+                self.set_pending_tissue(user_id, pending["variant"], pending["sample_project_id"], tissues)
+                tissue_list = "\n".join([f"- {self._tissue_display(t)}" for t in tissues])
+                return {"text": f"Let's run it on the sample project! Which tissue context would you like to use?\n\n{tissue_list}\n\nJust pick one and I'll kick off the analysis.", "agents_completed": ["hypothesis_agent"]}
+            return {"text": "I couldn't find available tissues for the sample project. Please try again later.", "agents_completed": ["hypothesis_agent"]}
+        return {"text": "Just say **yes** to run the sample project, or **no** if you'd prefer not to.", "agents_completed": ["hypothesis_agent"]}
+
+    def _llm_pick_from_list(self, query: str, options: List[str], prompt_template: str, label: str, history: list = None) -> Optional[int]:
+        numbered = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)])
+        history_ctx = ""
+        if history:
+            lines = []
+            for h in history[-2:]:
+                q, a = h.get("question", ""), (h.get("context") or {}).get("answer", "")
+                if q: lines.append(f"User previously: {q}")
+                if a: lines.append(f"Assistant previously: {a[:200]}")
+            if lines:
+                history_ctx = "Recent conversation context:\n" + "\n".join(lines) + "\n\n"
         try:
-            logger.debug(f"Making {method} request to {url} with data {data} and params {params}")
-            if data and method.upper() == "POST":
-                # Use json=data to send application/json
-                response = requests.post(url, json=data, headers=headers)    
-            elif method.upper() == "GET":
-                response = requests.get(url, params=params, headers=headers)
-            elif method.upper() == "POST":
-                response = requests.post(url, params=params, headers=headers)
-            else:
-                return {"error": f"Unsupported HTTP method: {method}"}
-                
-            response.raise_for_status()
-            data = response.json()
-            return data 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"API request failed: {e}")
-            return {"error": f"Request failed Please Try Again"}
+            text = self.llm.generate(history_ctx + prompt_template.format(query=query, **{label: numbered}))
+            text = text.strip() if isinstance(text, str) else str(text).strip()
+            if text == "NEW_QUESTION": return None
+            if text == "UNCLEAR":      return -1
+            if text == "SMALL_TALK":   return -2
+            idx = int(text) - 1
+            if 0 <= idx < len(options): return idx
+        except Exception:
+            pass
+        return -1
 
-    def _validate_response(self, response: Dict[str, Any], required_keys: List[str] = []) -> Tuple[bool, str]:
-        """
-        Validate API response status and content.
-        """
-        if "error" in response:
-             return False, response["error"]
-        
-        for key in required_keys:
-            if key not in response:
-                return False, f"Missing required key: {key}"
-        
-        return True, ""
+    def handle_go_selection(self, user_id: str, query: str, token: str, history: list = None) -> Optional[Dict[str, Any]]:
+        pending = self._get_pending_go(user_id)
+        if not pending:
+            return None
+        go_terms = pending["go_terms"]
+        idx = self._llm_pick_from_list(query, [f"{t['name']} ({t['id']}) — p={t['p']:.4f}" for t in go_terms], go_term_selection_prompt, "go_list", history=history)
+        if idx is None:
+            self._clear_pending_go(user_id)
+            return None
+        if idx == -1:
+            go_list = "\n".join([f"{i+1}. {t['name']} ({t['id']}) — p={t['p']:.4f}" for i, t in enumerate(go_terms)])
+            return {"text": f"I didn't catch that. Reply with a number (1–{len(go_terms)}) or the GO term name:\n{go_list}", "agents_completed": ["hypothesis_agent"]}
+        chosen = go_terms[idx]
+        enrich_id, hypothesis_id, tissue = pending["enrich_id"], pending["hypothesis_id"], pending.get("tissue", "")
+        self._clear_pending_go(user_id)
+        result = self._finalize_with_go(token, enrich_id, chosen, user_id)
+        if "resource" in result and isinstance(result["resource"], dict):
+            result["resource"]["id"] = hypothesis_id
+            if redis_manager.is_available:
+                if tissue:
+                    redis_manager.set_hypothesis_meta(hypothesis_id, tissue, chosen["name"], chosen["id"])
+                redis_manager.set_generated_hypothesis(user_id, pending.get("variant", ""), pending.get("project_id", ""), hypothesis_id)
+        result.setdefault("agents_completed", ["hypothesis_agent"])
+        return result
 
-    def _step_1_enrich(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Step 1: Start Enrichment"""
-        logger.info(f"Step 1: Starting enrichment with params: {params}")
-        url = f"{HYPOTHESIS_DATA_API}/enrich"
-        response = self._make_api_request("POST", url, token, data=params)
-        
-        valid, error = self._validate_response(response, required_keys=["hypothesis_id"])
-        if not valid:
-            return {"error": f"Enrichment start failed: {error}"}
-            
-        return response
+    def handle_tissue_selection(self, user_id: str, query: str, token: str, history: list = None) -> Optional[Dict[str, Any]]:
+        pending = self._get_pending(user_id)
+        if not pending:
+            return None
+        available_tissues = pending["available_tissues"]
+        idx = self._llm_pick_from_list(query, [self._tissue_display(t) for t in available_tissues], tissue_selection_prompt, "tissue_list", history=history)
+        if idx == -2: return None
+        if idx is None:
+            self.clear_pending(user_id)
+            return None
+        if idx == -1:
+            tissue_list = "\n".join([f"{i+1}. {self._tissue_display(t)}" for i, t in enumerate(available_tissues)])
+            return {"text": f"I wasn't able to match **\"{query}\"** to any of the available tissues.\n\nHere are the tissues you can pick from:\n{tissue_list}\n\nReply with a number or the tissue name.", "agents_completed": ["hypothesis_agent"]}
+        chosen = self._tissue_name(available_tissues[idx])
+        self.clear_pending(user_id)
+        result = self._run_enrichment_pipeline(token, {"variant": pending["variant"], "tissue_name": chosen, "project_id": pending["project_id"]}, user_id)
+        result.setdefault("agents_completed", ["hypothesis_agent"])
+        return result
 
-    def _step_2_poll(self, token: str, hypothesis_id: str) -> Dict[str, Any]:
-        """Step 2: Polling Loop with Retry Mechanism"""
-        logger.info(f"Step 2: Polling status for hypothesis ID: {hypothesis_id}")
-        
-        # Retry configuration: 6 attempts * 10 seconds = 60 seconds max wait
-        max_retries = 6
-        retry_delay = 10
-
-        url = f"{HYPOTHESIS_MAIN_ENDPOINT}/hypothesis"
-        
-        for attempt in range(max_retries):
-        
-         
-            response = self._make_api_request("GET", url, token, params={"id": hypothesis_id})
-            
-            valid, error = self._validate_response(response, required_keys=["status"])
-            if not valid:
-                 return {"error": f"Status check failed: {error}"}
-            
-            status = response.get("status")
-            logger.info(f"Polling attempt {attempt + 1}/{max_retries}: Status is '{status}'")
-
-            if status == "completed":
-                if "enrich_id" not in response:
-                     return {"error": "Completed status but missing enrich_id"}
-                return response
-            elif status == "pending":
-                if attempt < max_retries - 1:
-                    logger.info(f"Status is pending. Waiting {retry_delay} seconds before retrying...")
-                    time.sleep(retry_delay)
-                else:
-                    return {"error": "Enrichment timed out after maximum retries"}
-            else:
-                return {"error": f"Unknown status: {status}"}
-                
-        return {"error": "Enrichment timed out"}
-
-    def _step_3_get_results(self, token: str, enrich_id: str) -> Dict[str, Any]:
-        """Step 3: Get Enrichment Results"""
-        logger.info(f"Step 3: Fetching results for enrich ID: {enrich_id}")
-        url = f"{HYPOTHESIS_DATA_API}/enrich"
-        response = self._make_api_request("GET", url, token, params={"id": enrich_id})
-        
-        valid, error = self._validate_response(response, required_keys=["GO_terms", "causal_gene"])
-        if not valid:
-            return {"error": f"Result fetch failed: {error}"}
-            
-        return response
-
-    def _step_4_generate(self, token: str, enrich_id: str, go_term_id: str) -> Dict[str, Any]:
-        """Step 4: Generate Final Hypothesis"""
-        logger.info(f"Step 4: Generating hypothesis for enrich ID: {enrich_id} and GO: {go_term_id}")
-        url = f"{HYPOTHESIS_MAIN_ENDPOINT}/hypothesis"
-        response = self._make_api_request("POST", url, token, data={"id": enrich_id, "go": go_term_id})
-        
-        valid, error = self._validate_response(response, required_keys=["summary", "graph"])
-        if not valid:
-            return {"error": f"Final generation failed: {error}"}
-            
-        return response
-
-
-    def get_by_hypothesis_id(self, token: str, hypothesis_id: str, user_id, query=None) -> Dict[str, Any]:
-        """
-        Retrieve hypothesis information by ID.
-        """
-        logger.info(f"Retrieving hypothesis by ID: {hypothesis_id}")
-        logger.info(f"Token: {token}")
-        emit_to_user(user=user_id, message=f"Retrieving hypothesis by ID: {hypothesis_id}")
-
-        try:
-            headers = {"Authorization": f"Bearer {token}"}
-            response = requests.get(HYPOTHESIS_MAIN_ENDPOINT, params={"id": hypothesis_id}, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            logger.info(f"Hypothesis GET response status: {data.get('status')}")
-
-            summary = data.get("summary", "")
-            graph = data.get("graph", {})
-            result = data.get("result", {})
-
-            if not summary and not graph:
-                logger.warning(f"Hypothesis {hypothesis_id} returned no data")
-                return {"text": "NO summaries provided"}
-
-            context_parts = []
-
-            if summary:
-                context_parts.append(f"Summary:\n{summary}")
-
-            meta = (
-                f"Variant: {data.get('variant', 'N/A')} | "
-                f"Phenotype: {data.get('phenotype', 'N/A')} | "
-                f"Status: {data.get('status', 'N/A')}"
-            )
-            context_parts.append(f"Hypothesis Metadata:\n{meta}")
-
-            nodes = graph.get("nodes", [])
-            if nodes:
-                node_lines = [f"  - {n.get('name', n.get('id'))} (type: {n.get('type')})" for n in nodes]
-                context_parts.append("Graph Nodes:\n" + "\n".join(node_lines))
-
-            edges = graph.get("edges", [])
-            if edges:
-                edge_lines = [f"  - {e.get('source')} --[{e.get('label')}]--> {e.get('target')}" for e in edges]
-                context_parts.append("Graph Relationships:\n" + "\n".join(edge_lines))
-
-            go_terms = result.get("GO_terms", [])
-            if go_terms:
-                go_lines = [
-                    f"  - {g.get('name')} (p={g.get('p', 'N/A'):.4f}, genes: {', '.join(g.get('genes', []))})"
-                    for g in go_terms[:5]
-                ]
-                context_parts.append("Top GO Terms:\n" + "\n".join(go_lines))
-
-            full_context = "\n\n".join(context_parts)
-            logger.info(f"Built hypothesis context with {len(nodes)} nodes, {len(edges)} edges, {len(go_terms)} GO terms")
-
-            return {
-                "text": full_context,
-                "resource": {
-                    "id": hypothesis_id,
-                    "type": "hypothesis",
-                    "graph": graph,
-                }
-            }
-        except Exception as e:
-            logger.error(f"Failed to retrieve hypothesis by ID {hypothesis_id}: {e}")
-            emit_to_user(user=user_id, message="Error retrieving hypothesis")
-            return {"text": "NO summaries provided"}
+    # --- Query formatting ---
 
     def format_user_query(self, query: str, user_id) -> Dict[str, Any]:
-        """
-        Format user query using the LLM to extract relevant parameters.
-        """
-        logger.info(f"Formatting user query: {query}")
-
+        logger.info("Formatting user query: %s", query)
         try:
-            prompt = hypothesis_format_prompt.format(question=query)
-            response = self.llm.generate(prompt)
-
-            if not response:
-                logger.warning("LLM returned empty response for query formatting")
-                emit_to_user(user=user_id, message="Warning: Empty response from query formatting")
-                return {}
-
-            # Guard: ensure the LLM returned a dict, not a raw string
-            if isinstance(response, str):
-                logger.warning(f"LLM returned a string instead of a dict: {response}")
+            response = self.llm.generate(hypothesis_format_prompt.format(question=query))
+            if not response or isinstance(response, str):
                 emit_to_user(user=user_id, message="Warning: Could not parse extraction response")
                 return {}
-
-            logger.info(f"Successfully formatted query with {len(response)} parameters")
-
-            # POST-PROCESSING VALIDATION: Override LLM if it hallucinated the variant
-            import re
             regex_variants = re.findall(r'\brs\d+\b', query, re.IGNORECASE)
-
             if regex_variants:
-                user_variant = regex_variants[0]
                 llm_variant = response.get("variant")
-
-                if llm_variant and llm_variant.lower() != user_variant.lower():
-                    logger.warning(
-                        f"LLM hallucination detected! User said '{user_variant}' but LLM extracted "
-                        f"'{llm_variant}'. Overriding."
-                    )
-                    response["variant"] = user_variant
-                    emit_to_user(user=user_id, message=f"Corrected variant extraction to {user_variant}")
-                elif not llm_variant:
-                    logger.warning(f"LLM missed variant. Found '{user_variant}' via regex.")
-                    response["variant"] = user_variant
-
+                if isinstance(llm_variant, list):
+                    llm_variant = llm_variant[0] if llm_variant else None
+                user_variant = regex_variants[0]
+                if not llm_variant or llm_variant.lower() != user_variant.lower():
+                    logger.warning("Overriding LLM variant '%s' with regex match '%s'", llm_variant, user_variant)
+                response["variant"] = regex_variants  # preserve all regex-found variants
             return response
-
         except Exception as e:
-            logger.error(f"Error formatting user query: {str(e)}")
-            emit_to_user(user=user_id, message="Error formatting query")
+            logger.error("Error formatting user query: %s", e)
             return {}
 
-    def get_user_projects(self, token: str) -> List[Dict[str, Any]]:
-        """
-        Fetch the list of projects available to the user.
-        """
-        url = f"{HYPOTHESIS_DATA_API}/projects"
-        try:
-            response = self._make_api_request("GET", url, token)
-            valid, error = self._validate_response(response, required_keys=["projects"])
-            if not valid:
-                logger.error(f"Failed to fetch projects: {error}")
-                return []
-            return response["projects"]
-        except Exception as e:
-            logger.error(f"Error fetching user projects: {e}")
-            return []
-
-    @staticmethod
-    def _normalize_field(s: str) -> str:
-        normalized = s.lower().strip().replace(" ", "_").replace("-", "_")
-        normalized = normalized.replace("_tissue", "").replace("_cell", "").replace("_cells", "")
-        return normalized
-
-    def _match_project_fields(self, token: str, project: Dict[str, Any], variant: str, tissue: str):
-        """Fetch project details and return (has_variant, has_tissue, project_variants, project_tissues)."""
-        project_id = project.get("id")
-        url = f"{HYPOTHESIS_DATA_API}/projects"
-        details = self._make_api_request("GET", url, token, params={"id": project_id})
-        if "error" in details:
-            return False, False, [], []
-
-        project_variants = [h.get("variant") for h in details.get("hypotheses", [])]
-        project_tissues = [t.get("name") for t in details.get("ldsc", {}).get("tissues", [])]
-
-        norm_variant = self._normalize_field(variant)
-        norm_tissue = self._normalize_field(tissue)
-        has_variant = any(norm_variant == self._normalize_field(v) for v in project_variants)
-        has_tissue = any(norm_tissue == self._normalize_field(t) for t in project_tissues)
-        return has_variant, has_tissue, project_variants, project_tissues
-
-    def _collect_all_variants(self, token: str, projects: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Collect all available variants across all projects."""
-        all_variants = []
-        for project in projects:
-            project_id = project.get("id")
-            project_name = project.get("name")
-            url = f"{HYPOTHESIS_DATA_API}/projects"
-            details = self._make_api_request("GET", url, token, params={"id": project_id})
-            if "error" not in details:
-                for h in details.get("hypotheses", []):
-                    all_variants.append({"variant": h.get("variant"), "project_name": project_name})
-        return all_variants
-
-    def validate_project_context(self, token: str, variant: str, tissue: str) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
-        """
-        Phase 3 Validation: Check if the variant and tissue exist in the same project.
-
-        Returns:
-            Tuple[Optional[str], Optional[Dict]]:
-                - First element: project_id if found, else None
-                - Second element: Error details if validation failed, else None
-        """
-        logger.info(f"Validating project context for Variant: {variant}, Tissue: {tissue}")
-
-        projects = self.get_user_projects(token)
-
-        # Scenario 1: No projects exist
-        if not projects:
-            logger.warning("No projects found for user.")
-            return None, {
-                "error_type": "no_projects",
-                "variant": variant,
-                "tissue": tissue
-            }
-
-        # Track which projects contain each component
-        variant_found_in = []  # List of {project_id, project_name, variants, tissues}
-        tissue_found_in = []   # List of {project_id, project_name, variants, tissues}
-        searched_project_names = [] # Names of all projects searched
-
-        for project in projects:
-            project_id = project.get("id")
-            project_name = project.get("name")
-            searched_project_names.append(project_name)
-
-            has_variant, has_tissue, project_variants, project_tissues = self._match_project_fields(
-                token, project, variant, tissue
-            )
-            if not project_variants and not project_tissues:
-                continue
-
-            norm_variant = self._normalize_field(variant)
-            norm_tissue = self._normalize_field(tissue)
-
-            # Track findings
-            if has_variant:
-                # Find the actual variant name from the project for consistent suggesting
-                actual_v = next((v for v in project_variants if self._normalize_field(v) == norm_variant), variant)
-                variant_found_in.append({
-                    "project_id": project_id,
-                    "project_name": project_name,
-                    "actual_variant": actual_v,
-                    "tissues": project_tissues
-                })
-
-            if has_tissue:
-                # Find the actual tissue name from the project
-                actual_t = next((t for t in project_tissues if self._normalize_field(t) == norm_tissue), tissue)
-                tissue_found_in.append({
-                    "project_id": project_id,
-                    "project_name": project_name,
-                    "actual_tissue": actual_t,
-                    "variants": project_variants
-                })
-
-            # Success case: Both found in same project
-            if has_variant and has_tissue:
-                logger.info(f"Validation Successful: Found matched context in project {project_id}")
-                return project_id, None
-
-        # If we reach here, validation failed. Determine the specific error type.
-        logger.warning("Validation Failed: No single project contains both variant and tissue.")
-
-        # Scenario 2: Variant not found anywhere
-        if len(variant_found_in) == 0:
-            all_variants = self._collect_all_variants(token, projects)
-            return None, {
-                "error_type": "variant_not_found",
-                "variant": variant,
-                "tissue": tissue,
-                "all_variants": all_variants,
-                "searched_projects": searched_project_names
-            }
-
-        # Scenario 3: Mismatch (variant and tissue exist, but in different projects)
-        return None, {
-            "error_type": "mismatch",
-            "variant": variant,
-            "tissue": tissue,
-            "variant_projects": variant_found_in,
-            "tissue_projects": tissue_found_in
-        }
-
-    def _format_validation_error(self, error_details: Dict[str, Any]) -> Dict[str, Any]:
-        """Format a validation error dict into a user-facing text response."""
-        error_type = error_details.get("error_type")
-        variant = error_details.get("variant")
-        tissue = error_details.get("tissue")
-
-        if error_type == "no_projects":
-            return {"text": "Since there's no project created yet, you can use the platform UI to generate a new hypothesis. In the meantime, I can still assist you based on the hypotheses you've already generated."}
-
-        if error_type == "variant_not_found":
-            searched_projects = ", ".join(error_details.get("searched_projects", []))
-            all_variants = error_details.get("all_variants", [])
-            variant_list = "\n".join([f"- {v['variant']} ({v['project_name']})" for v in all_variants])
-            return {"text": (
-                f"No hypothesis is generated: I searched your projects ({searched_projects if searched_projects else 'none'}), "
-                f"but variant **{variant}** was not found.\n\n"
-                f"**Available variants:**\n{variant_list if variant_list else '(none)'}"
-            )}
-
-        if error_type == "mismatch":
-            variant_projects = error_details.get("variant_projects", [])
-            tissue_projects = error_details.get("tissue_projects", [])
-            variant_project_name = variant_projects[0]["project_name"] if variant_projects else "Unknown"
-            tissue_project_name = tissue_projects[0]["project_name"] if tissue_projects else "Unknown"
-            available_tissues = variant_projects[0]["tissues"] if variant_projects else []
-            tissue_list = "\n".join([f"- {t}" for t in available_tissues])
-            return {"text": (
-                f"No hypothesis is generated: **{variant}** is in {variant_project_name}, but **{tissue}** is in {tissue_project_name}.\n"
-                f"They must be in the same project.\n\n"
-                f"For **{variant}**, use these tissues:\n{tissue_list if tissue_list else '(none)'}"
-            )}
-
-        # Fallback (should not reach here)
-        return {"text": f"No hypothesis is generated: I couldn't find a project containing both **{variant}** and **{tissue}**."}
+    # --- Pipeline execution ---
 
     def _run_enrichment_pipeline(self, token: str, params: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-        """Run enrichment steps 1–4 and return the final hypothesis result or an error dict."""
-        # Step 1: Start Enrichment
         emit_to_user(user=user_id, message=f"Starting enrichment for {params.get('variant')}...")
-        step1_res = self._step_1_enrich(token, params)
-        if "error" in step1_res:
-            logger.error(step1_res["error"])
-            return {"text": f"I tried to start the enrichment, but failed: {step1_res['error']}"}
-
-        hypothesis_id = step1_res["hypothesis_id"]
-
-        # Step 2: Polling
+        step1 = self._step_1_enrich(token, params)
+        if "error" in step1:
+            return {"text": f"I tried to start the enrichment, but failed: {step1['error']}"}
         emit_to_user(user=user_id, message="Waiting for analysis to complete...")
-        step2_res = self._step_2_poll(token, hypothesis_id)
-        if "error" in step2_res:
-            logger.error(step2_res["error"])
-            return {"text": f"Enrichment started (ID: {hypothesis_id}), but failed during processing: {step2_res['error']}"}
-
-        enrich_id = step2_res["enrich_id"]
-
-        # Step 3: Get Results
+        step2 = self._step_2_poll(token, step1["hypothesis_id"])
+        if "error" in step2:
+            return {"text": f"Enrichment started, but failed during processing: {step2['error']}"}
         emit_to_user(user=user_id, message="Fetching enrichment results...")
-        step3_res = self._step_3_get_results(token, enrich_id)
-        if "error" in step3_res:
-            logger.error(step3_res["error"])
-            return {"text": f"Analysis completed, but failed to retrieve results: {step3_res['error']}"}
-
-        # Select best GO term (Logic: Top Rank / Lowest P-value)
-        go_terms = step3_res.get("GO_terms", [])
+        step3 = self._step_3_get_results(token, step2["enrich_id"])
+        if "error" in step3:
+            return {"text": f"Analysis completed, but failed to retrieve results: {step3['error']}"}
+        go_terms = step3.get("GO_terms", [])
         if not go_terms:
             return {"text": "Analysis completed, but no significant GO terms were found."}
+        self.set_pending_go(user_id, step2["enrich_id"], step1["hypothesis_id"], go_terms,
+                            tissue=params.get("tissue_name", ""), variant=params.get("variant", ""), project_id=params.get("project_id", ""))
+        go_list = "\n".join([f"{i+1}. **{t['name']}** ({t['id']}) — genes: {', '.join(t.get('genes', [])[:4])}{'...' if len(t.get('genes', [])) > 4 else ''} — p={t['p']:.4f}" for i, t in enumerate(go_terms)])
+        return {"text": f"The enrichment analysis is done! I found **{len(go_terms)} significant biological pathways** linked to **{params.get('variant')}**.\n\nPick the GO term you'd like to build the hypothesis around:\n{go_list}\n\nJust reply with the number or name. Heads up — the final generation step can take up to 30 seconds, so hang tight after you choose!", "agents_completed": ["hypothesis_agent"]}
 
-        best_go = go_terms[0]
-        best_go_id = best_go["id"]
-        best_go_name = best_go["name"]
-
-        emit_to_user(user=user_id, message=f"Identified top mechanism: {best_go_name}")
-
-        # Step 4: Final Generation
-        emit_to_user(user=user_id, message="Generating final hypothesis...")
-        step4_res = self._step_4_generate(token, enrich_id, best_go_id)
-        if "error" in step4_res:
-            logger.error(step4_res["error"])
-            return {"text": f"Failed to generate final hypothesis summary: {step4_res['error']}"}
-
-        summary = step4_res["summary"]
-        graph = step4_res["graph"]
-
-        return {
-            "text": summary,
-            "resource": {
-                "id": hypothesis_id,
-                "type": "hypothesis",
-                "graph": graph # pass graph data if needed by frontend
-            }
-        }
+    def _finalize_with_go(self, token: str, enrich_id: str, go_term: dict, user_id: str) -> Dict[str, Any]:
+        emit_to_user(user=user_id, message=f"Generating hypothesis for '{go_term['name']}' — this may take up to 30 seconds, please wait...")
+        step4 = self._step_4_generate(token, enrich_id, go_term["id"])
+        if "error" in step4:
+            return {"text": f"Failed to generate final hypothesis summary: {step4['error']}"}
+        return {"text": step4["summary"], "resource": {"id": step4.get("hypothesis_id", enrich_id), "type": "hypothesis", "graph": step4["graph"]}, "agents_completed": ["hypothesis_agent"]}
 
     def generate_hypothesis(self, token: str, user_query: str, user_id: str) -> Dict[str, Any]:
-        """
-        Orchestrates the NLP-driven hypothesis generation workflow.
-        """
-        logger.info(f"Starting NLP-driven hypothesis generation for: {user_query}")
+        logger.info("Starting hypothesis generation for: %s", user_query)
         emit_to_user(user=user_id, message="Analyzing your query...")
-
-        # 1. NLP Extraction
         params = self.format_user_query(user_query, user_id)
         if not params:
             return {"text": "Could not understand the biological parameters in your query."}
+        variant = params.get("variant")
+        tissue = params.get("tissue_name") or ""
+        if isinstance(tissue, list):
+            tissue = ""
+        if not variant:
+            return {"text": "Could not extract a genetic variant from your query. Please specify a variant (e.g. rs1421085)."}
 
-        # Ensure we have the minimum required fields
-        if "variant" not in params or "tissue_name" not in params:
-             # Fallback or ask for clarification? For now, error.
-             pass
+        # Handle multiple variants — validate all, then process one at a time
+        variants = variant if isinstance(variant, list) else [variant]
+        if len(variants) > 1:
+            found = []
+            failed_variants = []
+            last_error_details = None
+            for v in variants:
+                validated_project_id, error_details = self.validate_project_context(token, v, tissue)
+                if validated_project_id:
+                    found.append((v, validated_project_id))
+                else:
+                    failed_variants.append(v)
+                    last_error_details = error_details
 
-        # Log the extracted parameters so they are visible in the Docker logs
-        logger.info(
-            f"Extracted parameters: variant='{params.get('variant')}', "
-            f"tissue='{params.get('tissue_name')}'"
-        )
+            parts = []
 
-        # Validate Project Context (Phase 3)
-        validated_project_id, error_details = self.validate_project_context(token, params["variant"], params["tissue_name"])
+            # Run the first found variant through the pipeline; queue the rest
+            if found:
+                first_v, first_pid = found[0]
+                queued = [v for v, _ in found[1:]] + failed_variants
+                single_params = {**params, "variant": first_v, "project_id": first_pid}
+                result = self._run_enrichment_pipeline(token, single_params, user_id)
+                parts.append(result.get("text", ""))
+                if queued:
+                    parts.append(f"*(Starting with **{first_v}**. Once done, ask me to run: {', '.join(queued)})*")
+            elif failed_variants and last_error_details:
+                # All failed — one consolidated error
+                error_result = self._format_validation_error(last_error_details)
+                failed_list = " and ".join(f"**{v}**" for v in failed_variants)
+                parts.append(f"I couldn't find {failed_list} in your projects.\n\n{error_result.get('text', '')}")
+                error_type = (last_error_details or {}).get("error_type")
+                if error_type == "non_sample_project":
+                    sample_info = last_error_details.get("sample_info")
+                    if sample_info:
+                        self.set_pending_sample_offer(user_id, variant=failed_variants[0], sample_project_id=sample_info.get("id", ""), sample_tissues=sample_info.get("tissues", []))
 
+            return {"text": "\n\n".join(parts), "agents_completed": ["hypothesis_agent"]}
+
+        variant = variants[0]
+        params["variant"] = variant
+        validated_project_id, error_details = self.validate_project_context(token, variant, tissue)
         if validated_project_id:
-             params["project_id"] = validated_project_id
-             logger.info(f"Project context valid ation successful. Using project ID: {validated_project_id}")
-             # Add project info to user message
-             emit_to_user(user=user_id, message=f"Found related project: {validated_project_id}")
-        else:
-             # Validation failed - format specific error message based on error type
-             logger.warning(f"Project validation failed for {params['variant']} in {params['tissue_name']}")
-             return self._format_validation_error(error_details)
-
-        return self._run_enrichment_pipeline(token, params, user_id)
+            params["project_id"] = validated_project_id
+            return self._run_enrichment_pipeline(token, params, user_id)
+        error_type = error_details.get("error_type") if error_details else None
+        if error_type == "existing_hypothesis":
+            hypothesis_id = error_details["hypothesis_id"]
+            tissue_used = error_details.get("tissue_used", "")
+            available_tissues = error_details.get("available_tissues", [])
+            other_tissues = [t for t in available_tissues if self._tissue_name(t) != tissue_used] if tissue_used else available_tissues
+            if other_tissues:
+                self.set_pending_tissue(user_id, variant=error_details["variant"], project_id=error_details["project_id"], available_tissues=other_tissues)
+            other_tissue_list = "\n".join([f"- {self._tissue_display(t)}" for t in other_tissues])
+            if tissue and self._normalize_field(tissue) == self._normalize_field(tissue_used):
+                return {"text": (f"**{tissue_used}** was already used for the existing hypothesis on **{error_details['variant']}**. To generate a new one, pick a different tissue:\n\n{other_tissue_list}" if other_tissue_list else f"**{tissue_used}** was already used and there are no other tissues available."), "agents_completed": ["hypothesis_agent"], "is_existing_hypothesis": True}
+            existing = self.get_by_hypothesis_id(token, hypothesis_id, user_id)
+            hyp_meta = redis_manager.get_hypothesis_meta(hypothesis_id) if redis_manager.is_available else None
+            go_used = (hyp_meta or {}).get("go_term_name", "")
+            meta_line = f"*(Generated using: **{tissue_used}** tissue{f', **{go_used}** GO term' if go_used else ''})*\n\n" if tissue_used else ""
+            offer_line = f"\n\n---\nWant to generate a new hypothesis with a different tissue? Here are your options:\n{other_tissue_list}" if other_tissue_list else ""
+            return {"text": f"{meta_line}{existing.get('text', '')}{offer_line}", "resource": existing.get("resource"), "agents_completed": ["hypothesis_agent"], "is_existing_hypothesis": True}
+        error_resp = self._format_validation_error(error_details)
+        if error_type in ("tissue_missing", "tissue_not_found"):
+            self.set_pending_tissue(user_id, variant=variant, project_id=error_details.get("project_id") or "", available_tissues=error_details.get("available_tissues", []))
+        elif error_type == "non_sample_project":
+            sample_info = error_details.get("sample_info")
+            if sample_info:
+                self.set_pending_sample_offer(user_id, variant=variant, sample_project_id=sample_info.get("id", ""), sample_tissues=sample_info.get("tissues", []))
+        return error_resp

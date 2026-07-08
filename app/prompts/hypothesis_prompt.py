@@ -28,6 +28,7 @@ Extract the following from the query:
 - CRITICAL: NEVER modify or "correct" variant IDs - extract them EXACTLY as written
 - CRITICAL: If the variant looks unfamiliar (e.g., rs9999999), extract it anyway. Do NOT default to rs1421085 or any other "familiar" variant.
 - The user's variant is ALWAYS correct, even if it doesn't exist in your training data
+- CRITICAL: Words like "sample", "project", "dataset", "study", "cohort" followed by a disease or condition name (e.g., "Obesity sample", "diabetes project", "aging cohort") refer to a PROJECT NAME — NOT a tissue type. Do NOT extract these as tissue_name. Only extract actual biological tissue types (adipose, liver, brain, muscle, lung, kidney, heart, pancreas, etc.).
 
 ## OUTPUT FORMAT
 Return ONLY a dictionary with the following format, including only keys that have values:
@@ -81,6 +82,36 @@ Example 7:
 Input: "Tell me about genetics"
 Output: {{}}
 """
+
+go_term_selection_prompt = """You are helping a user select a GO term from a numbered list.
+
+User message: {query}
+
+Available GO terms:
+{go_list}
+
+Your job:
+- If the user is selecting a GO term (by number, name, partial name, misspelling, p-value reference like "lowest p", "most significant", "first one", "best one", or any selection intent), return the 1-based index of the best match as a plain integer. Example: 3
+- If the user seems to be selecting but you cannot determine which one (e.g. they reference something not in the list), return: UNCLEAR
+- If the user is asking a completely new unrelated question or making a completely new request unrelated to this list, return: NEW_QUESTION
+
+Return ONLY a single integer, UNCLEAR, or NEW_QUESTION. Nothing else."""
+
+tissue_selection_prompt = """You are helping a user select a tissue from a numbered list.
+
+User message: {query}
+
+Available tissues:
+{tissue_list}
+
+Your job:
+- If the user is selecting a tissue (by name, partial name, number, misspelling, p-value reference like "lowest p", "most significant", "first one", or any selection intent), return the 1-based index of the best match as a plain integer. Example: 2
+- Use fuzzy/partial matching aggressively: if the user names a tissue that closely resembles one in the list (same root name, differs only by a trailing number like _1 vs _3, minor typo, or partial prefix match), return the closest match index. Prefer a best-guess match over returning UNCLEAR.
+- Only return UNCLEAR if the user's message appears to be a selection attempt but has absolutely no resemblance to any tissue in the list.
+- If the user is making a completely new scientific/biological request unrelated to this selection (e.g. asking to generate a hypothesis with a different variant, asking about a gene, asking a medical question), return: NEW_QUESTION
+- If the user is just making small talk or a greeting (e.g. "hi", "thanks", "ok", "cool"), return: SMALL_TALK — their selection intent is still active, just respond naturally
+
+Return ONLY a single integer, UNCLEAR, NEW_QUESTION, or SMALL_TALK. Nothing else."""
 
 hypothesis_response = """
 ## Genomic Information Response Generator
