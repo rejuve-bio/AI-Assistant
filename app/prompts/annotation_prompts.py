@@ -55,6 +55,18 @@ Let's think step by step to extract the relevant information needed to build the
 4. Include any specific IDs mentioned in the query.
 5. Double check if the direction is correct. It is strict (source)-[predicate]->(target)
 
+### ANNOTATION TARGET RULE:
+- In compound queries like "Annotate [X] and find/tell/show [Y]" or "Annotate [X] for/about/in [Y]":
+  - [X] is the annotation target → create nodes ONLY for [X]
+  - [Y] is a research purpose, context, or separate sub-task → do NOT create nodes for [Y]
+- The annotation target is what comes immediately after "annotate" (or "find"/"show" in annotation context)
+- Research context words like "longevity", "aging", "cancer" appearing after "for", "about", "its role in", "investigating it for" are NOT annotation nodes
+- Examples:
+  - "Annotate FOXO3 and tell me about longevity" → extract FOXO3 only (longevity is research context)
+  - "Annotate TP53 and find papers about its role in cancer" → extract TP53 only (cancer is a literature topic, not an annotation target)
+  - "Annotate TP53 and its association with cancer" → extract both (explicit relationship requested)
+  - "Annotate FOXO3 and BRCA1" → extract both (both are annotation targets)
+
 ### STRICT RULES:
 - Use only node types and relationships specified in the schema above.
 - Do not invent or reverse relationships.
@@ -193,6 +205,69 @@ Convert the Extracted information into the target JSON format based on the schem
       "target": "label_list_A"
     }}
     ...
+  ]
+}}
+"""
+
+EXTRACT_AND_CONVERT_PROMPT = """
+## TASK:
+Extract relevant biological entities from the query and directly output the annotation JSON. Do this in one step.
+
+### Query: {query}
+
+### Schema:
+{schema}
+
+### EXTRACTION RULES:
+1. Identify relevant nodes and their properties based on the schema.
+2. Identify necessary relationships between the nodes.
+3. Include any specific IDs mentioned in the query.
+4. Check relationship direction — it is strict: (source)-[predicate]->(target)
+
+### YOUR ROLE:
+You are the ANNOTATION AGENT. Your only job is to extract entities to annotate into a graph. You do NOT handle literature search, clinical trials, or general Q&A — those are separate agents. Only extract what needs to go into the annotation graph.
+
+### COMPOUND QUERY RULE:
+Queries often combine an annotation request with a separate task. ONLY extract the annotation target — ignore the rest.
+- "Annotate TP53 and find papers about its role in cancer" → extract TP53 only. "cancer" is for the literature agent.
+- "Annotate FOXO3 and tell me what clinical trials are investigating it for longevity" → extract FOXO3 only. "longevity" is research context.
+- "Annotate FOXO3 for longevity" → extract FOXO3 only. "longevity" describes research purpose, not an annotation target.
+- "Annotate TP53 and its association with cancer" → extract TP53 AND cancer (explicit relationship between two named entities).
+- "Annotate FOXO3 and BRCA1" → extract both (both are annotation targets).
+Trigger phrases that signal a SEPARATE task (NOT annotation): "find papers", "tell me about", "what clinical trials", "for longevity", "about aging", "its role in", "investigating it for".
+
+### STRICT RULES:
+- Use only node types and relationships specified in the schema.
+- Do not invent or reverse relationships.
+- Only add property keys if mentioned in the user query — never infer from your knowledge.
+- Never infer an id from your knowledge.
+- NEVER create nodes for entities not explicitly named in the query.
+- If the query provides multiple values for the same node type, treat them as ONE list node with `is_list: true` and a comma-separated property value.
+- Only add relationships when the query EXPLICITLY names a second entity type or uses relational words like "related to", "transcripts of", "regulates", etc.
+
+### CRITICAL ID vs PROPERTIES:
+- Database ID (e.g. "ensg00000186092") → put in `id` field
+- Name/identifier (e.g. "BRCA1") → put in `properties`
+
+### Response format (JSON only, no extra text):
+{{
+  "nodes": [
+    {{
+      "node_id": "label_1",
+      "id": "id_or_empty_string",
+      "type": "label",
+      "is_list": false,
+      "properties": {{
+        "key": "value"
+      }}
+    }}
+  ],
+  "predicates": [
+    {{
+      "type": "predicate",
+      "source": "label_1",
+      "target": "label_2"
+    }}
   ]
 }}
 """
