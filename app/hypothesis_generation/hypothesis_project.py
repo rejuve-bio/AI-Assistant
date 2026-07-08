@@ -99,6 +99,59 @@ class HypothesisProjectMixin:
 
     # --- Project context validation ---
 
+    @staticmethod
+    def _extract_hyp_id(h):
+        return h.get("id") or h.get("hypothesis_id") or h.get("graph_id") or h.get("hyp_id")
+
+    def _evaluate_variant_match(
+        self, token, project_id, project_name, variant, tissue, norm_variant,
+        is_sample, has_variant, has_tissue, project_variants, project_tissues,
+        project_hypotheses, projects, variant_found_in
+    ):
+        if not has_variant:
+            return None
+        actual_v = next((v for v in project_variants if v and self._normalize_field(v) == norm_variant), variant)
+        existing_hyp = next(
+            (h for h in project_hypotheses
+             if self._extract_hyp_id(h) and h.get("variant")
+             and self._normalize_field(h.get("variant", "")) == norm_variant),
+            None,
+        )
+        existing_hyp_id = self._extract_hyp_id(existing_hyp) if existing_hyp else None
+        existing_tissue = (existing_hyp or {}).get("tissue_selected", "")
+        variant_found_in.append({
+            "project_id": project_id,
+            "project_name": project_name,
+            "actual_variant": actual_v,
+            "tissues": project_tissues,
+            "is_sample": is_sample,
+            "existing_hyp_id": existing_hyp_id,
+        })
+        if is_sample and existing_hyp_id:
+            if has_tissue and self._normalize_field(tissue) != self._normalize_field(existing_tissue):
+                logger.info("Different tissue requested (%s vs existing %s) — allowing new generation", tissue, existing_tissue)
+                return project_id, None
+            return None, {
+                "error_type": "existing_hypothesis",
+                "variant": actual_v,
+                "hypothesis_id": existing_hyp_id,
+                "project_id": project_id,
+                "tissue_used": existing_tissue,
+                "available_tissues": project_tissues,
+            }
+        if has_tissue:
+            if is_sample:
+                logger.info("Validation successful — sample project %s", project_id)
+                return project_id, None
+            sample_info = self._get_sample_project_info(token, projects)
+            return None, {
+                "error_type": "non_sample_project",
+                "variant": variant,
+                "project_name": project_name,
+                "sample_info": sample_info,
+            }
+        return None
+
     def validate_project_context(self, token: str, variant: str, tissue: str) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
         """
         Validate variant + tissue against user's projects.
@@ -125,56 +178,13 @@ class HypothesisProjectMixin:
                 continue
 
             norm_variant = self._normalize_field(variant)
-
-            if has_variant:
-                actual_v = next((v for v in project_variants if v and self._normalize_field(v) == norm_variant), variant)
-
-                def _extract_hyp_id(h):
-                    return h.get("id") or h.get("hypothesis_id") or h.get("graph_id") or h.get("hyp_id")
-
-                existing_hyp = next(
-                    (h for h in project_hypotheses
-                     if _extract_hyp_id(h) and h.get("variant")
-                     and self._normalize_field(h.get("variant", "")) == norm_variant),
-                    None,
-                )
-                existing_hyp_id = _extract_hyp_id(existing_hyp) if existing_hyp else None
-                existing_tissue = (existing_hyp or {}).get("tissue_selected", "")
-
-                variant_found_in.append({
-                    "project_id": project_id,
-                    "project_name": project_name,
-                    "actual_variant": actual_v,
-                    "tissues": project_tissues,
-                    "is_sample": is_sample,
-                    "existing_hyp_id": existing_hyp_id,
-                })
-
-                if is_sample and existing_hyp_id:
-                    if has_tissue and self._normalize_field(tissue) != self._normalize_field(existing_tissue):
-                        logger.info("Different tissue requested (%s vs existing %s) — allowing new generation", tissue, existing_tissue)
-                        return project_id, None
-                    return None, {
-                        "error_type": "existing_hypothesis",
-                        "variant": actual_v,
-                        "hypothesis_id": existing_hyp_id,
-                        "project_id": project_id,
-                        "tissue_used": existing_tissue,
-                        "available_tissues": project_tissues,
-                    }
-
-                if has_tissue:
-                    if is_sample:
-                        logger.info("Validation successful — sample project %s", project_id)
-                        return project_id, None
-                    else:
-                        sample_info = self._get_sample_project_info(token, projects)
-                        return None, {
-                            "error_type": "non_sample_project",
-                            "variant": variant,
-                            "project_name": project_name,
-                            "sample_info": sample_info,
-                        }
+            result = self._evaluate_variant_match(
+                token, project_id, project_name, variant, tissue, norm_variant,
+                is_sample, has_variant, has_tissue, project_variants, project_tissues,
+                project_hypotheses, projects, variant_found_in,
+            )
+            if result is not None:
+                return result
 
         if not variant_found_in:
             all_variants = self._collect_all_variants(token, projects)
@@ -225,6 +235,25 @@ class HypothesisProjectMixin:
 
     # --- User-facing error formatting ---
 
+    def _format_variant_not_found(self, variant: str, all_variants: list) -> Dict[str, Any]:
+        sample_variants = [v for v in all_variants if "sample" in v.get("project_name", "").lower()]
+        non_sample = [v for v in all_variants if "sample" not in v.get("project_name", "").lower()]
+        if sample_variants:
+            sv = sample_variants[0]
+            return {"text": (
+                f"I couldn't find **{variant}** in your projects, but there's a ready-to-use sample — "
+                f"**{sv['project_name']}** with variant **{sv['variant']}**. "
+                f"You can see the full pipeline in action: from LDSC enrichment to pathway analysis to a final biological hypothesis. "
+                f"Would you like to explore it using the sample?"
+            )}
+        if non_sample:
+            variant_list = "\n".join([f"- {v['variant']} ({v['project_name']})" for v in non_sample])
+            return {"text": (
+                f"I couldn't find **{variant}** in your projects. Here's what you do have:\n\n"
+                f"{variant_list}\n\nWould you like to run a hypothesis on one of these instead?"
+            )}
+        return {"text": f"I couldn't find **{variant}** in any of your projects and no other variants are available yet."}
+
     def _format_validation_error(self, error_details: Dict[str, Any]) -> Dict[str, Any]:
         error_type = error_details.get("error_type")
         variant = error_details.get("variant")
@@ -234,24 +263,7 @@ class HypothesisProjectMixin:
             return {"text": "Since there's no project created yet, you can use the platform UI to generate a new hypothesis. In the meantime, I can still assist you based on the hypotheses you've already generated."}
 
         if error_type == "variant_not_found":
-            all_variants = error_details.get("all_variants", [])
-            sample_variants = [v for v in all_variants if "sample" in v.get("project_name", "").lower()]
-            non_sample = [v for v in all_variants if "sample" not in v.get("project_name", "").lower()]
-            if sample_variants:
-                sv = sample_variants[0]
-                return {"text": (
-                    f"I couldn't find **{variant}** in your projects, but there's a ready-to-use sample — "
-                    f"**{sv['project_name']}** with variant **{sv['variant']}**. "
-                    f"You can see the full pipeline in action: from LDSC enrichment to pathway analysis to a final biological hypothesis. "
-                    f"Would you like to explore it using the sample?"
-                )}
-            elif non_sample:
-                variant_list = "\n".join([f"- {v['variant']} ({v['project_name']})" for v in non_sample])
-                return {"text": (
-                    f"I couldn't find **{variant}** in your projects. Here's what you do have:\n\n"
-                    f"{variant_list}\n\nWould you like to run a hypothesis on one of these instead?"
-                )}
-            return {"text": f"I couldn't find **{variant}** in any of your projects and no other variants are available yet."}
+            return self._format_variant_not_found(variant, error_details.get("all_variants", []))
 
         if error_type == "tissue_missing":
             project_name = error_details.get("project_name", "your project")

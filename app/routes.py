@@ -17,30 +17,48 @@ logger = logging.getLogger(__name__)
 AUDIO_MIME = "audio/mpeg"
 
 
+def _resolve_upload_content_id(response, uploaded_filename, user_id):
+    is_duplicate = response.get("text") == "PDF already exists."
+    if is_duplicate:
+        pdf_files = mongo_db_manager.get_user_content_files(user_id, "pdf")
+        existing = next((f for f in pdf_files if f.get("filename") == uploaded_filename), None)
+        return existing.get("content_id") if existing else None
+    return response.get("resource", {}).get("content_id")
+
+
 def _handle_uploads(uploaded_files, ai_assistant, user_id, content_ids):
     upload_results = []
     newly_uploaded_content_ids = []
 
     for uploaded in uploaded_files:
-        if uploaded.filename and uploaded.filename.lower().endswith(".pdf"):
-            response = ai_assistant.rag.save_retrievable_docs(uploaded, user_id)
-            if isinstance(response, dict):
-                is_duplicate = response.get("text") == "PDF already exists."
-                if is_duplicate:
-                    pdf_files = mongo_db_manager.get_user_content_files(user_id, "pdf")
-                    existing = next((f for f in pdf_files if f.get("filename") == uploaded.filename), None)
-                    if existing:
-                        newly_uploaded_content_ids.append(existing.get("content_id"))
-                else:
-                    new_id = response.get("resource", {}).get("content_id")
-                    if new_id:
-                        newly_uploaded_content_ids.append(new_id)
-                upload_results.append({"filename": uploaded.filename, "response": response})
+        if not (uploaded.filename and uploaded.filename.lower().endswith(".pdf")):
+            continue
+        response = ai_assistant.rag.save_retrievable_docs(uploaded, user_id)
+        if isinstance(response, dict):
+            new_id = _resolve_upload_content_id(response, uploaded.filename, user_id)
+            if new_id:
+                newly_uploaded_content_ids.append(new_id)
+            upload_results.append({"filename": uploaded.filename, "response": response})
 
     if newly_uploaded_content_ids:
         content_ids = content_ids + newly_uploaded_content_ids if content_ids else newly_uploaded_content_ids
 
     return upload_results, content_ids
+
+
+def _parse_content_ids(context_id):
+    if context_id is None:
+        return None
+    if isinstance(context_id, list):
+        return context_id
+    if not isinstance(context_id, str):
+        return None
+    if context_id.strip().startswith("["):
+        try:
+            return json.loads(context_id)
+        except Exception:
+            return [context_id]
+    return [cid.strip() for cid in context_id.split(",") if cid.strip()]
 
 
 def _parse_context(data):
@@ -63,18 +81,7 @@ def _parse_context(data):
         elif not isinstance(url, list):
             url = list(url)
 
-    content_ids = None
-    if context_id is not None:
-        if isinstance(context_id, list):
-            content_ids = context_id
-        elif isinstance(context_id, str):
-            if context_id.strip().startswith("["):
-                try:
-                    content_ids = json.loads(context_id)
-                except Exception:
-                    content_ids = [context_id]
-            else:
-                content_ids = [cid.strip() for cid in context_id.split(",") if cid.strip()]
+    content_ids = _parse_content_ids(context_id)
 
     return question, graph_id, resource, url, json_query, content_ids
 
@@ -455,51 +462,25 @@ def clear_user_history(current_user_id, auth_token):
 
 def _process_hypothesis_question(projects_api_url, headers, projects):
     project_map = []
-    all_genes = set()
-    all_tissues = set()
-    all_phenotypes = set()
 
     for p in projects:
         pid = p.get("id")
-        name = p.get("name")
-        phenotype = p.get("phenotype")
-
         if not pid:
             continue
 
-        d = requests.get(
-            projects_api_url,
-            headers=headers,
-            params={"id": pid},
-            timeout=15
-        )
-
+        d = requests.get(projects_api_url, headers=headers, params={"id": pid}, timeout=15)
         if d.status_code != 200:
             logger.warning(f"Project {pid} detail failed")
             continue
 
         data = d.json()
-
-        genes = set()
-        tissues = set()
-
-        for h in data.get("hypotheses", []):
-            if h.get("causal_gene"):
-                genes.add(h["causal_gene"])
-                all_genes.add(h["causal_gene"])
-
-        for t in data.get("ldsc", {}).get("tissues", []):
-            if t.get("name"):
-                tissues.add(t["name"])
-                all_tissues.add(t["name"])
-
-        if phenotype:
-            all_phenotypes.add(phenotype)
+        genes = {h["causal_gene"] for h in data.get("hypotheses", []) if h.get("causal_gene")}
+        tissues = {t["name"] for t in data.get("ldsc", {}).get("tissues", []) if t.get("name")}
 
         project_map.append({
             "project_id": pid,
-            "project_name": name,
-            "phenotype": phenotype,
+            "project_name": p.get("name"),
+            "phenotype": p.get("phenotype"),
             "causal_genes": list(genes),
             "tissues": list(tissues)
         })

@@ -2,6 +2,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+_SECTION_SEP = "\n\n---\n\n"
+
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 
@@ -85,6 +87,23 @@ class AiAssistance:
                 sections.append("**ClinicalTrials.gov Sources:**\n" + "\n".join(links))
         return "\n\n".join(sections)
 
+    def _collect_content_retrieval(self, content_resp: dict, agent_outputs: list) -> None:
+        content_parts = content_resp.get("text", [])
+        if isinstance(content_parts, list):
+            for part in content_parts:
+                if isinstance(part, dict) and part.get("content"):
+                    agent_outputs.append({
+                        "agent": "content_retrieval_agent",
+                        "source": part.get("source", "external content"),
+                        "content": part["content"],
+                    })
+        elif isinstance(content_parts, str) and content_parts:
+            agent_outputs.append({
+                "agent": "content_retrieval_agent",
+                "source": ", ".join(content_resp.get("sources", ["external content"])),
+                "content": content_parts,
+            })
+
     def _aggregate_content_responses(self, state: dict, agent_outputs: list) -> Any:
         for key, agent_name, default_source in (
             ("rag_response", "rag_agent", KNOWLEDGE_BASE),
@@ -104,22 +123,101 @@ class AiAssistance:
                     })
         content_resp = state.get("content_retrieval_response")
         if content_resp:
-            content_parts = content_resp.get("text", [])
-            if isinstance(content_parts, list):
-                for part in content_parts:
-                    if isinstance(part, dict) and part.get("content"):
-                        agent_outputs.append({
-                            "agent": "content_retrieval_agent",
-                            "source": part.get("source", "external content"),
-                            "content": part["content"],
-                        })
-            elif isinstance(content_parts, str) and content_parts:
-                agent_outputs.append({
-                    "agent": "content_retrieval_agent",
-                    "source": ", ".join(content_resp.get("sources", ["external content"])),
-                    "content": content_parts,
-                })
+            self._collect_content_retrieval(content_resp, agent_outputs)
         return state.get("resource")
+
+    def _handle_hypothesis_aggregate(self, state: dict, hyp_resp: dict) -> Dict[str, Any]:
+        hyp_succeeded = (
+            isinstance(hyp_resp.get("resource"), dict)
+            and hyp_resp["resource"].get("type") == "hypothesis"
+        )
+        if hyp_succeeded:
+            final_text = hyp_resp.get("text", "").rstrip()
+            sources_footer = self._build_sources_footer(state)
+            if sources_footer:
+                final_text += "\n\n" + sources_footer
+            return {
+                "response": {"text": final_text, "json_format": None, "organism": None},
+                "resource": hyp_resp.get("resource"),
+            }
+        hyp_text = (
+            hyp_resp.get("text")
+            or "The hypothesis service is not returning any results at the moment. "
+               "There is nothing I can help with directly, but I can search for similar "
+               "clinical trials and published research — please try asking about the topic directly."
+        )
+        return {"response": {"text": hyp_text, "json_format": None, "organism": None}}
+
+    def _build_json_note(self, json_format: Optional[dict]) -> str:
+        if not json_format:
+            return ""
+        nodes = json_format.get("nodes", [])
+        predicates = json_format.get("predicates", [])
+        if nodes or predicates:
+            node_ids = [n.get("id", "") for n in nodes if n.get("id")]
+            return (
+                f"\n\nNote: An annotation query was successfully built for "
+                f"{', '.join(node_ids) if node_ids else 'the requested entities'} "
+                f"and will be displayed on the graph."
+            )
+        return "\n\nNote: Structured annotation data is also available for this query."
+
+    def _build_sources_combined(self, agent_outputs: list) -> str:
+        sources_info = []
+        for output in agent_outputs:
+            logger.info(
+                "=== [%s] source=%s ===\n%s",
+                output["agent"], output.get("source", "unknown"),
+                str(output.get("content", ""))[:300],
+            )
+            content = output.get("content", "")
+            if isinstance(content, dict):
+                content = str(content)
+            content = content.strip() if isinstance(content, str) else ""
+            if content:
+                sources_info.append(f"From {output.get('source', 'unknown')}: {content}")
+        return "\n\n".join(sources_info)
+
+    def _synthesize_agent_outputs(
+        self, state, agent_outputs, user_query, json_format, organism,
+        needs_confirm, confirmation_text, resource_to_save
+    ) -> Dict[str, Any]:
+        try:
+            combined_text = self._build_sources_combined(agent_outputs)
+            json_note = self._build_json_note(json_format)
+            query_types = state.get("query_types", [])
+            if "hypothesis_generation" in query_types and state.get("graph_id"):
+                prompt = hypothesis_aggregator_prompt.format(user_query=user_query, combined_text=combined_text)
+            else:
+                prompt = aggregator_prompt.format(user_query=user_query, combined_text=combined_text, json_note=json_note)
+
+            aggregated_text = self.advanced_llm.generate(prompt)
+            logger.info("Aggregated response: %s...", aggregated_text[:100])
+
+            sources_footer = self._build_sources_footer(state)
+            if sources_footer:
+                aggregated_text = aggregated_text.rstrip() + "\n\n" + sources_footer
+            if needs_confirm and confirmation_text:
+                aggregated_text = aggregated_text.rstrip() + _SECTION_SEP + confirmation_text
+
+            return {
+                "response": {"text": aggregated_text, "json_format": json_format, "organism": organism},
+                "resource": resource_to_save,
+            }
+        except Exception as e:
+            logger.error("Error in aggregation: %s", str(e), exc_info=True)
+            fallback_parts = []
+            for output in agent_outputs:
+                content = output.get("content", "")
+                if isinstance(content, dict):
+                    content = str(content)
+                if content:
+                    fallback_parts.append(f"**From {output.get('source', 'unknown')}:**\n{content.strip()}")
+            fallback_text = "\n\n".join(fallback_parts) if fallback_parts else "Annotation data retrieved."
+            return {
+                "response": {"text": fallback_text, "json_format": json_format, "organism": organism},
+                "resource": resource_to_save,
+            }
 
     def _aggregate_responses(self, state: dict) -> Dict[str, Any]:
         if state.get("stop_pipeline") and state.get("response", {}).get("text"):
@@ -128,26 +226,7 @@ class AiAssistance:
 
         hyp_resp = state.get("hypothesis_response") or {}
         if hyp_resp:
-            hyp_succeeded = (
-                isinstance(hyp_resp.get("resource"), dict)
-                and hyp_resp["resource"].get("type") == "hypothesis"
-            )
-            if hyp_succeeded:
-                final_text = hyp_resp.get("text", "").rstrip()
-                sources_footer = self._build_sources_footer(state)
-                if sources_footer:
-                    final_text += "\n\n" + sources_footer
-                return {
-                    "response": {"text": final_text, "json_format": None, "organism": None},
-                    "resource": hyp_resp.get("resource"),
-                }
-            hyp_text = (
-                hyp_resp.get("text")
-                or "The hypothesis service is not returning any results at the moment. "
-                   "There is nothing I can help with directly, but I can search for similar "
-                   "clinical trials and published research — please try asking about the topic directly."
-            )
-            return {"response": {"text": hyp_text, "json_format": None, "organism": None}}
+            return self._handle_hypothesis_aggregate(state, hyp_resp)
 
         user_query = state.get("user_query", "")
         logger.info("Aggregating responses from multiple agents with source attribution")
@@ -155,17 +234,16 @@ class AiAssistance:
         agent_outputs: List[Dict] = []
         json_format = None
         organism = None
-
-        annotation_resp = state.get("annotation_response")
         needs_confirm = False
         confirmation_text = ""
+
+        annotation_resp = state.get("annotation_response")
         if annotation_resp:
             json_format, organism, needs_confirm = self.annotation_graph.aggregate_annotation_response(
                 annotation_resp, agent_outputs
             )
             if needs_confirm:
                 confirmation_text = annotation_resp.get("text", "")
-                # Don't early-return — collect other agent outputs first so they aren't lost
 
         resource_to_save = self._aggregate_content_responses(state, agent_outputs)
 
@@ -182,78 +260,14 @@ class AiAssistance:
             }
 
         if not agent_outputs:
-            # No other agents produced output — return confirmation alone (or generic error)
             if needs_confirm:
                 return {"response": {"text": confirmation_text, "json_format": None}}
             return {"response": {"text": "I couldn't find any relevant information to answer your query.", "json_format": None}}
 
-        try:
-            sources_info = []
-            for output in agent_outputs:
-                logger.info(
-                    "=== [%s] source=%s ===\n%s",
-                    output["agent"], output.get("source", "unknown"),
-                    str(output.get("content", ""))[:300],
-                )
-                content = output.get("content", "")
-                if isinstance(content, dict):
-                    content = str(content)
-                content = content.strip() if isinstance(content, str) else ""
-                if content:
-                    sources_info.append(f"From {output.get('source', 'unknown')}: {content}")
-
-            combined_text = "\n\n".join(sources_info)
-
-            json_note = ""
-            if json_format:
-                nodes = json_format.get("nodes", [])
-                predicates = json_format.get("predicates", [])
-                if nodes or predicates:
-                    node_ids = [n.get("id", "") for n in nodes if n.get("id")]
-                    json_note = (
-                        f"\n\nNote: An annotation query was successfully built for "
-                        f"{', '.join(node_ids) if node_ids else 'the requested entities'} "
-                        f"and will be displayed on the graph."
-                    )
-                else:
-                    json_note = "\n\nNote: Structured annotation data is also available for this query."
-
-            query_types = state.get("query_types", [])
-            if "hypothesis_generation" in query_types and state.get("graph_id"):
-                prompt = hypothesis_aggregator_prompt.format(user_query=user_query, combined_text=combined_text)
-            else:
-                prompt = aggregator_prompt.format(user_query=user_query, combined_text=combined_text, json_note=json_note)
-
-            aggregated_text = self.advanced_llm.generate(prompt)
-            logger.info("Aggregated response: %s...", aggregated_text[:100])
-
-            sources_footer = self._build_sources_footer(state)
-            if sources_footer:
-                aggregated_text = aggregated_text.rstrip() + "\n\n" + sources_footer
-
-            # If annotation also needs confirmation, append it after the synthesized answer
-            if needs_confirm and confirmation_text:
-                aggregated_text = aggregated_text.rstrip() + "\n\n---\n\n" + confirmation_text
-
-            return {
-                "response": {"text": aggregated_text, "json_format": json_format, "organism": organism},
-                "resource": resource_to_save,
-            }
-
-        except Exception as e:
-            logger.error("Error in aggregation: %s", str(e), exc_info=True)
-            fallback_parts = []
-            for output in agent_outputs:
-                content = output.get("content", "")
-                if isinstance(content, dict):
-                    content = str(content)
-                if content:
-                    fallback_parts.append(f"**From {output.get('source', 'unknown')}:**\n{content.strip()}")
-            fallback_text = "\n\n".join(fallback_parts) if fallback_parts else "Annotation data retrieved."
-            return {
-                "response": {"text": fallback_text, "json_format": json_format, "organism": organism},
-                "resource": resource_to_save,
-            }
+        return self._synthesize_agent_outputs(
+            state, agent_outputs, user_query, json_format, organism,
+            needs_confirm, confirmation_text, resource_to_save,
+        )
 
     def _finalize_response(self, state: dict) -> Dict[str, Any]:
         response = state.get("response", {})
@@ -437,7 +451,7 @@ class AiAssistance:
         if not last_a:
             return None
 
-        reflection_marker = "\n\n---\n\nThat was my previous answer to this question."
+        reflection_marker = _SECTION_SEP + "That was my previous answer to this question."
 
         # If the stored answer already contains the reflection suffix, the user already
         # saw "did that cover it?" and is asking a third time — they want more. Re-run.
@@ -447,7 +461,7 @@ class AiAssistance:
 
         # Only inspect the main answer body (before any annotation confirmation prompt)
         # because confirmation text after "---" contains "couldn't find" by design.
-        main_answer = last_a.split("\n\n---\n\n")[0]
+        main_answer = last_a.split(_SECTION_SEP)[0]
         bad_signals = [
             "couldn't find", "could not find",
             "service is not returning", "no results",
@@ -460,7 +474,7 @@ class AiAssistance:
 
         logger.info("Repeat question detected with good previous answer — reflecting")
         # Strip any confirmation prompts (appended after "---") — they are stale.
-        core_answer = last_a.split("\n\n---\n\n")[0].rstrip()
+        core_answer = last_a.split(_SECTION_SEP)[0].rstrip()
 
         # Mention any knowledge graph that was generated, without re-sending it.
         last_json = last_entry.get("context", {}).get("json_format")
@@ -496,6 +510,31 @@ class AiAssistance:
             content_ids=content_ids,
             urls=urls,
             agents_used=[],
+        )
+        emit_to_user(user=user_id, message=resp, status="completed")
+        return resp
+
+    def _handle_pending_hypothesis_states(
+        self, user_id, query, token, history, graph_id, content_ids, urls
+    ) -> Optional[Dict[str, Any]]:
+        if self.hypothesis_generation.has_pending_sample_offer_for(user_id):
+            resp = self.hypothesis_generation.handle_sample_offer_response(user_id, query)
+        elif self.hypothesis_generation.has_pending_tissue_for(user_id):
+            resp = self.hypothesis_generation.handle_tissue_selection(user_id, query, token, history=history)
+        elif self.hypothesis_generation.has_pending_go_for(user_id):
+            resp = self.hypothesis_generation.handle_go_selection(user_id, query, token, history=history)
+        else:
+            return None
+        if resp is None:
+            return None
+        self.store.create_history(
+            user_id=user_id,
+            user_message=query,
+            assistant_answer=resp.get("text", ""),
+            graph_id_referenced=graph_id,
+            content_ids=content_ids,
+            urls=urls,
+            agents_used=resp.get("agents_completed", ["hypothesis_agent"]),
         )
         emit_to_user(user=user_id, message=resp, status="completed")
         return resp
@@ -546,58 +585,15 @@ class AiAssistance:
 
             logger.info("Histories: %s  Memories: %s", history, memory)
 
-            # Repeat-question detection: if the user asks the exact same question as their
-            # immediately preceding one (nothing in between), reflect the previous answer
-            # instead of re-running all agents. If the previous answer was poor (service
-            # failure, no results), fall through and re-run.
             repeat_resp = self._handle_repeat_question(query, history, user_id, graph_id, content_ids, urls)
             if repeat_resp is not None:
                 return repeat_resp
 
-            if self.hypothesis_generation.has_pending_sample_offer_for(user_id):
-                resp = self.hypothesis_generation.handle_sample_offer_response(user_id, query, token)
-                if resp is not None:
-                    self.store.create_history(
-                        user_id=user_id,
-                        user_message=query,
-                        assistant_answer=resp.get("text", ""),
-                        graph_id_referenced=graph_id,
-                        content_ids=content_ids,
-                        urls=urls,
-                        agents_used=resp.get("agents_completed", ["hypothesis_agent"]),
-                    )
-                    emit_to_user(user=user_id, message=resp, status="completed")
-                    return resp
-
-            if self.hypothesis_generation.has_pending_tissue_for(user_id):
-                resp = self.hypothesis_generation.handle_tissue_selection(user_id, query, token, history=history)
-                if resp is not None:
-                    self.store.create_history(
-                        user_id=user_id,
-                        user_message=query,
-                        assistant_answer=resp.get("text", ""),
-                        graph_id_referenced=graph_id,
-                        content_ids=content_ids,
-                        urls=urls,
-                        agents_used=resp.get("agents_completed", ["hypothesis_agent"]),
-                    )
-                    emit_to_user(user=user_id, message=resp, status="completed")
-                    return resp
-
-            if self.hypothesis_generation.has_pending_go_for(user_id):
-                resp = self.hypothesis_generation.handle_go_selection(user_id, query, token, history=history)
-                if resp is not None:
-                    self.store.create_history(
-                        user_id=user_id,
-                        user_message=query,
-                        assistant_answer=resp.get("text", ""),
-                        graph_id_referenced=graph_id,
-                        content_ids=content_ids,
-                        urls=urls,
-                        agents_used=resp.get("agents_completed", ["hypothesis_agent"]),
-                    )
-                    emit_to_user(user=user_id, message=resp, status="completed")
-                    return resp
+            pending_resp = self._handle_pending_hypothesis_states(
+                user_id, query, token, history, graph_id, content_ids, urls
+            )
+            if pending_resp is not None:
+                return pending_resp
 
             if history or any(memory):
                 prompt = conversation_prompt.format(

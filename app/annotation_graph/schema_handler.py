@@ -135,6 +135,17 @@ class SchemaHandler:
 
         return schema  
     
+    def _add_edge_entries(self, adj_list, sources, targets, label):
+        for s in sources:
+            s = s.replace(" ", "_")
+            if s in self.parent_nodes:
+                continue
+            adj_list.setdefault(s, {}).setdefault(label, [])
+            for t in targets:
+                t = t.replace(" ", "_")
+                if t not in self.parent_nodes and t not in adj_list[s][label]:
+                    adj_list[s][label].append(t)
+
     def _process_edge_entry(self, adj_list, k, v):
         if "." in k:
             return
@@ -147,15 +158,7 @@ class SchemaHandler:
             return
         sources = [source] if isinstance(source, str) else source
         targets = [target] if isinstance(target, str) else target
-        for s in sources:
-            s = s.replace(" ", "_")
-            if s in self.parent_nodes:
-                continue
-            adj_list.setdefault(s, {}).setdefault(label, [])
-            for t in targets:
-                t = t.replace(" ", "_")
-                if t not in self.parent_nodes and t not in adj_list[s][label]:
-                    adj_list[s][label].append(t)
+        self._add_edge_entries(adj_list, sources, targets, label)
 
     def get_adjacency_list(self):
         adj_list = {}

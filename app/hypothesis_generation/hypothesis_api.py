@@ -102,7 +102,7 @@ class HypothesisAPIMixin:
             return {"error": f"Final generation failed: {error}"}
         return response
 
-    def get_by_hypothesis_id(self, token: str, hypothesis_id: str, user_id, query=None) -> Dict[str, Any]:
+    def get_by_hypothesis_id(self, token: str, hypothesis_id: str, user_id) -> Dict[str, Any]:
         logger.info("Retrieving hypothesis by ID: %s", hypothesis_id)
         emit_to_user(user=user_id, message=f"Retrieving hypothesis by ID: {hypothesis_id}")
         try:

@@ -68,7 +68,7 @@ class HypothesisGeneration(HypothesisAPIMixin, HypothesisProjectMixin):
 
     # --- Interaction handlers ---
 
-    def handle_sample_offer_response(self, user_id: str, query: str, token: str) -> Optional[Dict[str, Any]]:
+    def handle_sample_offer_response(self, user_id: str, query: str) -> Optional[Dict[str, Any]]:
         pending = self._get_pending_sample_offer(user_id)
         if not pending:
             return None
@@ -92,25 +92,33 @@ class HypothesisGeneration(HypothesisAPIMixin, HypothesisProjectMixin):
             return {"text": "I couldn't find available tissues for the sample project. Please try again later.", "agents_completed": ["hypothesis_agent"]}
         return {"text": "Just say **yes** to run the sample project, or **no** if you'd prefer not to.", "agents_completed": ["hypothesis_agent"]}
 
+    @staticmethod
+    def _build_history_ctx(history: list) -> str:
+        if not history:
+            return ""
+        lines = []
+        for h in history[-2:]:
+            q = h.get("question", "")
+            a = (h.get("context") or {}).get("answer", "")
+            if q:
+                lines.append(f"User previously: {q}")
+            if a:
+                lines.append(f"Assistant previously: {a[:200]}")
+        return "Recent conversation context:\n" + "\n".join(lines) + "\n\n" if lines else ""
+
     def _llm_pick_from_list(self, query: str, options: List[str], prompt_template: str, label: str, history: list = None) -> Optional[int]:
         numbered = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)])
-        history_ctx = ""
-        if history:
-            lines = []
-            for h in history[-2:]:
-                q, a = h.get("question", ""), (h.get("context") or {}).get("answer", "")
-                if q: lines.append(f"User previously: {q}")
-                if a: lines.append(f"Assistant previously: {a[:200]}")
-            if lines:
-                history_ctx = "Recent conversation context:\n" + "\n".join(lines) + "\n\n"
+        history_ctx = self._build_history_ctx(history)
         try:
             text = self.llm.generate(history_ctx + prompt_template.format(query=query, **{label: numbered}))
             text = text.strip() if isinstance(text, str) else str(text).strip()
-            if text == "NEW_QUESTION": return None
-            if text == "UNCLEAR":      return -1
-            if text == "SMALL_TALK":   return -2
+            if text == "NEW_QUESTION":
+                return None
+            if text in ("UNCLEAR", "SMALL_TALK"):
+                return -1 if text == "UNCLEAR" else -2
             idx = int(text) - 1
-            if 0 <= idx < len(options): return idx
+            if 0 <= idx < len(options):
+                return idx
         except Exception:
             pass
         return -1
@@ -212,6 +220,70 @@ class HypothesisGeneration(HypothesisAPIMixin, HypothesisProjectMixin):
             return {"text": f"Failed to generate final hypothesis summary: {step4['error']}"}
         return {"text": step4["summary"], "resource": {"id": step4.get("hypothesis_id", enrich_id), "type": "hypothesis", "graph": step4["graph"]}, "agents_completed": ["hypothesis_agent"]}
 
+    def _handle_multiple_variants(self, token, params, user_id, variants, tissue) -> Dict[str, Any]:
+        found = []
+        failed_variants = []
+        last_error_details = None
+        for v in variants:
+            validated_project_id, error_details = self.validate_project_context(token, v, tissue)
+            if validated_project_id:
+                found.append((v, validated_project_id))
+            else:
+                failed_variants.append(v)
+                last_error_details = error_details
+
+        parts = []
+        if found:
+            first_v, first_pid = found[0]
+            queued = [v for v, _ in found[1:]] + failed_variants
+            result = self._run_enrichment_pipeline(token, {**params, "variant": first_v, "project_id": first_pid}, user_id)
+            parts.append(result.get("text", ""))
+            if queued:
+                parts.append(f"*(Starting with **{first_v}**. Once done, ask me to run: {', '.join(queued)})*")
+        elif failed_variants and last_error_details:
+            error_result = self._format_validation_error(last_error_details)
+            failed_list = " and ".join(f"**{v}**" for v in failed_variants)
+            parts.append(f"I couldn't find {failed_list} in your projects.\n\n{error_result.get('text', '')}")
+            if (last_error_details or {}).get("error_type") == "non_sample_project":
+                sample_info = last_error_details.get("sample_info")
+                if sample_info:
+                    self.set_pending_sample_offer(user_id, variant=failed_variants[0], sample_project_id=sample_info.get("id", ""), sample_tissues=sample_info.get("tissues", []))
+        return {"text": "\n\n".join(parts), "agents_completed": ["hypothesis_agent"]}
+
+    def _handle_existing_hypothesis(self, token, user_id, variant, tissue, error_details) -> Dict[str, Any]:
+        hypothesis_id = error_details["hypothesis_id"]
+        tissue_used = error_details.get("tissue_used", "")
+        available_tissues = error_details.get("available_tissues", [])
+        other_tissues = [t for t in available_tissues if self._tissue_name(t) != tissue_used] if tissue_used else available_tissues
+        if other_tissues:
+            self.set_pending_tissue(user_id, variant=error_details["variant"], project_id=error_details["project_id"], available_tissues=other_tissues)
+        other_tissue_list = "\n".join([f"- {self._tissue_display(t)}" for t in other_tissues])
+        if tissue and self._normalize_field(tissue) == self._normalize_field(tissue_used):
+            msg = (
+                f"**{tissue_used}** was already used for the existing hypothesis on **{error_details['variant']}**. "
+                f"To generate a new one, pick a different tissue:\n\n{other_tissue_list}"
+                if other_tissue_list
+                else f"**{tissue_used}** was already used and there are no other tissues available."
+            )
+            return {"text": msg, "agents_completed": ["hypothesis_agent"], "is_existing_hypothesis": True}
+        existing = self.get_by_hypothesis_id(token, hypothesis_id, user_id)
+        hyp_meta = redis_manager.get_hypothesis_meta(hypothesis_id) if redis_manager.is_available else None
+        go_used = (hyp_meta or {}).get("go_term_name", "")
+        go_term_part = f", **{go_used}** GO term" if go_used else ""
+        meta_line = f"*(Generated using: **{tissue_used}** tissue{go_term_part})*\n\n" if tissue_used else ""
+        offer_line = f"\n\n---\nWant to generate a new hypothesis with a different tissue? Here are your options:\n{other_tissue_list}" if other_tissue_list else ""
+        return {"text": f"{meta_line}{existing.get('text', '')}{offer_line}", "resource": existing.get("resource"), "agents_completed": ["hypothesis_agent"], "is_existing_hypothesis": True}
+
+    def _handle_single_variant_error(self, user_id, variant, error_details, error_type) -> Dict[str, Any]:
+        error_resp = self._format_validation_error(error_details)
+        if error_type in ("tissue_missing", "tissue_not_found"):
+            self.set_pending_tissue(user_id, variant=variant, project_id=error_details.get("project_id") or "", available_tissues=error_details.get("available_tissues", []))
+        elif error_type == "non_sample_project":
+            sample_info = error_details.get("sample_info")
+            if sample_info:
+                self.set_pending_sample_offer(user_id, variant=variant, sample_project_id=sample_info.get("id", ""), sample_tissues=sample_info.get("tissues", []))
+        return error_resp
+
     def generate_hypothesis(self, token: str, user_query: str, user_id: str) -> Dict[str, Any]:
         logger.info("Starting hypothesis generation for: %s", user_query)
         emit_to_user(user=user_id, message="Analyzing your query...")
@@ -225,43 +297,9 @@ class HypothesisGeneration(HypothesisAPIMixin, HypothesisProjectMixin):
         if not variant:
             return {"text": "Could not extract a genetic variant from your query. Please specify a variant (e.g. rs1421085)."}
 
-        # Handle multiple variants — validate all, then process one at a time
         variants = variant if isinstance(variant, list) else [variant]
         if len(variants) > 1:
-            found = []
-            failed_variants = []
-            last_error_details = None
-            for v in variants:
-                validated_project_id, error_details = self.validate_project_context(token, v, tissue)
-                if validated_project_id:
-                    found.append((v, validated_project_id))
-                else:
-                    failed_variants.append(v)
-                    last_error_details = error_details
-
-            parts = []
-
-            # Run the first found variant through the pipeline; queue the rest
-            if found:
-                first_v, first_pid = found[0]
-                queued = [v for v, _ in found[1:]] + failed_variants
-                single_params = {**params, "variant": first_v, "project_id": first_pid}
-                result = self._run_enrichment_pipeline(token, single_params, user_id)
-                parts.append(result.get("text", ""))
-                if queued:
-                    parts.append(f"*(Starting with **{first_v}**. Once done, ask me to run: {', '.join(queued)})*")
-            elif failed_variants and last_error_details:
-                # All failed — one consolidated error
-                error_result = self._format_validation_error(last_error_details)
-                failed_list = " and ".join(f"**{v}**" for v in failed_variants)
-                parts.append(f"I couldn't find {failed_list} in your projects.\n\n{error_result.get('text', '')}")
-                error_type = (last_error_details or {}).get("error_type")
-                if error_type == "non_sample_project":
-                    sample_info = last_error_details.get("sample_info")
-                    if sample_info:
-                        self.set_pending_sample_offer(user_id, variant=failed_variants[0], sample_project_id=sample_info.get("id", ""), sample_tissues=sample_info.get("tissues", []))
-
-            return {"text": "\n\n".join(parts), "agents_completed": ["hypothesis_agent"]}
+            return self._handle_multiple_variants(token, params, user_id, variants, tissue)
 
         variant = variants[0]
         params["variant"] = variant
@@ -271,26 +309,5 @@ class HypothesisGeneration(HypothesisAPIMixin, HypothesisProjectMixin):
             return self._run_enrichment_pipeline(token, params, user_id)
         error_type = error_details.get("error_type") if error_details else None
         if error_type == "existing_hypothesis":
-            hypothesis_id = error_details["hypothesis_id"]
-            tissue_used = error_details.get("tissue_used", "")
-            available_tissues = error_details.get("available_tissues", [])
-            other_tissues = [t for t in available_tissues if self._tissue_name(t) != tissue_used] if tissue_used else available_tissues
-            if other_tissues:
-                self.set_pending_tissue(user_id, variant=error_details["variant"], project_id=error_details["project_id"], available_tissues=other_tissues)
-            other_tissue_list = "\n".join([f"- {self._tissue_display(t)}" for t in other_tissues])
-            if tissue and self._normalize_field(tissue) == self._normalize_field(tissue_used):
-                return {"text": (f"**{tissue_used}** was already used for the existing hypothesis on **{error_details['variant']}**. To generate a new one, pick a different tissue:\n\n{other_tissue_list}" if other_tissue_list else f"**{tissue_used}** was already used and there are no other tissues available."), "agents_completed": ["hypothesis_agent"], "is_existing_hypothesis": True}
-            existing = self.get_by_hypothesis_id(token, hypothesis_id, user_id)
-            hyp_meta = redis_manager.get_hypothesis_meta(hypothesis_id) if redis_manager.is_available else None
-            go_used = (hyp_meta or {}).get("go_term_name", "")
-            meta_line = f"*(Generated using: **{tissue_used}** tissue{f', **{go_used}** GO term' if go_used else ''})*\n\n" if tissue_used else ""
-            offer_line = f"\n\n---\nWant to generate a new hypothesis with a different tissue? Here are your options:\n{other_tissue_list}" if other_tissue_list else ""
-            return {"text": f"{meta_line}{existing.get('text', '')}{offer_line}", "resource": existing.get("resource"), "agents_completed": ["hypothesis_agent"], "is_existing_hypothesis": True}
-        error_resp = self._format_validation_error(error_details)
-        if error_type in ("tissue_missing", "tissue_not_found"):
-            self.set_pending_tissue(user_id, variant=variant, project_id=error_details.get("project_id") or "", available_tissues=error_details.get("available_tissues", []))
-        elif error_type == "non_sample_project":
-            sample_info = error_details.get("sample_info")
-            if sample_info:
-                self.set_pending_sample_offer(user_id, variant=variant, sample_project_id=sample_info.get("id", ""), sample_tissues=sample_info.get("tissues", []))
-        return error_resp
+            return self._handle_existing_hypothesis(token, user_id, variant, tissue, error_details)
+        return self._handle_single_variant_error(user_id, variant, error_details, error_type)

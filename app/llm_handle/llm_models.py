@@ -68,7 +68,7 @@ def gemini_embedding_model(batch):
                 model="models/text-embedding-004",
                 google_api_key=gemini_api
             )
-            response = embeddings_model.embed_documents(batch)
+            response = embeddings_model.embed_documents(batch_segment)
             embeddings.extend(response)
 
         except Exception as e:

@@ -49,6 +49,28 @@ _PARALLELIZABLE_AGENTS = frozenset({
     "biogpt_agent", "annotation_agent", "galaxy_agent",
 })
 
+_QUERY_TYPE_KEYWORD_MAP = (
+    (("annotation_biological", "annotation biological"), "annotation_biological"),
+    (("annotation_general", "annotation general"), "annotation_general"),
+    (("galaxy",), "galaxy"),
+    (("rag",), "rag"),
+    (("hypothesis",), "hypothesis_generation"),
+    (("biogpt",), "biogpt"),
+    (("literature",), "literature"),
+    (("general_conversation", "greeting"), "general_conversation"),
+)
+
+_TYPE_TO_AGENTS = {
+    "annotation_biological": ["annotation_agent"],
+    "hypothesis_generation": ["hypothesis_agent"],
+    "annotation_general": ["annotation_agent"],
+    "galaxy": ["galaxy_agent"],
+    "rag": ["rag_agent"],
+    "biogpt": ["biogpt_agent"],
+    "general_conversation": ["conversational_agent"],
+    "literature": ["rag_agent", "pubmed_agent", "clinical_trials_agent"],
+}
+
 ANNOTATION_DB = "annotation database"
 KNOWLEDGE_BASE = "knowledge base"
 GALAXY_PLATFORM = "Galaxy platform"
@@ -132,7 +154,7 @@ class AgentPipeline:
                 result = self.graph_summarizer.summarize(token=token, graph_id=graph_id, query=query)
                 emit_to_user(user=user_id, message=ANALYZING_MSG)
             elif resource == "hypothesis":
-                result = self.hypothesis_generation.get_by_hypothesis_id(token, graph_id, user_id, query)
+                result = self.hypothesis_generation.get_by_hypothesis_id(token, graph_id, user_id)
                 emit_to_user(user=user_id, message=ANALYZING_MSG)
             else:
                 return "Invalid resource type specified."
@@ -203,46 +225,19 @@ class AgentPipeline:
     # ------------------------------------------------------------------ #
 
     def _classify_query_types(self, qtype: str, query_types: list) -> None:
-        if ("annotation_biological" in qtype or "annotation biological" in qtype) and "annotation_biological" not in query_types:
-            query_types.append("annotation_biological")
-        if ("annotation_general" in qtype or "annotation general" in qtype) and "annotation_general" not in query_types:
-            query_types.append("annotation_general")
-        if "galaxy" in qtype and "galaxy" not in query_types:
-            query_types.append("galaxy")
-        if "rag" in qtype and "rag" not in query_types:
-            query_types.append("rag")
-        if "hypothesis" in qtype and "hypothesis_generation" not in query_types:
-            query_types.append("hypothesis_generation")
-        if "biogpt" in qtype and "biogpt" not in query_types:
-            query_types.append("biogpt")
-        if "literature" in qtype and "literature" not in query_types:
-            query_types.append("literature")
-        if ("general_conversation" in qtype or "greeting" in qtype) and "general_conversation" not in query_types:
-            query_types.append("general_conversation")
+        for keywords, tag in _QUERY_TYPE_KEYWORD_MAP:
+            if any(kw in qtype for kw in keywords) and tag not in query_types:
+                query_types.append(tag)
 
     def _build_agent_list(self, query_types: list, content_ids, urls, graph_id) -> list:
         agents_to_run = []
         if content_ids or urls or graph_id:
             agents_to_run.append("content_retrieval_agent")
 
-        type_to_agent = {
-            "annotation_biological": "annotation_agent",
-            "hypothesis_generation": "hypothesis_agent",
-            "annotation_general": "annotation_agent",
-            "galaxy": "galaxy_agent",
-            "rag": "rag_agent",
-            "biogpt": "biogpt_agent",
-            "general_conversation": "conversational_agent",
-        }
         for qtype in query_types:
-            if qtype == "literature":
-                for agent in ("rag_agent", "pubmed_agent", "clinical_trials_agent"):
-                    if agent not in agents_to_run:
-                        agents_to_run.append(agent)
-                continue
-            agent = type_to_agent.get(qtype)
-            if agent and agent not in agents_to_run:
-                agents_to_run.append(agent)
+            for agent in _TYPE_TO_AGENTS.get(qtype, []):
+                if agent not in agents_to_run:
+                    agents_to_run.append(agent)
 
         if not agents_to_run:
             agents_to_run.append("rag_agent")
@@ -328,6 +323,21 @@ class AgentPipeline:
         logger.info("Running agent: %s", next_agent)
         return next_agent
 
+    def _merge_result_key(self, merged: dict, agents_to_run: list, key: str, value: Any) -> None:
+        if key == "agents_completed":
+            return
+        if key == "messages":
+            merged["messages"].extend(value if isinstance(value, list) else [value])
+        elif key == "agents_to_run":
+            base = merged.get("agents_to_run", list(agents_to_run))
+            new_agents = [a for a in value if a not in base]
+            if new_agents:
+                merged["agents_to_run"] = base + new_agents
+        elif key == "stop_pipeline" and value:
+            merged["stop_pipeline"] = True
+        elif value is not None:
+            merged[key] = value
+
     def _parallel_runner(self, state: AgentState) -> Dict[str, Any]:
         agents_to_run = state.get("agents_to_run", [])
         agents_completed = state.get("agents_completed", [])
@@ -360,19 +370,7 @@ class AgentPipeline:
         merged: Dict[str, Any] = {"agents_completed": to_run, "messages": []}
         for _name, result in raw_results:
             for k, v in result.items():
-                if k == "agents_completed":
-                    continue
-                elif k == "messages":
-                    merged["messages"].extend(v if isinstance(v, list) else [v])
-                elif k == "agents_to_run":
-                    base = merged.get("agents_to_run", list(agents_to_run))
-                    new = [a for a in v if a not in base]
-                    if new:
-                        merged["agents_to_run"] = base + new
-                elif k == "stop_pipeline" and v:
-                    merged["stop_pipeline"] = True
-                elif v is not None:
-                    merged[k] = v
+                self._merge_result_key(merged, agents_to_run, k, v)
         return merged
 
     # ------------------------------------------------------------------ #
@@ -533,11 +531,12 @@ class AgentPipeline:
                 state["user_id"],
                 content_ids=state.get("content_ids"),
             )
-            response_text = (
-                response["text"]
-                if response and isinstance(response, dict) and "text" in response
-                else (str(response) if response else "")
-            )
+            if response and isinstance(response, dict) and "text" in response:
+                response_text = response["text"]
+            elif response:
+                response_text = str(response)
+            else:
+                response_text = ""
             logger.debug("RAG response: %s", response_text)
 
             if self._rag_has_no_results(response_text):
@@ -573,11 +572,12 @@ class AgentPipeline:
             response = self.galaxy_handler.get_galaxy_info(
                 state["user_query"], state["user_id"], state["token"]
             )
-            response_text = (
-                response["text"]
-                if isinstance(response, dict) and "text" in response
-                else (str(response) if response else "No Galaxy information found")
-            )
+            if isinstance(response, dict) and "text" in response:
+                response_text = response["text"]
+            elif response:
+                response_text = str(response)
+            else:
+                response_text = "No Galaxy information found"
             logger.debug("Galaxy response: %s", response_text)
             return {
                 "galaxy_response": {"text": response_text, "json_format": None, "source": GALAXY_PLATFORM},
@@ -642,7 +642,6 @@ class AgentPipeline:
 
     def _conversational_agent(self, state: AgentState) -> Dict[str, Any]:
         query = state["user_query"]
-        user_id = state["user_id"]
         try:
             response = self.basic_llm.generate(
                 f"You are a helpful biomedical research assistant. Respond naturally and briefly to this message: {query}"

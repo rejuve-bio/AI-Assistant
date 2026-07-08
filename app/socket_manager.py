@@ -81,7 +81,7 @@ def register_socket_events(socketio_instance):
             emit('response', {'response': f'user {user_id} joined room'}, room=user_id)
 
 
-    def _handle_question_processing(data, sid):
+    def _handle_question_processing(data):
         query = data.get('question')
         user_id = session['user_id']
         token = session['token']
@@ -132,7 +132,7 @@ def register_socket_events(socketio_instance):
     @socketio_instance.on('question')
     def handle_question(data):
         """Handle incoming questions from clients."""
-        _handle_question_processing(data, None)
+        _handle_question_processing(data)
 # Make socketio instance available globally
 def get_socketio():
     return socketio

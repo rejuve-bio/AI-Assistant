@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GALAXY_MCP_SERVER = os.getenv("GALAXY_MCP_SERVER")
 advanced_llm_provider = os.getenv("ADVANCED_LLM_PROVIDER", "gemini")  # gemini | openai | local_model
+_GALAXY_MCP_ERROR = "Configuration error: Galaxy MCP server is unavailable."
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -190,7 +191,7 @@ Please provide a clear, professional, and concise answer to the user's query bas
     def _handle_mcp(self, query, token):
         if not _MCP_AVAILABLE:
             logger.info("MCP server unavailable (checked at startup) — returning config error for aggregator LLM fallback")
-            return {"text": "Configuration error: Galaxy MCP server is unavailable."}
+            return {"text": _GALAXY_MCP_ERROR}
         if advanced_llm_provider == "openai":
             logger.info("Using async MCP path (OpenAI)")
             return self._handle_mcp_async(query, token)
@@ -199,7 +200,7 @@ Please provide a clear, professional, and concise answer to the user's query bas
             return self._handle_mcp_subprocess(query, token)
         else:
             logger.warning(f"Unknown provider '{advanced_llm_provider}' — Galaxy MCP unavailable")
-            return {"text": "Configuration error: Galaxy MCP server is unavailable."}
+            return {"text": _GALAXY_MCP_ERROR}
 
     def _handle_mcp_subprocess(self, query, token):
         """Runs MCP agent in a subprocess — works for both Gemini and local model."""
@@ -356,7 +357,7 @@ asyncio.run(run_mcp())
         except Exception as e:
             logger.error(f"MCP subprocess failed: {e}")
             traceback.print_exc()
-            return {"text": "Configuration error: Galaxy MCP server is unavailable."}
+            return {"text": _GALAXY_MCP_ERROR}
 
     def _handle_mcp_async(self, query: str, token: str) -> dict:
         """Run MCP directly via asyncio — works fine with OpenAI (no eventlet)."""
@@ -365,7 +366,7 @@ asyncio.run(run_mcp())
         except Exception as e:
             logger.error(f"Async MCP failed: {e}")
             traceback.print_exc()
-            return {"text": "Configuration error: Galaxy MCP server is unavailable."}
+            return {"text": _GALAXY_MCP_ERROR}
 
     async def _run_mcp_openai(self, query: str, token: str) -> dict:
         from langgraph.prebuilt import create_react_agent
