@@ -24,6 +24,7 @@ from app.llm_handle.llm_models import (
     sentence_transformer_embedding_model,
     gemini_embedding_model,
     openai_embedding_model,
+    local_embedding_model,
     get_embedding_vector_size,
 )
 
@@ -53,8 +54,10 @@ def _init_embedding_model(embedding):
         if not os.getenv("GEMINI_API_KEY"):
             raise ValueError("Gemini API key not found")
         model = gemini_embedding_model
-    else:
+    elif embedding == "sentence_transformer":
         model = sentence_transformer_embedding_model
+    else:  # default: local_model
+        model = local_embedding_model
     return model, get_embedding_vector_size(model)
 
 
@@ -102,7 +105,13 @@ def create_app():
     app.config.update(config)
     logger.info("App config updated with loaded configuration")
 
-    Limiter(get_remote_address, app=app, default_limits=["200 per minute"])
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    Limiter(
+        get_remote_address,
+        app=app,
+        default_limits=["200 per minute"],
+        storage_uri=redis_url,
+    )
     logger.info("FlaskLimiter initialized")
 
     schema_handler = SchemaHandler(
@@ -131,7 +140,7 @@ def create_app():
     advanced_llm = get_llm_model(model_provider=advanced_llm_provider, model_version=advanced_llm_version)
     logger.info("ADVANCED LLM model initialized successfully")
 
-    embedding = os.getenv("EMBEDDING_MODEL", "sentence_transformer")
+    embedding = os.getenv("EMBEDDING_MODEL", "local_model")
     embedding_model, vector_size = _init_embedding_model(embedding)
 
     qdrant_client = Qdrant(embedding_model=embedding_model, vector_size=vector_size)

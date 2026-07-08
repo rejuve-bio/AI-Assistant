@@ -94,8 +94,6 @@ def register_socket_events(socketio_instance):
         logger.info(f"Received question from {user_id}: {query}")
 
         try:
-            global user
-            user = user_id
             from flask import current_app
             ai_assistant = current_app.config['ai_assistant']
 
@@ -144,7 +142,7 @@ def emit_to_user(user,message,status="update"):
     try:
         socketio_instance = get_socketio()
         if socketio_instance:
-            socketio_instance.emit('update', {'status':status,'response': message},to=user)
+            socketio_instance.emit('update', {'status': status, 'response': message}, room=user)
     except Exception as e:
         logger.error(f"Error emitting: {e}")
         

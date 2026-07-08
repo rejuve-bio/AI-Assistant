@@ -5,6 +5,7 @@ import logging
 import traceback
 import json
 import os
+import requests
 from app.rag.utils.tts_utils import tts_manager
 from app.storage.redis import redis_manager
 from app.storage.mongo_storage import mongo_db_manager
@@ -453,7 +454,6 @@ def clear_user_history(current_user_id, auth_token):
 
 
 def _process_hypothesis_question(projects_api_url, headers, projects):
-    import requests
     project_map = []
     all_genes = set()
     all_tissues = set()
@@ -508,8 +508,6 @@ def _process_hypothesis_question(projects_api_url, headers, projects):
 
 
 def handle_hypothesis_faq(auth_token):
-    import os
-    import requests
     projects_api_url = os.getenv("HYPOTHESIS_DATA_API")
     headers = {"Authorization": auth_token}
 
