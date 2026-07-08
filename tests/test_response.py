@@ -22,35 +22,37 @@ TEST_TOKEN = jwt.encode({"user_id": TEST_USER_ID}, JWT_SECRET, algorithm="HS256"
 
 @pytest.fixture(scope="session", autouse=True)
 def mock_external_services():
-    """Mock MongoDB, Redis, Qdrant, SentenceTransformer, and logging"""
+    """Mock MongoDB, Redis, Qdrant, SentenceTransformer, LLM, and logging"""
     mongo_client_mock = MagicMock()
     mongo_db_mock = MagicMock()
     mongo_collection_mock = MagicMock()
-    
     mongo_client_mock.__getitem__.return_value = mongo_db_mock
     mongo_db_mock.__getitem__.return_value = mongo_collection_mock
     mongo_collection_mock.create_index = MagicMock()
-    
+
     redis_mock = MagicMock()
     redis_mock.ping.return_value = True
-    
+
     qdrant_mock = MagicMock()
-    qdrant_collection_mock = MagicMock()
-    qdrant_mock.get_collection.return_value = qdrant_collection_mock
-    
+    qdrant_mock.get_collection.return_value = MagicMock()
+
     log_mock = MagicMock()
     log_mock.level = logging.INFO
     log_mock.emit = MagicMock()
-    
-    mock_model_instance = MagicMock()
-    mock_model_instance.encode.return_value = [0.0] * 384  # fake embedding
 
-    # Patch the original SentenceTransformer class from the library
+    mock_model_instance = MagicMock()
+    mock_model_instance.encode.return_value = [0.0] * 384
+
+    mock_llm = MagicMock()
+    mock_llm.generate.return_value = "general_conversation"
+    mock_llm.model_provider = "openai"
+
     with patch('pymongo.MongoClient', return_value=mongo_client_mock), \
          patch('redis.Redis', return_value=redis_mock), \
          patch('qdrant_client.QdrantClient', return_value=qdrant_mock), \
          patch('logging.handlers.TimedRotatingFileHandler', return_value=log_mock), \
-         patch('sentence_transformers.SentenceTransformer', return_value=mock_model_instance):
+         patch('sentence_transformers.SentenceTransformer', return_value=mock_model_instance), \
+         patch('app.llm_handle.llm_models.get_llm_model', return_value=mock_llm):
         yield
 
 @pytest.fixture
