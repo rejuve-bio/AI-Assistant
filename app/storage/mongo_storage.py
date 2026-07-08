@@ -79,6 +79,7 @@ class MongoManager:
         urls: list = None,
         agents_used: list = None,
         pending_json: dict = None,
+        json_format: dict = None,
     ):
         """
         Create a conversation history entry with both question and answer.
@@ -98,6 +99,7 @@ class MongoManager:
                 "urls":urls,
                 "agents_used": agents_used,
                 "pending_json": pending_json,
+                "json_format": json_format,
                 "memory": None,
                 "context": None,
                 "time": datetime.utcnow(),
@@ -174,14 +176,14 @@ class MongoManager:
             return 0
 
     def _clean_old_user_records(self, user_id: str):
-        """Keep only 3 most recent records per user"""
+        """Keep only 5 most recent records per user"""
         try:
             all_records = list(
                 self.user_info_collection.find({"user_id": user_id}).sort("time", -1)
             )
 
-            if len(all_records) > 3:
-                records_to_delete = all_records[3:]
+            if len(all_records) > 5:
+                records_to_delete = all_records[5:]
                 for record in records_to_delete:
                     self.user_info_collection.delete_one({"_id": record["_id"]})
                 logger.info(
@@ -239,7 +241,9 @@ class MongoManager:
                     "context": {
                         "answer": record.get("assistant_answer", ""),
                         "agents_used": record.get("agents_used", []),
+                        "json_format": record.get("json_format"),
                         "memory": memory,
+                        "time": record.get("time"),
                     },
                 })
 

@@ -1,6 +1,6 @@
-# app/storage/redis_manager.py
 import redis
 import os
+import json
 import logging
 from typing import Optional
 from dotenv import load_dotenv
@@ -161,11 +161,155 @@ class RedisManager:
             return None
 
         try:
-            # Use binary client for audio data
             audio_data = self._redis_binary_client.get(key)
             return audio_data
         except Exception as e:
             logger.error(f"Failed to retrieve cached audio: {e}")
+            return None
+
+    # --- Hypothesis pending tissue state ---
+    # TTL: 10 minutes. Shared across all Gunicorn workers via Redis.
+
+    def set_pending_hypothesis(self, user_id: str, variant: str, project_id: str, available_tissues: list) -> None:
+        """Store pending tissue-selection state for a user."""
+        if not self.is_available:
+            return
+        key = f"pending_hypothesis:{user_id}"
+        data = json.dumps({"variant": variant, "project_id": project_id, "available_tissues": available_tissues})
+        self._redis_client.set(key, data, ex=1800)
+
+    def get_pending_hypothesis(self, user_id: str) -> Optional[dict]:
+        """Return pending state if it exists, else None."""
+        if not self.is_available:
+            return None
+        key = f"pending_hypothesis:{user_id}"
+        raw = self._redis_client.get(key)
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    def clear_pending_hypothesis(self, user_id: str) -> None:
+        """Remove pending state for a user."""
+        if not self.is_available:
+            return
+        self._redis_client.delete(f"pending_hypothesis:{user_id}")
+
+    # --- Pending GO term state ---
+
+    def set_pending_go(self, user_id: str, enrich_id: str, hypothesis_id: str, go_terms: list, tissue: str = "", variant: str = "", project_id: str = "") -> None:
+        if not self.is_available:
+            return
+        key = f"pending_go:{user_id}"
+        data = json.dumps({"enrich_id": enrich_id, "hypothesis_id": hypothesis_id, "go_terms": go_terms, "tissue": tissue, "variant": variant, "project_id": project_id})
+        self._redis_client.set(key, data, ex=1800)  # 30 min — enrichment result lives longer
+
+    def get_pending_go(self, user_id: str) -> Optional[dict]:
+        if not self.is_available:
+            return None
+        raw = self._redis_client.get(f"pending_go:{user_id}")
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    def clear_pending_go(self, user_id: str) -> None:
+        if not self.is_available:
+            return
+        self._redis_client.delete(f"pending_go:{user_id}")
+
+    # --- Pending sample offer state (TTL 5 min) ---
+
+    def set_pending_sample_offer(self, user_id: str, variant: str, sample_project_id: str, sample_tissues: list) -> None:
+        if not self.is_available:
+            return
+        key = f"pending_sample_offer:{user_id}"
+        data = json.dumps({"variant": variant, "sample_project_id": sample_project_id, "sample_tissues": sample_tissues})
+        self._redis_client.set(key, data, ex=300)
+
+    def get_pending_sample_offer(self, user_id: str) -> Optional[dict]:
+        if not self.is_available:
+            return None
+        raw = self._redis_client.get(f"pending_sample_offer:{user_id}")
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    def clear_pending_sample_offer(self, user_id: str) -> None:
+        if not self.is_available:
+            return
+        self._redis_client.delete(f"pending_sample_offer:{user_id}")
+
+    # --- Multi-variant pending state ---
+    # Stores a list of per-variant state dicts for multi-variant hypothesis requests.
+    # Each entry: {variant, project_id, tissue, state, available_tissues?, enrich_id?, hypothesis_id?, go_terms?, result?}
+
+    def set_pending_multi(self, user_id: str, variants: list) -> None:
+        if not self.is_available:
+            return
+        self._redis_client.set(f"pending_multi:{user_id}", json.dumps(variants), ex=1800)
+
+    def get_pending_multi(self, user_id: str) -> Optional[list]:
+        if not self.is_available:
+            return None
+        raw = self._redis_client.get(f"pending_multi:{user_id}")
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    def clear_pending_multi(self, user_id: str) -> None:
+        if not self.is_available:
+            return
+        self._redis_client.delete(f"pending_multi:{user_id}")
+
+    # --- Hypothesis meta: tissue + GO term used (TTL 7 days) ---
+
+    def set_hypothesis_meta(self, hypothesis_id: str, tissue: str, go_term_name: str, go_term_id: str) -> None:
+        if not self.is_available:
+            return
+        key = f"hyp_meta:{hypothesis_id}"
+        data = json.dumps({"tissue": tissue, "go_term_name": go_term_name, "go_term_id": go_term_id})
+        self._redis_client.set(key, data, ex=86400 * 7)
+
+    def get_hypothesis_meta(self, hypothesis_id: str) -> Optional[dict]:
+        if not self.is_available:
+            return None
+        raw = self._redis_client.get(f"hyp_meta:{hypothesis_id}")
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    # --- Generated hypothesis lookup: user + variant → hypothesis_id (TTL 30 days) ---
+
+    def set_generated_hypothesis(self, user_id: str, variant: str, project_id: str, hypothesis_id: str) -> None:
+        if not self.is_available:
+            return
+        key = f"generated_hyp:{user_id}:{variant.lower()}"
+        data = json.dumps({"hypothesis_id": hypothesis_id, "project_id": project_id})
+        self._redis_client.set(key, data, ex=86400 * 30)
+
+    def get_generated_hypothesis(self, user_id: str, variant: str) -> Optional[dict]:
+        if not self.is_available:
+            return None
+        raw = self._redis_client.get(f"generated_hyp:{user_id}:{variant.lower()}")
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
             return None
 
 
