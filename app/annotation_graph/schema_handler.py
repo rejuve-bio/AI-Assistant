@@ -31,6 +31,9 @@ class SchemaHandler:
             label = value.get("output_label") or value.get("input_label")
             source = value.get("source")
             target = value.get("target")
+            is_a = value.get("is_a")
+            if isinstance(is_a, list):
+                value = {**value, "is_a": is_a[0] if is_a else None}
             if isinstance(label, list):
                 for i_label in label:
                     self._register_schema_entry(result, value, source, target, i_label)
@@ -81,7 +84,7 @@ class SchemaHandler:
             if value['represented_as'] == 'edge':
                 if key in self.parent_edges:
                     continue
-                label = value.get('output_lable', value['input_label'])
+                label = value.get('output_label', value['input_label'])
                 edge = {
                     'type': key,
                     'label': label,

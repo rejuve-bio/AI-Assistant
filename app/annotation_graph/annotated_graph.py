@@ -2,7 +2,9 @@ import copy
 import json
 import logging
 import os
+import requests
 from dotenv import load_dotenv
+from langchain_core.messages import AIMessage
 from app.annotation_graph.neo4j_handler import Neo4jConnection
 from app.annotation_graph.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import LLMInterface
@@ -10,6 +12,7 @@ from app.prompts.annotation_prompts import (
     EXTRACT_RELEVANT_INFORMATION_PROMPT,
     JSON_CONVERSION_PROMPT,
     ORGANISM_DETECTION_PROMPT,
+    EXTRACT_AND_CONVERT_PROMPT,
     SELECT_PROPERTY_VALUE_PROMPT,
     SELECT_PROPERTY_VALUES_BATCH_PROMPT,
     RESULT_SUMMARIZATION_PROMPT,
@@ -18,6 +21,7 @@ from app.socket_manager import emit_to_user
 from app.storage.redis import redis_manager
 from .json_to_cypher import JsonToCypherConverter
 
+ANNOTATION_DB = "annotation database"
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -187,16 +191,7 @@ class Graph:
         ]
         if any(kw in q_lower for kw in fly_keywords):
             return "fly"
-        try:
-            prompt = ORGANISM_DETECTION_PROMPT.format(query=query)
-            result = self.llm.generate(prompt)
-            organism = str(result).strip().lower()
-            if "fly" in organism:
-                return "fly"
-            return "human"
-        except Exception as e:
-            logger.warning(f"Organism detection failed, defaulting to human: {e}")
-            return "human"
+        return "human"
 
     def _extract_relevant_information(self, query, enhanced_schema=None):
         try:
@@ -226,6 +221,18 @@ class Graph:
             return json_data
         except Exception as e:
             logger.error(f"Failed to convert information to annotation JSON: {e}")
+            raise
+
+    def _extract_and_convert(self, query, enhanced_schema=None):
+        """Single LLM call replacing separate extract + convert steps."""
+        try:
+            schema = enhanced_schema if enhanced_schema is not None else self.enhanced_schema
+            prompt = EXTRACT_AND_CONVERT_PROMPT.format(schema=schema, query=query)
+            json_data = self.llm.generate(prompt)
+            logger.info(f"Extracted and converted JSON:\n{json.dumps(json_data, indent=2)}")
+            return json_data
+        except Exception as e:
+            logger.error(f"Failed to extract and convert annotation JSON: {e}")
             raise
 
     def _validate_and_update(self, initial_json, neo4j=None, schema_handler=None):
@@ -505,6 +512,7 @@ class Graph:
                 f"Validated and updated JSON: \n{json.dumps(updated_json, indent=2)}"
             )
 
+            validation_report["total_nodes"] = len(updated_json.get("nodes", []))
             return {
                 "updated_json": updated_json,
                 "validation_report": validation_report,
@@ -681,6 +689,8 @@ class Graph:
 
     def _apply_pending_substitutions(self, pending_json: dict, apply: bool = True) -> dict:
         result = copy.deepcopy(pending_json)
+        rejected_ids: set = set()
+
         for node in result.get("nodes", []):
             if not (node.get("needs_confirmation") and node.get("pending_substitutions")):
                 continue
@@ -719,10 +729,20 @@ class Graph:
                             new_parts.append(sugg)
                             existing_lower.add(sugg.lower())
                     node["properties"][prop_key] = ", ".join(new_parts)
-            node["status"] = True
-            for key in ("needs_confirmation", "pending_substitutions", "all_list_values",
-                        "not_validated", "validation_error"):
-                node.pop(key, None)
+                node["status"] = True
+                for key in ("needs_confirmation", "pending_substitutions", "all_list_values",
+                            "not_validated", "validation_error"):
+                    node.pop(key, None)
+            else:
+                # Reject: drop the unvalidated node entirely — don't add garbage to the graph
+                rejected_ids.add(node.get("node_id"))
+
+        if rejected_ids:
+            result["nodes"] = [n for n in result["nodes"] if n.get("node_id") not in rejected_ids]
+            result["predicates"] = [
+                p for p in result.get("predicates", [])
+                if p.get("from") not in rejected_ids and p.get("to") not in rejected_ids
+            ]
 
         # Deduplicate nodes that ended up with identical type + properties after substitution
         result["nodes"] = self._deduplicate_nodes(result.get("nodes", []), result.get("predicates", []))
@@ -1105,17 +1125,8 @@ class Graph:
                 message="Extracting relevant information from your query...",
             )
             try:
-                relevant_information = self._extract_relevant_information(query, enhanced_schema=active_schema)
-                logger.info("Relevant information extraction successful")
-
-                # Convert to initial JSON
-                emit_to_user(
-                    user=user_id, message="Validating Constructed Json Format..."
-                )
-                initial_json = self._convert_to_annotation_json(
-                    relevant_information, query, enhanced_schema=active_schema
-                )
-                logger.info("Initial JSON conversion successful")
+                initial_json = self._extract_and_convert(query, enhanced_schema=active_schema)
+                logger.info("Relevant information extraction and JSON conversion successful")
 
                 # Validate and update
                 validation = self._validate_and_update(initial_json, neo4j=active_neo4j, schema_handler=active_schema_handler)
@@ -1142,12 +1153,20 @@ class Graph:
                         "unconfirmed": unconfirmed_nodes,
                         "organism": organism,
                     })
+                    # Return a partial json_format for nodes that already passed so the
+                    # frontend can render them immediately while confirmation is pending.
+                    valid_nodes = [
+                        n for n in validation["updated_json"].get("nodes", [])
+                        if n.get("status") is True
+                    ]
+                    partial_json = {"nodes": valid_nodes, "predicates": []} if valid_nodes else None
                     return {
                         "success": True,
                         "needs_confirmation": True,
                         "confirmation_text": self._build_confirmation_text(unconfirmed_nodes),
                         "summary": None,
-                        "json_format": None,
+                        "json_format": partial_json,
+                        "organism": organism,
                         "validation_report": validation["validation_report"],
                         "resource": {"id": None, "type": "annotation"},
                     }
@@ -1176,100 +1195,6 @@ class Graph:
                     "error": f"Failed to process query: {str(e)}",
                     "pipeline_status": {"json_extraction": "failed"},
                 }
-
-            # logger.info("JSON query extraction successful")
-            # emit_to_user(
-            #     user=user_id, message="Converting query to database language..."
-            # )
-
-            # # # Convert JSON to Cypher
-            # # try:
-            # #     actual_json = json_query.get("json_format", json_query)
-            # #     if not actual_json:
-            # #         raise ValueError("No valid JSON format found in the response")
-
-            # #     logger.info(
-            # #         f"Extracted JSON for Cypher conversion: {json.dumps(actual_json, indent=2)}"
-            # #     )
-
-            # #     converter = JsonToCypherConverter()
-            # #     cypher_query = converter.convert_to_cypher(actual_json)
-            # #     logger.info("Cypher conversion successful")
-            # # except Exception as e:
-            # #     logger.error(f"Failed to convert JSON to Cypher: {str(e)}")
-            # #     return {
-            # #         "success": False,
-            # #         "error": f"Failed to convert query to database language: {str(e)}",
-            # #         "pipeline_status": {
-            # #             "json_extraction": "success",
-            # #             "cypher_conversion": "failed",
-            # #         },
-            # #         "json_query": json_query,
-            # #     }
-
-            # # emit_to_user(user=user_id, message="Searching the database...")
-
-            # # # Execute Cypher query against database
-            # # try:
-            # #     database_results = self.execute_cypher_query(cypher_query)
-            # #     if not database_results.get("success", False):
-            # #         logger.error(
-            # #             f"Database query failed: {database_results.get('error')}"
-            # #         )
-            # #         return {
-            # #             "success": False,
-            # #             "error": f"Database search failed: {database_results.get('error', 'Unknown error')}",
-            # #             "pipeline_status": {
-            # #                 "json_extraction": "success",
-            # #                 "cypher_conversion": "success",
-            # #                 "database_execution": "failed",
-            # #             },
-            # #             "cypher_query": cypher_query,
-            # #             "json_query": json_query,
-            # #         }
-            # #     logger.info("Database query execution successful")
-            # # except Exception as e:
-            # #     logger.error(f"Failed to execute Cypher query: {str(e)}")
-            # #     return {
-            # #         "success": False,
-            # #         "error": f"Database execution error: {str(e)}",
-            # #         "pipeline_status": {
-            # #             "json_extraction": "success",
-            # #             "cypher_conversion": "success",
-            # #             "database_execution": "failed",
-            # #         },
-            # #         "cypher_query": cypher_query,
-            # #         "json_query": json_query,
-            # #     }
-
-            # # emit_to_user(user=user_id, message="Generating your response...")
-
-            # # # Summarize results using LLM
-            # # try:
-            # #     summary = self.summarize_results(query, database_results)
-            # #     logger.info("Result summarization successful")
-            # # except Exception as e:
-            # #     logger.error(f"Failed to summarize results: {str(e)}")
-            # #     summary = f"I found information related to your query '{query}', but encountered an issue generating a detailed summary. Here are the raw results: {database_results.get('data', {}).get('counts', {}).get('total_nodes', 0)} items found."
-            # #     logger.warning(
-            # #         "Using fallback summary due to LLM summarization failure"
-            # #     )
-
-            # # logger.info("Annotation pipeline completed successfully")
-            # # return {
-            # #     "success": True,
-            # #     "summary": summary,
-            # #     "cypher_query": cypher_query,
-            # #     "database_results": database_results,
-            # #     "json_query": json_query,
-            # #     "error": None,
-            # #     "pipeline_status": {
-            # #         "json_extraction": "success",
-            # #         "cypher_conversion": "success",
-            # #         "database_execution": "success",
-            # #         "summarization": "success",
-            # #     },
-            # # }
 
         except Exception as e:
             error_msg = f"Unexpected error in biological query pipeline: {str(e)}"
@@ -1384,3 +1309,52 @@ class Graph:
         except Exception as e:
             logger.error(f"Failed to generate database summary: {e}")
             return "Database Summary:\nUnable to retrieve database information due to an error."
+
+    #  Annotation response helpers                                         
+    def _format_annotation_section(self, failed: list) -> str:
+        missing_parts = []
+        for n in failed:
+            not_validated = n.get("not_validated")
+            if not_validated:
+                items = not_validated if isinstance(not_validated, list) else [not_validated]
+                for item in items:
+                    missing_parts.append(f'"{item}"')
+            else:
+                props = n.get("properties", {})
+                name = next(iter(props.values()), n.get("type", "unknown"))
+                missing_parts.append(f'"{name}"')
+        verb = "was" if len(missing_parts) == 1 else "were"
+        return f" Note: {', '.join(missing_parts)} {verb} not found in the database."
+
+    def build_annotation_text(self, json_format: dict) -> str:
+        """Build human-readable text from annotation validation results."""
+        nodes = json_format.get("nodes", [])
+        failed = [n for n in nodes if n.get("status") is False and not n.get("needs_confirmation")]
+        text = "The annotation structure was created successfully (see structured data)."
+        if failed:
+            text += self._format_annotation_section(failed)
+        return text
+
+    def aggregate_annotation_response(self, annotation_resp: dict, agent_outputs: list) -> tuple:
+        """Extract text/json from an annotation response and append to agent_outputs.
+
+        Returns (json_format, organism, needs_confirmation).
+        """
+        if annotation_resp.get("needs_confirmation"):
+            # Return any partial json_format (nodes that already passed validation)
+            # so the frontend can render them while the confirmation is pending.
+            partial = annotation_resp.get("json_format")
+            organism = annotation_resp.get("organism")
+            return partial, organism, True
+        text_content = annotation_resp.get("text") or annotation_resp.get("summary") or ""
+        json_format = annotation_resp.get("json_format")
+        organism = annotation_resp.get("organism") if json_format else None
+        if not text_content and json_format:
+            text_content = self.build_annotation_text(json_format)
+        if text_content:
+            agent_outputs.append({
+                "agent": "annotation_agent",
+                "source": annotation_resp.get("source", ANNOTATION_DB),
+                "content": text_content,
+            })
+        return json_format, organism, False
