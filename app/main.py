@@ -1,8 +1,14 @@
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 _SECTION_SEP = "\n\n---\n\n"
+
+# How long a stored exchange stays "in session" and eligible to be fed back into
+# conversation_prompt / pending-state matching. Past this, it's a new conversation
+# (new tab, page reload, came back hours later) and old context should not bleed in.
+SESSION_GAP_SECONDS = 3600
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
@@ -349,6 +355,47 @@ class AiAssistance:
             emit_to_user(user=user_id, message=error_response, status="error")
             return error_response
 
+    # Signals that mean a message can NOT be "pure social conversation" — if
+    # conversation_prompt still chose to answer directly ("response:") despite one
+    # of these being present, it violated its own rule 3 (only short-circuit when
+    # there's zero research content). Don't trust that call; route through the
+    # agent pipeline instead, using the raw query.
+    _RESEARCH_DOMAIN_RE = re.compile(r"\bhypothe|\bannotat", re.IGNORECASE)
+    _VARIANT_RE = re.compile(r"\brs\d+\b", re.IGNORECASE)
+
+    @staticmethod
+    def _is_meaningful_rewrite(query: str, refactored_question: str) -> bool:
+        norm = lambda s: s.strip().strip('"').strip(".?!").lower()
+        return norm(query) != norm(refactored_question)
+
+    def _dispatch_to_agent(self, refactored_question, query, user_id, token, graph_id, content_ids, urls, resource, annotate_rewrite=False) -> Dict[str, Any]:
+        agent_response = self.agent(
+            refactored_question, user_id, token,
+            content_ids=content_ids, graph_id=graph_id, urls=urls, resource=resource,
+        )
+        if not isinstance(agent_response, dict):
+            agent_response = {"text": str(agent_response), "agents_completed": []}
+
+        if annotate_rewrite and self._is_meaningful_rewrite(query, refactored_question) and agent_response.get("text"):
+            agent_response["text"] = f'*(Understood as: "{refactored_question}")*\n\n{agent_response["text"]}'
+
+        resource_data = agent_response.get("resource")
+        if isinstance(resource_data, dict) and resource_data.get("type"):
+            logger.info("Resource created: %s", resource_data["type"])
+
+        self.store.create_history(
+            user_id=user_id,
+            user_message=query,
+            assistant_answer=agent_response.get("text", str(agent_response)),
+            graph_id_referenced=graph_id,
+            content_ids=content_ids,
+            urls=urls,
+            agents_used=agent_response.get("agents_completed", []),
+            json_format=agent_response.get("json_format"),
+        )
+        emit_to_user(user=user_id, message=agent_response, status="completed")
+        return agent_response
+
     def _route_to_agent(
         self,
         response: str,
@@ -360,7 +407,28 @@ class AiAssistance:
         urls,
         resource,
     ) -> Dict[str, Any]:
+        if "clarify:" in response:
+            clarifying_text = response.split("clarify:")[1].strip().strip('"')
+            self.store.create_history(
+                user_id=user_id,
+                user_message=query,
+                assistant_answer=clarifying_text,
+                graph_id_referenced=graph_id,
+                content_ids=content_ids,
+                urls=urls,
+                agents_used=[],
+            )
+            emit_to_user(user=user_id, message=clarifying_text, status="completed")
+            return {"text": clarifying_text}
+
         if "response:" in response:
+            if self._VARIANT_RE.search(query) or self._RESEARCH_DOMAIN_RE.search(query):
+                logger.info(
+                    "conversation_prompt chose 'response:' but query has a clear "
+                    "research-domain signal — overriding to route through the agent pipeline"
+                )
+                return self._dispatch_to_agent(query, query, user_id, token, graph_id, content_ids, urls, resource)
+
             final_response = response.split("response:")[1].strip().strip('"')
             self.store.create_history(
                 user_id=user_id,
@@ -376,29 +444,7 @@ class AiAssistance:
 
         if "question:" in response:
             refactored_question = response.split("question:")[1].strip()
-            agent_response = self.agent(
-                refactored_question, user_id, token,
-                content_ids=content_ids, graph_id=graph_id, urls=urls, resource=resource,
-            )
-            if not isinstance(agent_response, dict):
-                agent_response = {"text": str(agent_response), "agents_completed": []}
-
-            resource_data = agent_response.get("resource")
-            if isinstance(resource_data, dict) and resource_data.get("type"):
-                logger.info("Resource created: %s", resource_data["type"])
-
-            self.store.create_history(
-                user_id=user_id,
-                user_message=query,
-                assistant_answer=agent_response.get("text", str(agent_response)),
-                graph_id_referenced=graph_id,
-                content_ids=content_ids,
-                urls=urls,
-                agents_used=agent_response.get("agents_completed", []),
-                json_format=agent_response.get("json_format"),
-            )
-            emit_to_user(user=user_id, message=agent_response, status="completed")
-            return agent_response
+            return self._dispatch_to_agent(refactored_question, query, user_id, token, graph_id, content_ids, urls, resource, annotate_rewrite=True)
 
         logger.error("No response generated from LLM")
         error_msg = "I apologize, but I encountered an error while processing your request."
@@ -413,6 +459,27 @@ class AiAssistance:
         )
         emit_to_user(user=user_id, message={"text": error_msg}, status="completed")
         return {"text": error_msg}
+
+    @staticmethod
+    def _is_within_session(record_time) -> bool:
+        if not record_time:
+            return False
+        if record_time.tzinfo is None:
+            record_time = record_time.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - record_time).total_seconds()
+        return age <= SESSION_GAP_SECONDS
+
+    def _filter_recent_history(self, user_information: list) -> list:
+        """Drop stored exchanges older than SESSION_GAP_SECONDS before they're used
+        anywhere — conversation_prompt reformulation, pending-state matching context.
+        Without this, opening a fresh chat and asking something that happens to overlap
+        with an old (possibly hours/days-old) question pulls that old answer's facts
+        back into the current query's reformulation, e.g. an old hypothesis's guessed
+        phenotype leaking into a brand new annotation lookup for the same variant."""
+        return [
+            item for item in user_information
+            if self._is_within_session(item.get("context", {}).get("time"))
+        ]
 
     def _handle_repeat_question(
         self,
@@ -434,17 +501,12 @@ class AiAssistance:
 
         last_entry = history[-1]
 
-        # Session gap: if the last exchange is older than 30 minutes the user has
-        # effectively started a new conversation (e.g. page reload). Don't reflect.
-        SESSION_GAP_SECONDS = 300
-        last_time = last_entry.get("context", {}).get("time")
-        if last_time:
-            if last_time.tzinfo is None:
-                last_time = last_time.replace(tzinfo=timezone.utc)
-            age = (datetime.now(timezone.utc) - last_time).total_seconds()
-            if age > SESSION_GAP_SECONDS:
-                logger.info("Repeat question: last exchange %.0fs ago — treating as new session", age)
-                return None
+        # history is already session-filtered by _filter_recent_history before it
+        # reaches here, but re-check defensively in case this is ever called with
+        # an unfiltered list.
+        if not self._is_within_session(last_entry.get("context", {}).get("time")):
+            logger.info("Repeat question: last exchange outside session window — treating as new session")
+            return None
 
         last_q = last_entry.get("question", "").strip().lower()
         if last_q != query.strip().lower():
@@ -574,9 +636,11 @@ class AiAssistance:
                     emit_to_user(user=user_id, message=resp, status="completed")
                     return resp
 
-            # Fetch history once here — used by pending handlers below AND conversation_prompt
+            # Fetch history once here — used by pending handlers below AND conversation_prompt.
+            # Only exchanges from the last SESSION_GAP_SECONDS are kept — see
+            # _filter_recent_history for why older ones must not bleed in.
             try:
-                user_information = self.store.get_context_and_memory(user_id)
+                user_information = self._filter_recent_history(self.store.get_context_and_memory(user_id))
                 history = []
                 memory = []
                 for item in user_information:
