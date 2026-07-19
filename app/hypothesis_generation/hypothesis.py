@@ -68,15 +68,35 @@ class HypothesisGeneration(HypothesisAPIMixin, HypothesisProjectMixin):
 
     # --- Interaction handlers ---
 
+    _NEW_REQUEST_STARTS = (
+        "what", "how", "why", "find", "show", "explain", "tell", "is ", "are ", "can ",
+        "annotate", "anotate", "annotation", "generate", "create",
+    )
+
+    @classmethod
+    def _is_new_request(cls, query: str) -> bool:
+        """Deterministic pre-check so an unrelated new ask (e.g. 'annotate for me?')
+        never gets swallowed by a pending list-selection prompt's aggressive fuzzy
+        matching — those prompts are biased toward guessing a list item rather than
+        admitting NEW_QUESTION, so obvious new-request phrasing must be caught here first."""
+        q = query.lower().strip()
+        return (
+            len(query.split()) > 6
+            or "?" in query
+            or q.startswith(cls._NEW_REQUEST_STARTS)
+            or "annotat" in q
+            or "hypothes" in q
+        )
+
     def handle_sample_offer_response(self, user_id: str, query: str) -> Optional[Dict[str, Any]]:
         pending = self._get_pending_sample_offer(user_id)
         if not pending:
             return None
-        q = query.lower().strip()
-        is_new = len(query.split()) > 6 or "?" in query or q.startswith(("what", "how", "why", "find", "show", "explain", "tell", "is ", "are ", "can "))
+        is_new = self._is_new_request(query)
         if is_new:
             self._clear_pending_sample_offer(user_id)
             return None
+        q = query.lower().strip()
         is_no  = any(w in q for w in ("no", "nope", "don't", "dont", "not now", "skip", "cancel", "never mind", "nevermind"))
         is_yes = any(w in q for w in ("yes", "sure", "okay", "ok", "go ahead", "yeah", "yep", "please", "start", "let's", "lets", "do it"))
         if is_no:
@@ -127,6 +147,9 @@ class HypothesisGeneration(HypothesisAPIMixin, HypothesisProjectMixin):
         pending = self._get_pending_go(user_id)
         if not pending:
             return None
+        if self._is_new_request(query):
+            self._clear_pending_go(user_id)
+            return None
         go_terms = pending["go_terms"]
         idx = self._llm_pick_from_list(query, [f"{t['name']} ({t['id']}) — p={t['p']:.4f}" for t in go_terms], go_term_selection_prompt, "go_list", history=history)
         if idx is None:
@@ -151,6 +174,9 @@ class HypothesisGeneration(HypothesisAPIMixin, HypothesisProjectMixin):
     def handle_tissue_selection(self, user_id: str, query: str, token: str, history: list = None) -> Optional[Dict[str, Any]]:
         pending = self._get_pending(user_id)
         if not pending:
+            return None
+        if self._is_new_request(query):
+            self.clear_pending(user_id)
             return None
         available_tissues = pending["available_tissues"]
         idx = self._llm_pick_from_list(query, [self._tissue_display(t) for t in available_tissues], tissue_selection_prompt, "tissue_list", history=history)
@@ -250,11 +276,68 @@ class HypothesisGeneration(HypothesisAPIMixin, HypothesisProjectMixin):
                     self.set_pending_sample_offer(user_id, variant=failed_variants[0], sample_project_id=sample_info.get("id", ""), sample_tissues=sample_info.get("tissues", []))
         return {"text": "\n\n".join(parts), "agents_completed": ["hypothesis_agent"]}
 
-    def _handle_existing_hypothesis(self, token, user_id, tissue, error_details) -> Dict[str, Any]:
+    _PHENOTYPE_IN_SUMMARY_RE = re.compile(r"phenotype\s+([A-Za-z][\w\s\-']*?)(?:\.|,|;|$)", re.IGNORECASE)
+
+    @classmethod
+    def _direct_phenotype_answer(cls, summary_text: str, variant: str) -> str:
+        """Best-effort direct-answer line for 'what phenotype is X related to' style
+        questions: pull the phenotype name out of the summary's own wording (every
+        real summary we've seen phrases it as '...connection between SNP X and the
+        phenotype Y...') instead of making the user read the full narrative to find it.
+        Empty string if the pattern isn't there — never fabricate a phenotype name."""
+        match = cls._PHENOTYPE_IN_SUMMARY_RE.search(summary_text)
+        if not match:
+            return ""
+        phenotype = match.group(1).strip()
+        if not phenotype:
+            return ""
+        return f"**{variant}** is related to the phenotype **{phenotype}**.\n\n"
+
+    _COMPARATIVE_TISSUE_RE = re.compile(r"\b(highest|lowest|smallest|largest|best|most significant)\b.{0,20}\bp[\s\-]?value\b", re.IGNORECASE)
+
+    @classmethod
+    def _resolve_comparative_tissue(cls, user_query: str, available_tissues: list) -> Optional[dict]:
+        """If the user asked for 'the highest/lowest p-value tissue' instead of naming
+        one, resolve it directly against the tissue list we already have — deterministic,
+        no LLM guess needed. Returns None if the phrasing isn't there or tissues lack a
+        usable p value, so the caller can fall back honestly instead of pretending."""
+        match = cls._COMPARATIVE_TISSUE_RE.search(user_query or "")
+        if not match:
+            return None
+        with_p = [t for t in available_tissues if isinstance(t, dict) and t.get("p") is not None]
+        if not with_p:
+            return None
+        wants_highest = match.group(1).lower() in ("highest", "largest")
+        return max(with_p, key=lambda t: t["p"]) if wants_highest else min(with_p, key=lambda t: t["p"])
+
+    def _handle_existing_hypothesis(self, token, user_id, tissue, error_details, user_query: str = "") -> Dict[str, Any]:
         hypothesis_id = error_details["hypothesis_id"]
         tissue_used = error_details.get("tissue_used", "")
         available_tissues = error_details.get("available_tissues", [])
         other_tissues = [t for t in available_tissues if self._tissue_name(t) != tissue_used] if tissue_used else available_tissues
+
+        if not tissue:
+            comparative_pick = self._resolve_comparative_tissue(user_query, available_tissues)
+            if comparative_pick:
+                picked_name = self._tissue_name(comparative_pick)
+                if self._normalize_field(picked_name) == self._normalize_field(tissue_used):
+                    return {
+                        "text": (
+                            f"The tissue you're asking for ({self._tissue_display(comparative_pick)}) is the "
+                            f"same one already used for **{error_details['variant']}**'s existing hypothesis. "
+                            f"Pick a different tissue if you want a new one:\n\n"
+                            + "\n".join([f"- {self._tissue_display(t)}" for t in other_tissues])
+                        ),
+                        "agents_completed": ["hypothesis_agent"],
+                        "is_existing_hypothesis": True,
+                    }
+                logger.info("Resolved comparative tissue request to '%s' — running enrichment directly", picked_name)
+                result = self._run_enrichment_pipeline(
+                    token, {"variant": error_details["variant"], "tissue_name": picked_name, "project_id": error_details["project_id"]}, user_id
+                )
+                result.setdefault("agents_completed", ["hypothesis_agent"])
+                return result
+
         if other_tissues:
             self.set_pending_tissue(user_id, variant=error_details["variant"], project_id=error_details["project_id"], available_tissues=other_tissues)
         other_tissue_list = "\n".join([f"- {self._tissue_display(t)}" for t in other_tissues])
@@ -269,33 +352,93 @@ class HypothesisGeneration(HypothesisAPIMixin, HypothesisProjectMixin):
         existing = self.get_by_hypothesis_id(token, hypothesis_id, user_id)
         hyp_meta = redis_manager.get_hypothesis_meta(hypothesis_id) if redis_manager.is_available else None
         go_used = (hyp_meta or {}).get("go_term_name", "")
-        go_term_part = f", **{go_used}** GO term" if go_used else ""
-        meta_line = f"*(Generated using: **{tissue_used}** tissue{go_term_part})*\n\n" if tissue_used else ""
-        offer_line = f"\n\n---\nWant to generate a new hypothesis with a different tissue? Here are your options:\n{other_tissue_list}" if other_tissue_list else ""
-        return {"text": f"{meta_line}{existing.get('text', '')}{offer_line}", "resource": existing.get("resource"), "agents_completed": ["hypothesis_agent"], "is_existing_hypothesis": True}
+        variant = error_details.get("variant", "this variant")
+        hyp_label = f"**{variant} → {go_used}**" if go_used else f"**{variant}**"
+        tissue_part = f" (built using **{tissue_used}** tissue)" if tissue_used else ""
+        summary_text = (existing.get("text", "") or "").removeprefix("Summary:").strip()
+        direct_answer = self._direct_phenotype_answer(summary_text, variant)
+        lead_in = f"I found an existing hypothesis for {hyp_label}{tissue_part}. Here's what it concluded:"
+        offer_line = (
+            f"\n\nYou can also generate a new hypothesis for **{variant}** using a different tissue — "
+            f"here are the other options:\n{other_tissue_list}"
+        ) if other_tissue_list else ""
+        return {"text": f"{direct_answer}{lead_in}\n\n{summary_text}{offer_line}", "resource": existing.get("resource"), "agents_completed": ["hypothesis_agent"], "is_existing_hypothesis": True}
 
     def _handle_single_variant_error(self, user_id, variant, error_details, error_type) -> Dict[str, Any]:
         error_resp = self._format_validation_error(error_details)
         if error_type in ("tissue_missing", "tissue_not_found"):
             self.set_pending_tissue(user_id, variant=variant, project_id=error_details.get("project_id") or "", available_tissues=error_details.get("available_tissues", []))
-        elif error_type == "non_sample_project":
+        elif error_type in ("non_sample_project", "variant_not_found"):
             sample_info = error_details.get("sample_info")
-            if sample_info:
-                self.set_pending_sample_offer(user_id, variant=variant, sample_project_id=sample_info.get("id", ""), sample_tissues=sample_info.get("tissues", []))
+            if sample_info and sample_info.get("variants"):
+                self.set_pending_sample_offer(
+                    user_id,
+                    variant=sample_info["variants"][0],
+                    sample_project_id=sample_info.get("id", ""),
+                    sample_tissues=sample_info.get("tissues", []),
+                )
         return error_resp
+
+    _LIST_TRIGGER_WORD_RE = re.compile(r"\b(generated|created|list)\b", re.IGNORECASE)
+
+    @classmethod
+    def _is_list_hypotheses_request(cls, query: str) -> bool:
+        """'What hypothesis graphs do I have?' style questions — asking to list
+        existing hypotheses, not to generate/look up one specific variant.
+        Uses whole-word matching only — "listed"/"which is for variant X" (a relative
+        pronoun, not a listing request) must NOT false-trigger this, and did before."""
+        q = query.lower()
+        if "hypothe" not in q:
+            return False
+        return "do i have" in q or "have i" in q or bool(cls._LIST_TRIGGER_WORD_RE.search(query))
+
+    @staticmethod
+    def _format_hypothesis_list(all_variants: list) -> str:
+        if not all_variants:
+            return (
+                "You don't have any generated hypotheses yet — start one by naming a variant "
+                "(e.g. rs1421085) or asking to use the sample project."
+            )
+        lines = "\n".join(f"- **{v['variant']}** ({v['project_name']})" for v in all_variants if v.get("variant"))
+        return f"Here are the hypotheses you have:\n\n{lines}\n\nAsk me about any of these variants and I'll pull up the full summary."
 
     def generate_hypothesis(self, token: str, user_query: str, user_id: str) -> Dict[str, Any]:
         logger.info("Starting hypothesis generation for: %s", user_query)
         emit_to_user(user=user_id, message="Analyzing your query...")
+
+        # Check whether the user has any project at all BEFORE spending an LLM call
+        # trying to extract a variant/tissue from the text — if there's nothing to
+        # look anything up in, that's the real answer regardless of what they typed.
+        projects = self.get_user_projects(token)
+        if not projects:
+            return {"text": (
+                "Since there's no project created yet, you can use the platform UI to generate a new "
+                "hypothesis. In the meantime, I can still assist you based on the hypotheses you've "
+                "already generated."
+            )}
+
+        if self._is_list_hypotheses_request(user_query):
+            return {"text": self._format_hypothesis_list(self._collect_all_variants(token, projects))}
+
         params = self.format_user_query(user_query, user_id)
-        if not params:
-            return {"text": "Could not understand the biological parameters in your query."}
-        variant = params.get("variant")
-        tissue = params.get("tissue_name") or ""
+        variant = (params or {}).get("variant")
+        tissue = (params or {}).get("tissue_name") or ""
         if isinstance(tissue, list):
             tissue = ""
+
+        if not variant and re.search(r"\bsample\b", user_query, re.IGNORECASE):
+            sample_info = self._get_sample_project_info(token, projects)
+            if sample_info and sample_info.get("variants"):
+                variant = sample_info["variants"][0]
+                logger.info("Resolved 'sample project' reference in query to variant %s", variant)
+
         if not variant:
-            return {"text": "Could not extract a genetic variant from your query. Please specify a variant (e.g. rs1421085)."}
+            return {"text": (
+                "I couldn't find a specific genetic variant (like **rs1421085**) in your question, so I "
+                "can't look up or generate a hypothesis for it. I also don't have a way to list hypotheses "
+                "you've already generated from here — check the platform UI for that, or mention a specific "
+                "variant and I'll check for an existing hypothesis or start a new one."
+            )}
 
         variants = variant if isinstance(variant, list) else [variant]
         if len(variants) > 1:
@@ -309,5 +452,5 @@ class HypothesisGeneration(HypothesisAPIMixin, HypothesisProjectMixin):
             return self._run_enrichment_pipeline(token, params, user_id)
         error_type = error_details.get("error_type") if error_details else None
         if error_type == "existing_hypothesis":
-            return self._handle_existing_hypothesis(token, user_id, tissue, error_details)
+            return self._handle_existing_hypothesis(token, user_id, tissue, error_details, user_query=user_query)
         return self._handle_single_variant_error(user_id, variant, error_details, error_type)

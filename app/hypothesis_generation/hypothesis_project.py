@@ -194,6 +194,7 @@ class HypothesisProjectMixin:
                 "tissue": tissue,
                 "all_variants": all_variants,
                 "searched_projects": searched_project_names,
+                "sample_info": self._get_sample_project_info(token, projects),
             }
 
         sample_match = next((v for v in variant_found_in if v["is_sample"]), None)
@@ -241,10 +242,11 @@ class HypothesisProjectMixin:
         if sample_variants:
             sv = sample_variants[0]
             return {"text": (
-                f"I couldn't find **{variant}** in your projects, but there's a ready-to-use sample — "
-                f"**{sv['project_name']}** with variant **{sv['variant']}**. "
-                f"You can see the full pipeline in action: from LDSC enrichment to pathway analysis to a final biological hypothesis. "
-                f"Would you like to explore it using the sample?"
+                f"I couldn't find **{variant}** in your projects. You can generate a hypothesis for it yourself "
+                f"from the platform UI — from here, I can only run it on the sample project.\n\n"
+                f"There's a ready-to-use sample — **{sv['project_name']}** with variant **{sv['variant']}** — "
+                f"where you can see the full pipeline in action: LDSC enrichment → pathway analysis → final biological hypothesis. "
+                f"Want to try it on the sample instead?"
             )}
         if non_sample:
             variant_list = "\n".join([f"- {v['variant']} ({v['project_name']})" for v in non_sample])
