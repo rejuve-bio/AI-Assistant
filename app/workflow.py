@@ -6,6 +6,7 @@ Aggregation and finalization are injected from AiAssistance in main.py.
 
 import logging
 import operator
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated, Any, Dict, List, Optional, TypedDict
 
@@ -75,6 +76,10 @@ ANNOTATION_DB = "annotation database"
 KNOWLEDGE_BASE = "knowledge base"
 GALAXY_PLATFORM = "Galaxy platform"
 ANALYZING_MSG = "Analyzing..."
+
+_HYPOTHESIS_WORD_RE = re.compile(r"hypothes(is|es)", re.IGNORECASE)
+_VARIANT_RE = re.compile(r"\brs\d+\b", re.IGNORECASE)
+_HYPOTHESIS_DOMAIN_SIGNAL_RE = re.compile(r"\b(graph|generated|do i have|have i|which|list)\b", re.IGNORECASE)
 
 
 class AgentPipeline:
@@ -224,6 +229,52 @@ class AgentPipeline:
     #  Classification                                                      #
     # ------------------------------------------------------------------ #
 
+    def _resolve_hypothesis_ambiguity(self, query: str, query_types: list) -> Optional[Dict[str, Any]]:
+        """
+        Guard against the classifier LLM inconsistently labeling a bare variant-lookup
+        query as hypothesis generation (it's nondeterministic run-to-run). Real hypothesis
+        requests always say "hypothesis" — if that word never appears in the user's own
+        text, this either isn't a hypothesis request at all, or it's genuinely ambiguous
+        with a competing intent (e.g. annotation_biological) and the user should be asked
+        rather than have us silently guess.
+        """
+        if "hypothesis_generation" not in query_types or _HYPOTHESIS_WORD_RE.search(query):
+            return None
+
+        other_types = [qt for qt in query_types if qt != "hypothesis_generation"]
+        variant_match = _VARIANT_RE.search(query)
+        variant_text = variant_match.group(0) if variant_match else "this variant"
+
+        if not other_types:
+            logger.info(
+                "hypothesis_generation classified with no explicit 'hypothesis' wording and no "
+                "competing intent — defaulting to annotation_biological instead of guessing"
+            )
+            query_types[:] = ["annotation_biological"]
+            return None
+
+        logger.info(
+            "Ambiguous classification for '%s': hypothesis_generation + %s with no explicit "
+            "'hypothesis' wording — asking user to clarify instead of guessing",
+            query, other_types,
+        )
+        clarifying_text = (
+            f"Just to make sure I get this right — for **{variant_text}**, do you want me to:\n\n"
+            f"- **look it up** in the annotation database (its gene, and what it's linked to), or\n"
+            f"- **generate or view a genetic hypothesis** for it (tissue/pathway enrichment analysis)?\n\n"
+            f"Let me know which one."
+        )
+        return {
+            "query_types": query_types,
+            "agents_to_run": [],
+            "agents_completed": [],
+            "stop_pipeline": True,
+            "response": {"text": clarifying_text, "json_format": None},
+            "messages": [HumanMessage(
+                content=f"Ambiguous classification ({', '.join(query_types)}) — asked user to clarify"
+            )],
+        }
+
     def _classify_query_types(self, qtype: str, query_types: list) -> None:
         for keywords, tag in _QUERY_TYPE_KEYWORD_MAP:
             if any(kw in qtype for kw in keywords) and tag not in query_types:
@@ -254,7 +305,7 @@ class AgentPipeline:
         content_summaries = self.get_content_summaries(user_id, content_ids)
         logger.info("Classifying query: %s", query)
 
-        response = self.basic_llm.generate(
+        response = self.advanced_llm.generate(
             main_classifier_prompt.format(query=query, content_summaries=content_summaries)
         ).lower()
         logger.info("Question classified as: %s", response)
@@ -266,7 +317,19 @@ class AgentPipeline:
         if not query_types:
             query_types = ["general_conversation"]
 
+        if "hypothesis_generation" not in query_types and _HYPOTHESIS_WORD_RE.search(query) and _HYPOTHESIS_DOMAIN_SIGNAL_RE.search(query):
+            logger.info(
+                "Classifier missed an explicit 'hypothesis' + domain-signal query (%s) — "
+                "forcing hypothesis_generation instead of trusting %s", query, query_types,
+            )
+            query_types = ["hypothesis_generation"]
+
         logger.info("Query classified as: %s", query_types)
+
+        ambiguity_response = self._resolve_hypothesis_ambiguity(query, query_types)
+        if ambiguity_response is not None:
+            return ambiguity_response
+
         agents_to_run = self._build_agent_list(query_types, content_ids, urls, graph_id)
 
         # graph_id present: only use it as context for generic queries (rag/general/literature).

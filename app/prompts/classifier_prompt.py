@@ -162,9 +162,9 @@ Before classifying, reason briefly about the query:
    - Examples: "What are symptoms of vitamin D deficiency?", "How does insulin work?", "What is CRISPR?"
 
 6. **hypothesis**: Genetic hypothesis generation queries
-   - Requests to generate hypotheses about genetic variants and their effects
-   - Questions about variant-phenotype-tissue relationships
-   - Queries mentioning specific genetic variants (rs numbers) and tissues
+   - Requests to generate or retrieve a hypothesis about genetic variants and their effects
+   - Requires an EXPLICIT hypothesis-generation signal: the word "hypothesis"/"hypotheses" itself, OR a variant paired with a named tissue for enrichment analysis
+   - A bare mention of an rs-number is NOT enough by itself — "what gene/phenotype is rsXXXX related to/associated with" is a database lookup (annotation_biological), not a hypothesis request, even though it names a variant
    - Examples: "Generate a hypothesis for variant rs1421085 in adipose tissue", "What hypothesis can you create for rs9939609 in liver tissue?", "Create a hypothesis about rs7903146 and diabetes"
 
 8. **general_conversation**: Greetings, small talk, thanks, and off-topic non-biological queries
@@ -249,6 +249,12 @@ Response: hypothesis
 
 Query: "Create a hypothesis about rs9939609 and obesity in liver tissue"
 Response: hypothesis
+
+Query: "What phenotype is rs11642015 related to?"
+Response: annotation_biological, biogpt
+
+Query: "What gene is rs7412 associated with?"
+Response: annotation_biological, biogpt
 
 Query: "What papers exist on BRCA1 and breast cancer?"
 Response: literature
