@@ -41,18 +41,18 @@ class SchemaHandler:
     def get_parent_nodes(self):
         parent_nodes = set()
         for _, attributes in self.processed_schema.items():
-            if 'represented_as' in attributes and attributes['represented_as'] == 'node' \
-                    and 'is_a' in attributes and attributes['is_a'] not in parent_nodes:
-                parent_nodes.add(attributes['is_a'])
+            if attributes.get('represented_as') == 'node' and 'is_a' in attributes:
+                is_a = attributes['is_a']
+                parent_nodes.update(is_a if isinstance(is_a, list) else [is_a])
 
         return list(parent_nodes)
 
     def get_parent_edges(self):
         parent_edges = set()
         for _, attributes in self.processed_schema.items():
-            if 'represented_as' in attributes and attributes['represented_as'] == 'edge' \
-                    and 'is_a' in attributes and attributes['is_a'] not in parent_edges:
-                parent_edges.add(attributes['is_a'])
+            if attributes.get('represented_as') == 'edge' and 'is_a' in attributes:
+                is_a = attributes['is_a']
+                parent_edges.update(is_a if isinstance(is_a, list) else [is_a])
 
         return list(parent_edges)
 
