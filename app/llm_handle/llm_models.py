@@ -115,6 +115,11 @@ def get_llm_model(model_provider, model_version=None):
             model_name=model_version or os.getenv("LOCAL_MODEL", "gemma4")
         )
 
+    elif model_provider == "ollama":
+        return OllamaModel(
+            model_name=model_version or os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+        )
+
     else:
         raise ValueError("Invalid model type in configuration")
 
@@ -135,6 +140,44 @@ class LocalModel(LLMInterface):
             api_key=api_key
         )
         logger.info(f"LocalModel initialized: {self.model_name} at {host}")
+
+    def generate(self, prompt: str, system_prompt=None, **kwargs) -> Dict[str, Any]:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            temperature=0,
+            max_tokens=1000,
+        )
+        content = response.choices[0].message.content
+        json_content = self._extract_json_from_codeblock(content)
+        try:
+            return json.loads(json_content)
+        except json.JSONDecodeError:
+            return json_content
+
+    def _extract_json_from_codeblock(self, content: str) -> str:
+        start = content.find(JSON_CODEBLOCK_MARKER)
+        end = content.rfind("```")
+        if start != -1 and end != -1:
+            return content[start + 7 : end].strip()
+        return content
+
+
+class OllamaModel(LLMInterface):
+    def __init__(self, model_name: str = None):
+        self.model_name = model_name or os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+        self.model_provider = "ollama"
+        host = os.getenv("OLLAMA_HOST")
+        self.client = openai.OpenAI(
+            base_url=f"{host}/v1",
+            api_key="ollama"
+        )
+        logger.info(f"OllamaModel initialized: {self.model_name} at {host}")
 
     def generate(self, prompt: str, system_prompt=None, **kwargs) -> Dict[str, Any]:
         messages = []
