@@ -35,6 +35,7 @@ REFACTORING INSTRUCTIONS:
 - Do NOT pull in entities or topics from conversation history unless the current query actually references them (e.g. via a pronoun or an implicit "it").
 - When refactoring is needed: replace pronouns with specific entities from context/history, expand only the ambiguous part, and maintain accurate biological terminology (e.g., gene symbols, pathways, variants).
 - Use the list of available tools/agents to choose the correct agent when refactoring.
+- Each entry in the conversation history includes an "asked" field showing how long ago it happened (e.g. "3 minutes ago", "2 hours ago", "1 day ago"). Weigh this when deciding whether that entry is still relevant context: a question from a few minutes ago is very likely part of the same train of thought and reasonable to pull pronouns/entities from; one from hours or days ago is much less likely to be — treat it as background at most, and don't assume the current query continues it unless the query itself clearly signals continuation (a pronoun, "that", "it", "the same one", etc.).
 
 HYPOTHESIS FALLBACK RULE (IMPORTANT):
 - If the most recent conversation history shows a hypothesis query that FAILED (response contains "not returning", "no project", "couldn't find a project", "service is not returning"), AND the user's current message is a confirmation or follow-up (e.g. "yes", "find it", "search", "look it up", "find literature", "yes please", "go ahead"):

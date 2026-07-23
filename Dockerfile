@@ -1,5 +1,5 @@
-# Use the official Python 3.10 slim image as the base image
-FROM python:3.10-slim
+# Use the official Python 3.12 slim image as the base image
+FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1
 ENV POETRY_HTTP_TIMEOUT=600
@@ -22,4 +22,4 @@ RUN poetry config virtualenvs.create false && \
     poetry install --no-root --no-interaction
 
 # Run the application
-CMD ["gunicorn", "-w", "4", "--bind", "0.0.0.0:$FLASK_PORT", "run:app"]
+CMD ["gunicorn", "-w", "4", "--preload", "--bind", "0.0.0.0:$FLASK_PORT", "run:app"]

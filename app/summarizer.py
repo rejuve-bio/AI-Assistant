@@ -8,7 +8,6 @@ import os
 import requests
 from dotenv import load_dotenv
 from app.prompts.summarizer_prompts import SUMMARY_PROMPT, SUMMARY_PROMPT_BASED_ON_USER_QUERY,SUMMARY_PROMPT_CHUNKING,SUMMARY_PROMPT_CHUNKING_USER_QUERY
-from app.storage.redis import redis_manager
 logger = logging.getLogger(__name__)
 
 load_dotenv()
@@ -27,6 +26,8 @@ class GraphSummarizer:
             self.max_token = 2000
         elif self.llm.__class__.__name__ == "OpenAIModel":
             self.max_token = 100000
+        else:
+            self.max_token = 4000
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
         self.kg_service_url = os.getenv('ANNOTATION_SERVICE_URL')
 
@@ -232,13 +233,7 @@ class GraphSummarizer:
     #         return {"text": "Graph is too big, No summaries provided to answer your question"}
     def annotate_by_id(self, graph_id, token, query=None):
         try:
-            cached_graph = redis_manager.get_graph_by_id(graph_id)
-            if cached_graph and cached_graph.get("graph_summary"):
-                summary = json.loads(cached_graph["graph_summary"])  # Convert JSON string back to dict
-                logger.info(f'Cache hit for graph_id={graph_id} is graph summary of {summary}')
-                return {"summary": cached_graph["graph_summary"], "text": None}
-
-            logger.info("Querying the graph without user question...")
+            logger.info(f"Querying the graph service for graph_id={graph_id}")
             http_response = requests.get(
                 f"{self.kg_service_url}/annotation/{graph_id}",
                 headers={"Authorization": f"Bearer {token}"},
@@ -260,31 +255,66 @@ class GraphSummarizer:
             edge_count = json_response.get("edge_count", 0)
             node_count_by_label = json_response.get("node_count_by_label", {})
             edge_count_by_label = json_response.get("edge_count_by_label", {})
-            
-            if summary:
-                enhanced_summary = {
-                    "summary": summary,
-                    "node_count": node_count,
-                    "edge_count": edge_count,
-                    "node_count_by_label": node_count_by_label,
-                    "edge_count_by_label": edge_count_by_label
-                }
-                
-                redis_manager.create_graph(graph_id=graph_id, graph_summary=json.dumps(enhanced_summary))                
+
+            enhanced_summary = {
+                "summary": summary,
+                "node_count": node_count,
+                "edge_count": edge_count,
+                "node_count_by_label": node_count_by_label,
+                "edge_count_by_label": edge_count_by_label
+            }
+
+            # The service's own summary/count fields are unreliable — they can report
+            # 0 nodes/0 edges/"No summary available" even when the raw "nodes"/"edges"
+            # arrays elsewhere in this same response contain real graph data. Build the
+            # actual description straight from that raw data instead of trusting those
+            # top-level fields.
+            batched_descriptions = self.graph_description({
+                "nodes": json_response.get("nodes", []),
+                "edges": json_response.get("edges", []),
+            })
+            flat_descriptions = [d for batch in (batched_descriptions or []) for d in batch]
+            graph_text = "\n\n".join(flat_descriptions) if flat_descriptions else None
+
+            if graph_text:
                 text = None
+                entity_found = None
                 if query:
-                    text = self.llm.generate(
+                    raw = self.llm.generate(
+                        f"Based on this graph data:\n{graph_text}\n\n"
+                        f"Question: {query}\n\n"
+                        f"If this graph data does not actually contain the specific entity or "
+                        f"information the question asks about, begin your reply with the exact "
+                        f"tag NOT_IN_GRAPH: followed by a brief note — do NOT answer using "
+                        f"unrelated entities from the data as if they were relevant. Otherwise, "
+                        f"answer normally using the real data, with no tag.\n"
+                        f"Answer:"
+                    )
+                    entity_found = not raw.lstrip().startswith("NOT_IN_GRAPH:")
+                    text = raw.split("NOT_IN_GRAPH:", 1)[-1].strip() if not entity_found else raw
+                return {"summary": enhanced_summary, "text": text, "entity_found": entity_found}
+            elif summary and summary != "No summary available":
+                text = None
+                entity_found = None
+                if query:
+                    raw = self.llm.generate(
                         f"Based on this graph data:\n"
                         f"Summary: {summary}\n"
                         f"Total nodes: {node_count}\n"
                         f"Total edges: {edge_count}\n"
                         f"Node types: {node_count_by_label}\n"
                         f"Edge types: {edge_count_by_label}\n\n"
-                        f"Question: {query}\nAnswer:"
+                        f"Question: {query}\n\n"
+                        f"If this graph data does not actually contain the specific entity or "
+                        f"information the question asks about, begin your reply with the exact "
+                        f"tag NOT_IN_GRAPH: followed by a brief note. Otherwise, answer normally, "
+                        f"with no tag.\nAnswer:"
                     )
-                return {"summary": enhanced_summary, "text": text}
+                    entity_found = not raw.lstrip().startswith("NOT_IN_GRAPH:")
+                    text = raw.split("NOT_IN_GRAPH:", 1)[-1].strip() if not entity_found else raw
+                return {"summary": enhanced_summary, "text": text, "entity_found": entity_found}
             else:
-                return {"summary": None, "text": "Graph is too big, No summaries provided"}
+                return {"summary": None, "text": "Graph is too big, No summaries provided", "entity_found": None}
 
         except requests.exceptions.RequestException as e:
             logger.error(f"HTTP error in annotate_by_id: {e}")

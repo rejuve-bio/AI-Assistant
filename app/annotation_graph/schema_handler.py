@@ -22,7 +22,17 @@ class SchemaHandler:
             logger.error(f"Unable to initialize Schema Handler: {e}")
 
     def _register_schema_entry(self, result, value, source, target, label):
-        key_label = f'{source}-{label}-{target}' if source and target else label
+        # Node type names in the schema yaml can be multi-word (e.g. "signaling pathway
+        # gene group"), but everywhere else in the app (JSON "type" fields, input_label,
+        # the adjacency list built by _process_edge_entry) uses the underscored form —
+        # normalize here too so predicate validation in annotated_graph.py actually finds
+        # these entries instead of silently dropping every edge that touches them.
+        if source and target:
+            norm_source = source.replace(' ', '_') if isinstance(source, str) else source
+            norm_target = target.replace(' ', '_') if isinstance(target, str) else target
+            key_label = f'{norm_source}-{label}-{norm_target}'
+        else:
+            key_label = label
         result[key_label] = {**value, "key": key_label}
 
     def process_schema(self, schema):

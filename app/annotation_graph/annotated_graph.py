@@ -51,19 +51,20 @@ class Graph:
         self._pending_fallback: dict = {}  # used only when Redis is unavailable
         self._PENDING_TTL = 600  # 10 minutes
 
-        # Maps node type → the Neo4j property to use when searching by the JSON `id` field
+        # Maps node type → the human-readable display property to fall back to when the
+        # JSON `id` field doesn't match the node's real database `id` directly (e.g. a
+        # pathway name/symbol typed in place of its Reactome id). Only include properties
+        # that actually exist in the schema (see schema/human/enhanced_schema.txt) — types
+        # not listed here (snp, tad, promoter, regulatory_region, ...) only have a
+        # coordinate/accession-style `id` and no separate display name, so they're
+        # validated against `id` directly (see _validate_and_update).
         self._node_id_property = {
             "gene": "gene_name",
             "transcript": "transcript_id",
             "exon": "exon_id",
-            "protein": "protein_id",
-            "variant": "variant_id",
+            "protein": "protein_name",
             "pathway": "pathway_name",
-            "go_term": "go_id",
-            "tad": "tad_id",
-            "regulatory_element": "regulatory_element_id",
             "enhancer": "enhancer_id",
-            "promoter": "promoter_id",
         }
 
     def query_knowledge_graph(self, json_query, token):
@@ -255,9 +256,13 @@ class Graph:
                 node_type = node.get("type")
                 properties = node.get("properties", {})
 
-                # Also validate the `id` field using the node type's primary property
+                # Also validate the `id` field. Always check it against the real database
+                # `id` property first (Cypher MATCH always keys on `id` — see json_to_cypher.py),
+                # and additionally against the display property (if this type has one) in case
+                # the caller typed a name/symbol instead of the raw id.
                 node_db_id = node.get("id", "")
                 if node_db_id:
+                    lookup_needed.setdefault((node_type, "id"), set()).add(node_db_id)
                     id_prop = self._node_id_property.get(node_type.lower())
                     if id_prop:
                         lookup_needed.setdefault((node_type, id_prop), set()).add(node_db_id)
@@ -288,17 +293,26 @@ class Graph:
                 node_type = node.get("type")
                 properties = node.get("properties", {})
 
-                # Check id field
+                # Check id field — skip straight to LLM disambiguation only if neither the
+                # real `id` property nor the display property gave an exact match.
                 node_db_id = node.get("id", "")
                 if node_db_id:
-                    id_prop = self._node_id_property.get(node_type.lower())
-                    if id_prop:
-                        similar = similarity_cache.get((node_type, id_prop, node_db_id), [])
-                        if similar:
-                            if similar[0][0].lower() != node_db_id.lower():
-                                batch_for_llm[node_db_id] = similar
+                    direct = similarity_cache.get((node_type, "id", node_db_id), [])
+                    if direct and direct[0][0].lower() == node_db_id.lower():
+                        pass  # already the real database id — nothing to disambiguate
+                    else:
+                        id_prop = self._node_id_property.get(node_type.lower())
+                        if id_prop:
+                            similar = similarity_cache.get((node_type, id_prop, node_db_id), [])
+                            if similar:
+                                if similar[0][0].lower() != node_db_id.lower():
+                                    batch_for_llm[node_db_id] = similar
+                            else:
+                                # No Neo4j candidates at all — still needs confirmation with empty list
+                                batch_for_llm[node_db_id] = []
+                        elif direct:
+                            batch_for_llm[node_db_id] = direct
                         else:
-                            # No Neo4j candidates at all — still needs confirmation with empty list
                             batch_for_llm[node_db_id] = []
 
                 for property_key, property_value in properties.items():
@@ -335,29 +349,51 @@ class Graph:
                 if not node.get("is_list"):
                     node["status"] = True
 
-                # Validate `id` field if set
+                # Validate `id` field if set. Always prefer a match against the real database
+                # `id` property — that's what the Cypher MATCH clause keys on (json_to_cypher.py).
+                # Only fall back to the display property (gene_name, pathway_name, ...) when the
+                # input isn't already a raw id, and flag it for id-resolution below so the
+                # display value gets swapped for the node's actual `id` before querying.
                 node_db_id = node.get("id", "")
                 if node_db_id:
                     id_prop = self._node_id_property.get(node_type.lower())
-                    if id_prop:
-                        similar_values = similarity_cache.get((node_type, id_prop, node_db_id), [])
+                    direct_values = similarity_cache.get((node_type, "id", node_db_id), [])
+
+                    if direct_values and direct_values[0][0].lower() == node_db_id.lower():
+                        # Input is already the real database id — normalize casing and move on
+                        node["id"] = direct_values[0][0]
+                    else:
+                        similar_values = similarity_cache.get((node_type, id_prop, node_db_id), []) if id_prop else []
                         if similar_values and similar_values[0][0].lower() == node_db_id.lower():
-                            pass  # exact match — fine
+                            # Exact match against the display property — resolve to the real id below
+                            node["id"] = similar_values[0][0]
+                            node["_id_needs_resolution"] = True
                         else:
                             pick = llm_picks.get(node_db_id)
-                            top = similar_values[0][0] if similar_values else None
-                            suggestion = (pick["value"] if pick and not pick.get("auto_accept") else
-                                          (pick["value"] if pick and pick.get("auto_accept") else top))
+                            candidates = similar_values or direct_values
+                            top = candidates[0][0] if candidates else None
+                            suggestion = pick["value"] if pick else top
                             if pick and pick.get("auto_accept"):
                                 # Trivial difference — silently fix the id
                                 node["id"] = pick["value"]
-                            else:
-                                # Genuinely different or no LLM pick — ask user
+                                if id_prop and similar_values:
+                                    node["_id_needs_resolution"] = True
+                            elif suggestion:
+                                # Genuinely different, with a real candidate — ask user
                                 node["status"] = False
                                 node["needs_confirmation"] = True
-                                node["pending_substitutions"] = {node_db_id: suggestion or node_db_id}
+                                node["pending_substitutions"] = {node_db_id: suggestion}
                                 validation_report["failed_nodes"].append(
                                     {"node_id": node_id, "reason": f"'{node_db_id}' not found in database"}
+                                )
+                            else:
+                                # Nothing even remotely similar exists — say so plainly instead
+                                # of echoing the user's own input back as a fake "suggestion"
+                                node["status"] = False
+                                node["needs_confirmation"] = False
+                                node["validation_error"] = f"'{node_db_id}' not found in the database, and no similar value exists."
+                                validation_report["failed_nodes"].append(
+                                    {"node_id": node_id, "reason": node["validation_error"]}
                                 )
 
                 # Track removed properties

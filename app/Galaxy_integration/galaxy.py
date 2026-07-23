@@ -37,7 +37,7 @@ class GalaxyHandler:
         except Exception as e:
             logger.error(f"Galaxy handler failed: {e}")
             traceback.print_exc()
-            return {"text": f"Error processing Galaxy request: {e}"}
+            return self._unavailable_response(query, str(e))
 
     def _collection_exists(self):
         try:
@@ -173,8 +173,8 @@ Please provide a clear, professional, and concise answer to the user's query bas
             logger.info(f"Using subprocess MCP path ({advanced_llm_provider} — avoids async conflicts)")
             return self._handle_mcp_subprocess(query, token)
         else:
-            logger.warning(f"Unknown provider '{advanced_llm_provider}', falling back to RAG")
-            return self._rag_fallback(query)
+            logger.warning(f"Unknown provider '{advanced_llm_provider}'")
+            return self._unavailable_response(query, f"unsupported LLM provider '{advanced_llm_provider}'")
 
     def _handle_mcp_subprocess(self, query, token):
         """Runs MCP agent in a subprocess — works for both Gemini and local model."""
@@ -326,12 +326,12 @@ asyncio.run(run_mcp())
 
         except subprocess.TimeoutExpired:
             logger.error("MCP subprocess timed out")
-            return {"text": "Request timed out after 120 seconds. Please try again."}
+            return self._unavailable_response(query, "the Galaxy tool timed out after 120 seconds")
 
         except Exception as e:
-            logger.error(f"MCP subprocess failed, falling back to RAG: {e}")
+            logger.error(f"MCP subprocess failed: {e}")
             traceback.print_exc()
-            return self._rag_fallback(query)
+            return self._unavailable_response(query, str(e))
 
     def _handle_mcp_async(self, query: str, token: str) -> dict:
         """Run MCP directly via asyncio — works fine with OpenAI (no eventlet)."""
@@ -340,7 +340,7 @@ asyncio.run(run_mcp())
         except Exception as e:
             logger.error(f"Async MCP failed: {e}")
             traceback.print_exc()
-            return self._rag_fallback(query)
+            return self._unavailable_response(query, str(e))
 
     async def _run_mcp_openai(self, query: str, token: str) -> dict:
         from langgraph.prebuilt import create_react_agent
@@ -367,38 +367,25 @@ asyncio.run(run_mcp())
                 break
         return {"text": output or str(response)}
 
-    def _rag_fallback(self, query: str) -> dict:
-        """Falls back to Qdrant vector search when MCP is unavailable."""
-        logger.info("Attempting RAG fallback")
+    def _unavailable_response(self, query: str, reason: str) -> dict:
+        """Generates a clear, user-facing message when the Galaxy tool cannot service the query.
+
+        Produced here (not by the aggregator) so the aggregator just receives a normal
+        agent answer and doesn't need special-case disclaimer logic for tool failures.
+        """
+        prompt = f"""
+The Galaxy platform tool needed to answer the user's request is currently unavailable.
+Internal reason (do not repeat verbatim or expose technical details): {reason}
+
+User's request: "{query}"
+
+Write a short, clear, friendly message (2-3 sentences) telling the user that this specific
+capability isn't available right now, and suggest a concrete next step (e.g. try again in a
+few minutes, or rephrase as a general question). Do not mention error codes, exceptions, or
+internal system names.
+"""
         try:
-            from app.prompts.rag_prompts import RETRIEVE_PROMPT
-            from qdrant_client import QdrantClient
-
-            GALAXY_TOOLS_RECOMMEND_COLLECTION = os.getenv("GALAXY_TOOLS_RECOMMEND_COLLECTION")
-            qdrant_url = os.getenv("galaxy_QDRANT_CLIENT")
-
-            if not qdrant_url or not GALAXY_TOOLS_RECOMMEND_COLLECTION:
-                logger.error("Missing environment variables for RAG fallback")
-                return {"text": "Configuration error: Unable to process request"}
-
-            client = QdrantClient(url=qdrant_url, port=6333, grpc_port=6334, prefer_grpc=False)
-
-            if not self.embedding_model:
-                logger.error("Embedding model not initialized")
-                return {"text": "Configuration error: Embedding model not available"}
-
-            embedded_text = self.embedding_model(query)
-            result = client.search(
-                collection_name=GALAXY_TOOLS_RECOMMEND_COLLECTION,
-                query_vector=embedded_text,
-                with_payload=True,
-                score_threshold=0.5,
-                limit=5
-            )
-            response = RETRIEVE_PROMPT.format(query=query, retrieved_content=result)
-            return {"text": response}
-
+            return {"text": self.llm.generate(prompt)}
         except Exception as e:
-            logger.error(f"RAG fallback also failed: {e}")
-            traceback.print_exc()
-            return {"text": "Error: Unable to process request. Please try again later."}
+            logger.error(f"Failed to generate unavailable-tool response: {e}")
+            return {"text": "The Galaxy tool is currently unavailable. Please try again in a few minutes."}

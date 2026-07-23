@@ -73,6 +73,40 @@ class Neo4jConnection:
             logger.error(f"Error in batch Neo4j query: {str(e)}")
             return {sv: [] for sv in search_values}
 
+    def get_ids_for_property_values_batch(self, label: str,
+                                          property_key: str,
+                                          values: List[str]) -> dict:
+        """
+        Resolve already-confirmed display-property values (e.g. gene_name "FTO",
+        pathway_name "Signaling by Insulin receptor") back to the node's real `id`
+        property, since Cypher MATCH clauses always key on `id`, not on the
+        display property.
+
+        Returns:
+            dict mapping each display value -> its node's `id` value (or None if not found)
+        """
+        logger.info(f"Resolving database id for {len(values)} value(s) in '{label}.{property_key}'.")
+
+        query = f"""
+        MATCH (n:{label})
+        WHERE n.{property_key} IN $values
+        WITH n.{property_key} AS value, head(collect(n.id)) AS db_id
+        RETURN value, db_id
+        """
+
+        try:
+            driver = self.get_driver()
+            with driver.session() as session:
+                result = session.run(query, values=values)
+                resolved = {record["value"]: record["db_id"] for record in result}
+                for v in values:
+                    resolved.setdefault(v, None)
+                return resolved
+
+        except Exception as e:
+            logger.error(f"Error resolving ids for '{label}.{property_key}': {str(e)}")
+            return {v: None for v in values}
+
     def get_similar_property_values(self, label: str,
                                     property_key: str,
                                     search_value: str,

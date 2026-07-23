@@ -24,6 +24,7 @@ from app.llm_handle.llm_models import (
     sentence_transformer_embedding_model,
     gemini_embedding_model,
     openai_embedding_model,
+    local_embedding_model,
     get_embedding_vector_size,
 )
 
@@ -53,6 +54,10 @@ def _init_embedding_model(embedding):
         if not os.getenv("GEMINI_API_KEY"):
             raise ValueError("Gemini API key not found")
         model = gemini_embedding_model
+    elif embedding == "local_model":
+        if not os.getenv("LOCAL_EMBEDDING_HOST"):
+            raise ValueError("LOCAL_EMBEDDING_HOST not set")
+        model = local_embedding_model
     else:
         model = sentence_transformer_embedding_model
     return model, get_embedding_vector_size(model)
@@ -102,7 +107,13 @@ def create_app():
     app.config.update(config)
     logger.info("App config updated with loaded configuration")
 
-    Limiter(get_remote_address, app=app, default_limits=["200 per minute"])
+    Limiter(
+        get_remote_address,
+        app=app,
+        default_limits=["200 per minute"],
+        storage_uri=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+        in_memory_fallback_enabled=True,
+    )
     logger.info("FlaskLimiter initialized")
 
     schema_handler = SchemaHandler(

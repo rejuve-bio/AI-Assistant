@@ -19,7 +19,7 @@ from .summarizer import GraphSummarizer
 from .hypothesis_generation.hypothesis import HypothesisGeneration
 from .socket_manager import emit_to_user
 from .Galaxy_integration.galaxy import GalaxyHandler
-from .biogpt_agent.biogpt import BioGPTAgentOpenVINO
+from .biogpt_agent.biogpt import BioGPTAgent
 from typing import TypedDict, List, Annotated, Any, Dict, Optional
 from flask_socketio import emit
 from dotenv import load_dotenv
@@ -94,7 +94,7 @@ class AiAssistance:
         self.hypothesis_generation = HypothesisGeneration(advanced_llm)
         self.galaxy_handler = GalaxyHandler(advanced_llm, qdrant_client, embedding_model)
         self.embedding_model = embedding_model
-        self.biogpt = BioGPTAgentOpenVINO(llm=advanced_llm)
+        self.biogpt = BioGPTAgent(basic_llm=basic_llm, advanced_llm=advanced_llm)
 
         logger.info(
             f"AiAssistance initialized with advanced_llm: {type(self.advanced_llm).__name__}"
@@ -311,10 +311,12 @@ class AiAssistance:
         """Router node that doesn't change state, just passes through"""
         return {}
 
-    def _should_run_agent(self, state: AgentState) -> str:
+    def _should_run_agent(self, state: AgentState) -> Any:
         """
-        Determine which agent to run next.
-        Returns the next agent to run, or 'aggregator' if all agents have completed.
+        Determine which agent(s) to run next.
+        Returns a single agent name, a list of agent names to run concurrently
+        (only when they're independent of each other's output), or 'aggregator'
+        once all agents have completed.
         """
         # Short-circuit: an agent signalled that no further processing is needed
         if state.get("stop_pipeline"):
@@ -323,16 +325,36 @@ class AiAssistance:
 
         agents_to_run = state.get("agents_to_run", [])
         agents_completed = state.get("agents_completed", [])
+        remaining = [a for a in agents_to_run if a not in agents_completed]
 
-        # Find the next agent that hasn't been completed
-        for agent in agents_to_run:
-            if agent not in agents_completed:
-                logger.info(f"Running next agent: {agent}")
-                return agent
+        if not remaining:
+            logger.info("All agents completed, moving to aggregator")
+            return "aggregator"
 
-        # All agents completed, move to aggregator
-        logger.info("All agents completed, moving to aggregator")
-        return "aggregator"
+        # When a graph_id is already attached, whether a fresh annotation is even
+        # needed depends on content_retrieval_agent's result (does the existing
+        # graph already cover the query?). Defer annotation_agent until that's
+        # known instead of racing it against content_retrieval_agent — but
+        # biogpt_agent doesn't depend on either, so keep it running concurrently.
+        if "content_retrieval_agent" in remaining and "annotation_agent" in remaining and state.get("graph_id"):
+            concurrent = ["content_retrieval_agent"]
+            if "biogpt_agent" in remaining:
+                concurrent.append("biogpt_agent")
+            logger.info(f"annotation_agent gated on content_retrieval_agent's result (graph_id present) — running {concurrent} now")
+            return concurrent if len(concurrent) > 1 else concurrent[0]
+
+        # annotation_agent and biogpt_agent never read each other's output — one
+        # queries the graph, the other queries the LLM/BioGPT service — and are
+        # now paired on nearly every annotation query (biogpt is always added
+        # alongside annotation_biological), so run them concurrently instead of
+        # one after another.
+        if "annotation_agent" in remaining and "biogpt_agent" in remaining:
+            logger.info("Running annotation_agent and biogpt_agent concurrently")
+            return ["annotation_agent", "biogpt_agent"]
+
+        next_agent = remaining[0]
+        logger.info(f"Running next agent: {next_agent}")
+        return next_agent
 
     def _annotation_agent(self, state: AgentState) -> Dict[str, Any]:
         """Handle annotation-related queries"""
@@ -569,6 +591,10 @@ class AiAssistance:
             }
 
     def _retrieve_from_graph(self, query, user_id, graph_id, token, resource, content_parts, sources):
+        """Returns (early_return, entity_found) — early_return is a state update dict to
+        short-circuit the pipeline on graph-fetch failure, or None to continue normally.
+        entity_found is True/False/None (unknown) per whether the graph actually covered
+        the query, used to decide whether a fresh annotation_agent run is still needed."""
         logger.info(f"Retrieving graph summary for graph_id: {graph_id}")
         graph_summary = self.answer_from_graph_summaries(
             query=query,
@@ -578,12 +604,13 @@ class AiAssistance:
             resource=resource
         )
         if not graph_summary:
-            return None
+            return None, None
+        entity_found = graph_summary.get("entity_found") if isinstance(graph_summary, dict) else None
         graph_text = graph_summary.get("text", str(graph_summary)) if isinstance(graph_summary, dict) else str(graph_summary)
         if graph_text and not graph_text.startswith("Failed to contact") and not graph_text.startswith("Error"):
             content_parts.append({"source": f"graph:{graph_id}", "content": graph_text})
             sources.append(f"graph:{graph_id}")
-            return None
+            return None, entity_found
         if graph_text:
             logger.warning(f"Graph fetch failed for {graph_id}: {graph_text}")
             last_topic = None
@@ -615,8 +642,8 @@ class AiAssistance:
                 },
                 "agents_completed": ["content_retrieval_agent"],
                 "stop_pipeline": True,
-            }
-        return None
+            }, None
+        return None, entity_found
 
     def _retrieve_from_galaxy(self, query, user_id, token, urls, content_parts, sources):
         logger.info(f"Retrieving Galaxy urls for user: {user_id}")
@@ -659,12 +686,16 @@ class AiAssistance:
 
         content_parts = []
         sources = []
+        graph_covers_query = False
 
         try:
             if graph_id:
-                early_return = self._retrieve_from_graph(query, user_id, graph_id, token, resource, content_parts, sources)
+                early_return, entity_found = self._retrieve_from_graph(query, user_id, graph_id, token, resource, content_parts, sources)
                 if early_return is not None:
                     return early_return
+
+                if entity_found is True and "annotation_agent" in state.get("agents_to_run", []):
+                    graph_covers_query = True
 
             if urls:
                 self._retrieve_from_galaxy(query, user_id, token, urls, content_parts, sources)
@@ -678,11 +709,16 @@ class AiAssistance:
                 "sources": sources
             }
             logger.info(f"Content retrieval response prepared with {len(content_parts)} parts. response is {response_dict}")
-            return {
+            state_update = {
                 "content_retrieval_response": response_dict,
                 "agents_completed": ["content_retrieval_agent"],
                 "messages": [AIMessage(content="Content retrieval completed")]
             }
+            if graph_covers_query:
+                logger.info("Existing attached graph already covers the query — skipping redundant annotation_agent run")
+                current_agents = state.get("agents_to_run", [])
+                state_update["agents_to_run"] = [a for a in current_agents if a != "annotation_agent"]
+            return state_update
 
         except Exception as e:
             logger.error(f"Error in ContentRetrievalAgent: {str(e)}", exc_info=True)
@@ -1271,7 +1307,7 @@ class AiAssistance:
         try:
             logger.info(
                 f"Assistant response called with query={query}, user_id={user_id}, "
-                f"graph_id={graph_id}, content_ids={content_ids}, urls={urls}"
+                f"graph_id={graph_id}, content_ids={content_ids}, urls={urls}, resource={resource}"
             )
 
             # Delegate to annotation_graph if a confirmation is pending for this user
@@ -1299,7 +1335,7 @@ class AiAssistance:
                 for item in user_information:
                     q = item["question"]
                     c = item["context"]
-                    history.append({"question": q, "context": c})
+                    history.append({"question": q, "asked": item.get("asked", "unknown time ago"), "context": c})
                     memory.append(c["memory"])
             except Exception:
                 history = []
@@ -1351,11 +1387,14 @@ class AiAssistance:
         )
         
         try:
+            entity_found = None
             if resource == "annotation":
                 summary_result = self.graph_summarizer.summary(
                     token=token, graph_id=graph_id, user_query=query
                 )
                 summary_text = summary_result.get('text', '') if isinstance(summary_result, dict) else summary_result
+                if isinstance(summary_result, dict):
+                    entity_found = summary_result.get('entity_found')
                 emit_to_user(user=user_id, message=ANALYZING_MSG)
 
             elif resource == "hypothesis":
@@ -1366,9 +1405,9 @@ class AiAssistance:
                 emit_to_user(user=user_id, message=ANALYZING_MSG)
             else:
                 return "Invalid resource type specified."
-                
+
             # Return summary as dict for consistency
-            return {"text": summary_text, "json_format": None}
+            return {"text": summary_text, "json_format": None, "entity_found": entity_found}
             
         except Exception as e:
             logger.error("Error in answer_from_graph_summaries", exc_info=True)
