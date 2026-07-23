@@ -221,6 +221,23 @@ class MongoManager:
             memory = ""
         return memory
 
+    @staticmethod
+    def _time_ago(timestamp) -> str:
+        """Human-readable elapsed time since a stored UTC timestamp, e.g. '12 minutes ago'."""
+        if not timestamp:
+            return "unknown time ago"
+        seconds = (datetime.utcnow() - timestamp).total_seconds()
+        if seconds < 60:
+            return "less than a minute ago"
+        minutes = int(seconds // 60)
+        if minutes < 60:
+            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+        hours = minutes // 60
+        if hours < 24:
+            return f"{hours} hour{'s' if hours != 1 else ''} ago"
+        days = hours // 24
+        return f"{days} day{'s' if days != 1 else ''} ago"
+
     def get_context_and_memory(self, user_id: str):
         try:
             cursor = (
@@ -236,6 +253,7 @@ class MongoManager:
                 memory = self._parse_memory_record(record)
                 result.append({
                     "question": record.get("user_question", ""),
+                    "asked": self._time_ago(record.get("time")),
                     "context": {
                         "answer": record.get("assistant_answer", ""),
                         "agents_used": record.get("agents_used", []),
