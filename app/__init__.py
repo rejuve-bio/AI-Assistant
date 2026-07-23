@@ -112,6 +112,7 @@ def create_app():
         app=app,
         default_limits=["200 per minute"],
         storage_uri=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+        in_memory_fallback_enabled=True,
     )
     logger.info("FlaskLimiter initialized")
 
