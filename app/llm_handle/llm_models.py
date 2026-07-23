@@ -82,6 +82,29 @@ def sentence_transformer_embedding_model(batch):
     return model.encode(batch, convert_to_numpy=True).tolist()
 
 
+# Function to generate embeddings via a locally-hosted Ollama embedding model
+def local_embedding_model(batch):
+    host = os.getenv("LOCAL_EMBEDDING_HOST")
+    model_name = os.getenv("LOCAL_EMBEDDING_MODEL", "mxbai-embed-large:latest")
+    client = openai.OpenAI(base_url=f"{host}/v1", api_key="local")
+    embeddings = []
+    batch_size = 1000
+
+    for i in range(0, len(batch), batch_size):
+        batch_segment = batch[i : i + batch_size]
+        logger.info(
+            f"Embedding batch {i // batch_size + 1} of {len(batch) // batch_size + 1}"
+        )
+        try:
+            response = client.embeddings.create(model=model_name, input=batch_segment)
+            batch_embeddings = [data.embedding for data in response.data]
+            embeddings.extend(batch_embeddings)
+        except Exception as e:
+            logger.error(f"An unexpected error occurred: {e}")
+
+    return embeddings
+
+
 def get_embedding_vector_size(embedding_fn):
     if embedding_fn == openai_embedding_model:
         return 1536
@@ -89,6 +112,8 @@ def get_embedding_vector_size(embedding_fn):
         return 768
     elif embedding_fn == sentence_transformer_embedding_model:
         return 384
+    elif embedding_fn == local_embedding_model:
+        return int(os.getenv("LOCAL_EMBEDDING_SIZE", 1024))
     else:
         raise ValueError("Unknown embedding function")
 
@@ -115,6 +140,11 @@ def get_llm_model(model_provider, model_version=None):
             model_name=model_version or os.getenv("LOCAL_MODEL", "gemma4")
         )
 
+    elif model_provider == "ollama":
+        return OllamaModel(
+            model_name=model_version or os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+        )
+
     else:
         raise ValueError("Invalid model type in configuration")
 
@@ -135,6 +165,44 @@ class LocalModel(LLMInterface):
             api_key=api_key
         )
         logger.info(f"LocalModel initialized: {self.model_name} at {host}")
+
+    def generate(self, prompt: str, system_prompt=None, **kwargs) -> Dict[str, Any]:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            temperature=0,
+            max_tokens=1000,
+        )
+        content = response.choices[0].message.content
+        json_content = self._extract_json_from_codeblock(content)
+        try:
+            return json.loads(json_content)
+        except json.JSONDecodeError:
+            return json_content
+
+    def _extract_json_from_codeblock(self, content: str) -> str:
+        start = content.find(JSON_CODEBLOCK_MARKER)
+        end = content.rfind("```")
+        if start != -1 and end != -1:
+            return content[start + 7 : end].strip()
+        return content
+
+
+class OllamaModel(LLMInterface):
+    def __init__(self, model_name: str = None):
+        self.model_name = model_name or os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+        self.model_provider = "ollama"
+        host = os.getenv("OLLAMA_HOST")
+        self.client = openai.OpenAI(
+            base_url=f"{host}/v1",
+            api_key="ollama"
+        )
+        logger.info(f"OllamaModel initialized: {self.model_name} at {host}")
 
     def generate(self, prompt: str, system_prompt=None, **kwargs) -> Dict[str, Any]:
         messages = []
