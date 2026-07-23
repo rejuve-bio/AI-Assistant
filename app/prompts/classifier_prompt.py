@@ -29,14 +29,16 @@ You are given outputs from multiple agents:
 {combined_text}{json_note}
 
 INSTRUCTIONS:
-1. Answer directly and concisely — 2 to 4 sentences maximum.
+1. Answer directly and concisely — as short as possible while still satisfying instruction 10 below.
 2. If there are specific findings (trials, papers, genes, drugs), name them briefly — do not expand into long explanations.
-3. Remove all redundancy. Do NOT describe tool behavior or internal failures.
+3. Remove redundancy BETWEEN sources that say the same thing — but do not use "redundancy" as a reason to drop an entire source's contribution (see instruction 10). Do NOT describe tool behavior or internal failures.
 4. If a successful annotation query was built (noted above), confirm it briefly and positively — do NOT say information is unavailable.
 5. Only say no information is available if there is genuinely nothing useful in any source.
 6. NEVER modify genetic variant IDs (rs####). Use them exactly as written.
 7. Do NOT invent information.
-8. If all agent outputs contain only errors or configuration failures, you may answer from your general knowledge BUT start with: "Note: the relevant tool is currently unavailable. Based on general knowledge:"
+8. If any agent's output indicates its underlying tool failed or is unavailable, pass that agent's own message through as-is — do NOT paraphrase it, add a disclaimer, or attempt a general-knowledge answer in its place.
+9. Do NOT mention graph IDs, UUIDs, or other internal identifiers in the answer (e.g. "graph 6a61e65c...") — refer to the entity itself (the gene, pathway, variant, etc.), never the internal record it came from.
+10. Every agent listed above that contributed real, non-error, non-empty content must be reflected in the final answer — even if only in one short clause. Do NOT silently drop an entire source's contribution just to stay brief; instead, compress each source's contribution down to its essential point. If two sources say the same specific thing, state it once but keep any additional unique detail each source adds.
 
 STYLE:
 - Short and direct
@@ -156,18 +158,18 @@ You are a query classifier for a multi-agent system. Analyze the user's query an
 ## Classification Rules:
 
 - **Medical/health questions**: Use BOTH "rag, biogpt" for comprehensive answers
-- **Pure structural/retrieval annotation query** — only finding, listing, or mapping entities/relationships with no explanation requested: Use "annotation_biological" alone
-- **Annotation query that also asks for explanation, function, mechanism, or biological context**: Use "annotation_biological, biogpt"
+- **Any annotation_biological query** — whether pure structural/retrieval or one that also asks for explanation, function, mechanism, or biological context: Always pair it with "biogpt" (i.e. "annotation_biological, biogpt"). biogpt provides general-knowledge context as a companion/fallback in case the named entity isn't found in the database, so annotation_biological should never be returned alone.
 - **Questions about uploaded documents**: Always include "rag"
 - **Galaxy platform questions**: Use "galaxy" (add "rag" for additional context)
-- **General biological knowledge**: Use "biogpt" (add "rag" if broader context helps)
+- **General biological knowledge**: Always use "rag, biogpt" together
 - **Genetic hypothesis generation**: Use "hypothesis" for queries about generating hypotheses for genetic variants and tissues
+- **biogpt must never be the only agent returned.** It always appears alongside at least one other agent — "annotation_biological, biogpt" for named-entity questions, "rag, biogpt" for general knowledge questions.
 
 ### When to use annotation_biological vs biogpt for gene questions:
-- **annotation_biological** requires a **specific named entity** (e.g. BRCA1, TP53, rs123456). The user is asking to look up or retrieve something by name from the database.
-- **biogpt** handles **general biological knowledge questions** — even if they mention genes. "What genes are associated with aging?", "Which genes regulate apoptosis?", "What genes cause Parkinson's?" are general knowledge questions, not database lookups.
-- Add "biogpt" when the query uses words like: *explain, describe, what does X do, function of, role of, mechanism, pathway, why, how does, tell me about, what is, associated with, involved in, linked to, related to*.
+- **annotation_biological** requires a **specific named entity** (e.g. BRCA1, TP53, rs123456). The user is asking to look up or retrieve something by name from the database. Whenever annotation_biological is used, always add "biogpt" alongside it.
+- **rag, biogpt together** (no annotation_biological) handles **general biological knowledge questions that don't name a specific entity** — "What genes are associated with aging?", "Which genes regulate apoptosis?", "What genes cause Parkinson's?" are general knowledge questions, not database lookups.
 - Do NOT route to annotation_biological unless there is a **specific named entity** to look up.
+- **Exception — explicit annotate/visualize intent always includes annotation_biological.** These are researchers who use this platform specifically to get a visual graph out of a query; biogpt is only a companion, not the main point. If the query explicitly uses words like *annotate, visualize, show me the graph, build a graph/structure*, ALWAYS include "annotation_biological" (alongside "biogpt") even if no single specific gene is named. In that case, treat the named phenotype/disease/condition (e.g. "obesity", "Parkinson's", "diabetes") itself as the anchor entity for the annotation graph — the pipeline can look up genes connected to that phenotype. This exception overrides the "general knowledge, not a database lookup" rule above whenever "annotate" (or an equivalent explicit visualization request) is used.
 
 ## Input:
 
@@ -179,13 +181,13 @@ Content summaries: {content_summaries}
 ## Examples:
 
 Query: "Find all genes from BRCA1, TP53 that regulate PTEN"
-Response: annotation_biological
+Response: annotation_biological, biogpt
 
 Query: "Find gene BRCA1 and explain its function"
 Response: annotation_biological, biogpt
 
 Query: "Show transcripts for TP53"
-Response: annotation_biological
+Response: annotation_biological, biogpt
 
 Query: "What does TP53 do and show me its annotation structure?"
 Response: annotation_biological, biogpt
@@ -203,19 +205,22 @@ Query: "How many genes are in the database?"
 Response: annotation_general
 
 Query: "What is the mechanism of action of ibuprofen?","Explain CRISPR gene editing"
-Response: biogpt
+Response: rag, biogpt
 
 Query: "What genes are associated with aging?"
-Response: biogpt
+Response: rag, biogpt
+
+Query: "what genes are linked to obesity"
+Response: annotation_biological, biogpt
 
 Query: "Which genes are involved in apoptosis?"
-Response: biogpt
+Response: rag, biogpt
 
 Query: "What genes cause Parkinson's disease?"
-Response: biogpt
+Response: rag, biogpt
 
 Query: "Find transcripts for TP53"
-Response: annotation_biological
+Response: annotation_biological, biogpt
 
 Query: "Describe the role of EGFR in cancer and retrieve its annotation"
 Response: annotation_biological, biogpt
@@ -241,6 +246,6 @@ Response: literature
 ## Your Response:
 
 Respond with ONLY a comma-separated list of agent types (no explanation, no extra text).
-Examples of valid responses: "rag, biogpt" or "annotation_biological" or "galaxy, rag" or "hypothesis"
+Examples of valid responses: "rag, biogpt" or "annotation_biological, biogpt" or "galaxy, rag" or "hypothesis"
 
 Classification:"""
