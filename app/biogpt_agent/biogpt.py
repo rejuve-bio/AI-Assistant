@@ -1,163 +1,108 @@
-from transformers import BioGptTokenizer, BioGptForCausalLM
-import torch
-import logging
-from threading import Lock
 import os
-from transformers import AutoTokenizer
-from optimum.intel import OVModelForCausalLM
-from optimum.intel import OVModelForCausalLM
-import psutil
+import logging
+import requests
 
 logger = logging.getLogger(__name__)
 
-class BioGPTAgentOpenVINO:
+BIOGPT_SERVICE_URL = os.getenv("BIOGPT_SERVICE_URL")
+
+# Reused across calls so each request doesn't repeat the TCP/TLS handshake
+# to the remote GPU box.
+_session = requests.Session()
+
+FALLBACK_SYSTEM_PROMPT = (
+    "You are a biomedical domain expert. Answer the user's biological or medical "
+    "question accurately and concisely, using established scientific knowledge — "
+    "correct gene symbols, chromosomal locations, molecular mechanisms, and disease "
+    "associations where relevant. If you are not confident in a specific detail, "
+    "say so rather than guessing. Keep the answer focused and factual, 2-4 sentences."
+)
+
+CRITIC_PROMPT_TEMPLATE = (
+    "A specialized biomedical model (BioGPT) was asked a question and gave an answer below. "
+    "BioGPT is a small model and sometimes misidentifies entities (e.g. misreading an ID's "
+    "prefix as an unrelated abbreviation) or drifts off-topic from what was actually asked.\n\n"
+    "Review its answer for factual accuracy and relevance to the question:\n"
+    "- If it is accurate, or you can confidently correct a small factual error in it, respond "
+    "with ONLY the approved/corrected answer text — no meta-commentary about what you changed.\n"
+    "- If it is fundamentally wrong, irrelevant to the question, or not something you can "
+    "confidently fix, respond with exactly this one word and nothing else: null\n\n"
+    "Question: {query}\n"
+    "BioGPT's answer: {raw_answer}\n\n"
+    "Response:"
+)
+
+
+class BioGPTAgent:
     """
-    Lazy-loaded BioGPT agent using Intel OpenVINO for optimized CPU inference.
-    Model: kirubel1738/biogpt-bioqa-8bit-openvino
+    Calls the dedicated BioGPT inference service (TGI, hosted on the GPU box).
+    Falls back to the general-purpose LLM with a biomedical-expert prompt if
+    the BioGPT service is unset, unreachable, or errors out.
     """
 
-    _model = None
-    _tokenizer = None
-    _device = "CPU"
-    _lock = Lock()
-
-    def __init__(self, llm=None, model_name="kirubel1738/biogpt-bioqa-8bit-openvino"):
+    def __init__(self, basic_llm=None, advanced_llm=None, model_name="kirubel1738/biogpt-bioqa-lora-merged"):
         self.model_name = model_name
-        self.llm = llm  
-        
-        # Performance settings for minimal RAM and optimized CPU inference
-        # Use environment variable for threads to allow scaling between local and server
-        num_threads = os.getenv("BIOGPT_THREADS", "1")
-        
-        self.ultra_lean_config = {
-            "PERFORMANCE_HINT": "LATENCY",
-            "ENABLE_MMAP": "YES",
-            "CACHE_DIR": "",
-            "INFERENCE_NUM_THREADS": num_threads,         
-            "NUM_STREAMS": "1",                  
-            "KV_CACHE_PRECISION": "u8",          
-        }
-
-    def _get_ram_usage(self):
-        """Returns the current RAM usage of the process in MB."""
-        process = psutil.Process(os.getpid())
-        return process.memory_info().rss / (1024 * 1024)
-
-    def _scan_cache_files(self, cache_dir: str):
-        """Scans cache_dir recursively and returns (files, total_size)."""
-        files = []
-        total_size = 0
-        for dirpath, _, filenames in os.walk(cache_dir):
-            for f in filenames:
-                fp = os.path.join(dirpath, f)
-                try:
-                    stat = os.stat(fp)
-                    total_size += stat.st_size
-                    files.append((stat.st_mtime, stat.st_size, fp))
-                except OSError:
-                    continue
-        return files, total_size
-
-    def _manage_cache_size(self, limit_gb=5.0):
-        """Enforces a size limit on the cache directory by deleting oldest files."""
-        cache_dir = os.getenv("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
-        if not os.path.exists(cache_dir):
-            return
-
-        limit_bytes = limit_gb * 1024 * 1024 * 1024
-        files, total_size = self._scan_cache_files(cache_dir)
-
-        # Check if cleanup is needed
-        if total_size > limit_bytes:
-            logger.warning(f"Cache size ({total_size/1e9:.2f}GB) exceeds limit ({limit_gb}GB). Cleaning up...")
-
-            # Sort by oldest modified time first
-            files.sort(key=lambda x: x[0])
-
-            deleted_size = 0
-            for _, size, fp in files:
-                if total_size - deleted_size <= limit_bytes:
-                    break # Target reached
-
-                try:
-                    os.remove(fp)
-                    deleted_size += size
-                    logger.info(f"Deleted old cache file: {fp} ({size/1e6:.1f}MB)")
-                except OSError as e:
-                    logger.error(f"Failed to delete {fp}: {e}")
-
-            logger.info(f"Cache cleanup complete. Freed {deleted_size/1e9:.2f}GB.")
-
-    def _load_if_needed(self):
-        """Load model/tokenizer once lazily using OpenVINO."""
-        if BioGPTAgentOpenVINO._model is None:
-            with BioGPTAgentOpenVINO._lock:
-                # double-check inside lock
-                if BioGPTAgentOpenVINO._model is None:
-                    # Manage cache size before loading to prevent disk overflow
-                    self._manage_cache_size()
-                    
-                    start_ram = self._get_ram_usage()
-                    logger.info(f"Lazy-loading OpenVINO BioGPT model: {self.model_name}...")
-                    logger.info(f"Base RAM Usage: {start_ram:.2f} MB")
-
-                    # Load tokenizer
-                    BioGPTAgentOpenVINO._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-                    
-                    # Load model using OpenVINO
-                    logger.info("Loading OpenVINO model...")
-                    BioGPTAgentOpenVINO._model = OVModelForCausalLM.from_pretrained(
-                        self.model_name,
-                        ov_config=self.ultra_lean_config
-                    )
-                    
-                    # Set to evaluation mode (though OpenVINO models are typically for inference)
-                    # BioGPTAgentOpenVINO._model.eval() 
-
-                    after_load_ram = self._get_ram_usage()
-                    logger.info(f"OpenVINO BioGPT loaded successfully.")
-                    logger.info(f"RAM after loading: {after_load_ram:.2f} MB (Added: {after_load_ram - start_ram:.2f} MB)")
+        # Approve/reject is a cheap judgment call — use the fast basic LLM.
+        self.critic_llm = basic_llm
+        # Only invoked when BioGPT is down or its answer is rejected outright —
+        # worth the extra cost/latency of the more capable model.
+        self.fallback_llm = advanced_llm
 
     def generate_answer(self, query: str, max_length: int = 50) -> str:
-        """
-        Generate answer using OpenVINO-optimized BioGPT model.
-        
-        Args:
-            query: The biomedical question
-            max_length: Maximum length for generation (default: 256)
-            
-        Returns:
-            Generated answer text
-        """
+        if not BIOGPT_SERVICE_URL:
+            logger.warning("BIOGPT_SERVICE_URL not set — using LLM fallback")
+            return self._fallback(query)
+
         try:
-            self._load_if_needed()
-
-            # Encode input
-            inputs = BioGPTAgentOpenVINO._tokenizer(query, return_tensors="pt")
-            
-            # Generate with optimized parameters
-            logger.info(f"Generating answer for: {query}")
-            with torch.no_grad():
-                output_ids = BioGPTAgentOpenVINO._model.generate(
-                    **inputs,
-                    max_new_tokens=max_length,  # Generate up to 150 new tokens
-                    pad_token_id=BioGPTAgentOpenVINO._tokenizer.eos_token_id,
-                    use_cache=True,      # Enable key/value cache for faster generation
-                    do_sample=False,      # Enable sampling for non-deterministic responses
-                )
-
-            # Decode the generated text
-            generated_text = BioGPTAgentOpenVINO._tokenizer.decode(output_ids[0], skip_special_tokens=True)
-            
-            # Extract answer by removing the input query
-            answer = generated_text[len(query):].strip()
-            
-            # Additional cleanup: sometimes the model repeats the question
-            if answer.startswith(query):
-                answer = answer[len(query):].strip()
-            
-            return answer.strip()
+            response = _session.post(
+                f"{BIOGPT_SERVICE_URL}/generate",
+                json={
+                    "inputs": query,
+                    "parameters": {"max_new_tokens": max_length},
+                },
+                timeout=30,
+            )
+            response.raise_for_status()
+            raw_answer = response.json()["generated_text"].strip()
+            approved = self._critique_and_fix(query, raw_answer)
+            if approved is None:
+                logger.info("Critic rejected BioGPT's answer as unsalvageable — using LLM fallback")
+                return self._fallback(query)
+            return approved
 
         except Exception as e:
-            logger.error(f"Error in BioGPT generation: {str(e)}", exc_info=True)
-            return f"BIOGPT ERROR: {str(e)}"
+            logger.error(f"BioGPT service unavailable, falling back to LLM: {e}", exc_info=True)
+            return self._fallback(query)
+
+    def _critique_and_fix(self, query: str, raw_answer: str):
+        """
+        BioGPT is a small, narrowly fine-tuned model and prone to specific errors (e.g.
+        misreading an ID's prefix as an unrelated abbreviation). Have the larger
+        general-purpose LLM approve-and-correct its answer, or reject it outright, before
+        it's returned, rather than relying on a downstream step to notice.
+
+        Returns the approved/corrected answer text, or None if the critic rejected it
+        as unsalvageable (a system/critique-step failure returns the raw answer instead,
+        since that's a different situation from the critic actively judging it wrong).
+        """
+        if not self.critic_llm:
+            return raw_answer
+        try:
+            prompt = CRITIC_PROMPT_TEMPLATE.format(query=query, raw_answer=raw_answer)
+            result = self.critic_llm.generate(prompt)
+            result = result.strip() if isinstance(result, str) else None
+            if not result or result.lower() == "null":
+                return None
+            return result
+        except Exception as e:
+            logger.error(f"BioGPT critique/fix step failed, using raw answer: {e}", exc_info=True)
+            return raw_answer
+
+    def _fallback(self, query: str) -> str:
+        if not self.fallback_llm:
+            return "BioGPT service is currently unavailable."
+        try:
+            return self.fallback_llm.generate(query, system_prompt=FALLBACK_SYSTEM_PROMPT)
+        except Exception as e:
+            logger.error(f"LLM fallback also failed: {e}", exc_info=True)
+            return "BioGPT service is currently unavailable."
