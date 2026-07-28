@@ -1,6 +1,7 @@
 from app.prompts.rag_prompts import RETRIEVE_PROMPT, RAG_REFLECTION_PROMPT
 from app.storage.memory_layer import MemoryManager
 import traceback
+import json
 import os
 import logging
 import uuid
@@ -362,13 +363,14 @@ class RAG:
             traceback.print_exc()
             return []
 
-    def _reflect_and_revise(self, query_str: str, retrieved_content: list, initial_answer: str) -> str:
+    def _reflect_and_revise(self, query_str: str, retrieved_content: list, initial_answer: str) -> tuple:
         """
         Critic step: evaluate the initial RAG answer for grounding, completeness,
         and accuracy against the source chunks.
 
-        Returns the final answer string — either the original (approved) or a
-        revised version generated from the critic's specific feedback.
+        Returns a tuple of (final_answer: str, confidence: float) — either the
+        original (approved) or a revised version generated from the critic's
+        specific feedback, along with a confidence score (0.0–1.0).
         """
         try:
             reflection_prompt = RAG_REFLECTION_PROMPT.format(
@@ -376,23 +378,63 @@ class RAG:
                 retrieved_content=retrieved_content,
                 generated_answer=initial_answer,
             )
-            verdict = self.llm.generate(reflection_prompt)
+            verdict_raw = self.llm.generate(reflection_prompt)
 
-            # llm.generate() can return a dict if JSON is detected — normalise to str
-            if isinstance(verdict, dict):
-                verdict = str(verdict)
-            verdict = verdict.strip() if verdict else ""
+            # --- Parse the structured verdict ---
+            # The LLM wrapper may have already parsed JSON into a dict,
+            # or it may still be a raw string.
+            verdict_dict = None
+            if isinstance(verdict_raw, dict):
+                verdict_dict = verdict_raw
+            elif isinstance(verdict_raw, str):
+                cleaned = verdict_raw.strip()
+                try:
+                    verdict_dict = json.loads(cleaned)
+                except (json.JSONDecodeError, ValueError):
+                    pass
 
-            logger.info(f"RAG reflection verdict: {verdict[:120]}")
+            if isinstance(verdict_dict, dict) and "verdict" in verdict_dict:
+                verdict_label = str(verdict_dict.get("verdict", "")).upper()
+                confidence = float(verdict_dict.get("confidence", 0.5))
+                confidence = max(0.0, min(1.0, confidence))  # clamp to [0, 1]
 
-            if verdict.upper().startswith("GOOD"):
+                logger.info(
+                    f"RAG reflection verdict: {verdict_label} (confidence={confidence:.2f})"
+                )
+
+                if verdict_label == "GOOD":
+                    logger.info("RAG reflection: initial answer approved.")
+                    return initial_answer, confidence
+
+                if verdict_label == "REVISE":
+                    feedback = str(verdict_dict.get("feedback", "Improve grounding."))
+                    logger.info(f"RAG reflection: revising answer. Feedback: {feedback}")
+
+                    revision_prompt = (
+                        RETRIEVE_PROMPT.format(
+                            query=query_str,
+                            retrieved_content=retrieved_content,
+                        )
+                        + f"\n\nAdditional instruction: {feedback}"
+                    )
+                    revised = self.llm.generate(revision_prompt)
+                    if isinstance(revised, dict):
+                        revised = str(revised)
+                    # Revised answer gets a small confidence boost over the original
+                    revised_confidence = min(1.0, confidence + 0.15)
+                    return (revised.strip() if revised else initial_answer), revised_confidence
+
+            # --- Fallback: handle old plain-text format for backward compat ---
+            verdict_str = str(verdict_raw).strip() if verdict_raw else ""
+            logger.info(f"RAG reflection verdict (text fallback): {verdict_str[:120]}")
+
+            if verdict_str.upper().startswith("GOOD"):
                 logger.info("RAG reflection: initial answer approved.")
-                return initial_answer
+                return initial_answer, 0.75  # default confidence for unscored approval
 
-            if verdict.upper().startswith("REVISE:"):
-                feedback = verdict[len("REVISE:"):].strip()
+            if verdict_str.upper().startswith("REVISE:"):
+                feedback = verdict_str[len("REVISE:"):].strip()
                 logger.info(f"RAG reflection: revising answer. Feedback: {feedback}")
-
                 revision_prompt = (
                     RETRIEVE_PROMPT.format(
                         query=query_str,
@@ -403,17 +445,17 @@ class RAG:
                 revised = self.llm.generate(revision_prompt)
                 if isinstance(revised, dict):
                     revised = str(revised)
-                return revised.strip() if revised else initial_answer
+                return (revised.strip() if revised else initial_answer), 0.6
 
-            # Unexpected verdict format — log and return original answer safely
+            # Unexpected format
             logger.warning(
-                f"RAG reflection returned unexpected format: '{verdict[:80]}' — using initial answer."
+                f"RAG reflection returned unexpected format: '{verdict_str[:80]}' — using initial answer."
             )
-            return initial_answer
+            return initial_answer, 0.5
 
         except Exception as e:
             logger.error(f"RAG reflection step failed, using initial answer: {e}", exc_info=True)
-            return initial_answer
+            return initial_answer, 0.5
 
     def get_result_from_rag(self, query_str: str, user_id: str, content_ids=None):
         """
@@ -485,13 +527,15 @@ class RAG:
 
             # --- Reflection loop ---
             # Validate and potentially revise the initial answer before returning it.
+            confidence = 0.5  # default confidence
             if isinstance(result, str) and result.strip():
-                result = self._reflect_and_revise(query_str, combined_results, result)
+                result, confidence = self._reflect_and_revise(query_str, combined_results, result)
             # ----------------------
 
-            logger.info(f"Result generated successfully. {result}")
+            logger.info(f"Result generated successfully (confidence={confidence:.2f}). {result}")
             response = {
                 "text": result,
+                "confidence": confidence,
                 "resource": {
                     "type": "RAG",
                     "content_sources": content_sources

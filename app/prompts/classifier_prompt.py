@@ -22,7 +22,7 @@ INSTRUCTIONS:
 aggregator_prompt = """
 You are an AI assistant acting as the final scientific aggregator.
 
-Your task is to answer the user’s query:
+Your task is to answer the user's query:
 "{user_query}"
 
 You are given outputs from multiple agents:
@@ -39,6 +39,7 @@ INSTRUCTIONS:
 8. If any agent's output indicates its underlying tool failed or is unavailable, pass that agent's own message through as-is — do NOT paraphrase it, add a disclaimer, or attempt a general-knowledge answer in its place.
 9. Do NOT mention graph IDs, UUIDs, or other internal identifiers in the answer (e.g. "graph 6a61e65c...") — refer to the entity itself (the gene, pathway, variant, etc.), never the internal record it came from.
 10. Every agent listed above that contributed real, non-error, non-empty content must be reflected in the final answer — even if only in one short clause. Do NOT silently drop an entire source's contribution just to stay brief; instead, compress each source's contribution down to its essential point. If two sources say the same specific thing, state it once but keep any additional unique detail each source adds.
+11. Some sources may include a [confidence: X.XX] tag. Favor high-confidence sources (>=0.7) as the primary basis for your answer. For low-confidence sources (<0.5), include their content cautiously and only if it adds genuinely useful information not covered by higher-confidence sources. Never mention confidence scores in your answer.
 
 STYLE:
 - Short and direct

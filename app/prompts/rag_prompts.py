@@ -78,7 +78,7 @@ Document content:
 RAG_REFLECTION_PROMPT = """
 You are a critical reviewer evaluating whether a generated answer correctly addresses a user's question \
 using ONLY the provided source chunks. Your job is to detect hallucinations and gaps, \
-then either approve the answer or request a specific revision.
+then either approve the answer or request a specific revision, and assign a confidence score.
 
 User question: {query}
 
@@ -95,9 +95,16 @@ If the answer introduces facts not present in the chunks, it is hallucinating.
 or incomplete answer should be revised.
 3. Accuracy — The answer must not contradict or misrepresent what the source chunks say.
 
-Response instructions:
-- If the answer satisfies all three criteria, respond with exactly: GOOD
-- If the answer fails any criterion, respond with: REVISE: <one concise sentence describing \
-exactly what is wrong and what the revised answer must do differently>
+Confidence scoring guidelines:
+- 0.9 to 1.0: Fully grounded, complete, accurate — directly supported by source chunks.
+- 0.7 to 0.89: Mostly grounded with minor gaps or slight extrapolation.
+- 0.5 to 0.69: Partially grounded — some claims lack source support or answer is incomplete.
+- Below 0.5: Poorly grounded — significant hallucination or major gaps.
 
-Your response (GOOD or REVISE: ...):"""
+Response instructions — respond with ONLY valid JSON, no extra text:
+- If the answer satisfies all three criteria:
+  {{"verdict": "GOOD", "confidence": <float between 0.0 and 1.0>}}
+- If the answer fails any criterion:
+  {{"verdict": "REVISE", "confidence": <float between 0.0 and 1.0>, "feedback": "<one concise sentence describing exactly what is wrong>"}}
+
+Your JSON response:"""
