@@ -1,4 +1,4 @@
-from app.prompts.rag_prompts import RETRIEVE_PROMPT
+from app.prompts.rag_prompts import RETRIEVE_PROMPT, RAG_REFLECTION_PROMPT
 from app.storage.memory_layer import MemoryManager
 import traceback
 import os
@@ -362,6 +362,59 @@ class RAG:
             traceback.print_exc()
             return []
 
+    def _reflect_and_revise(self, query_str: str, retrieved_content: list, initial_answer: str) -> str:
+        """
+        Critic step: evaluate the initial RAG answer for grounding, completeness,
+        and accuracy against the source chunks.
+
+        Returns the final answer string — either the original (approved) or a
+        revised version generated from the critic's specific feedback.
+        """
+        try:
+            reflection_prompt = RAG_REFLECTION_PROMPT.format(
+                query=query_str,
+                retrieved_content=retrieved_content,
+                generated_answer=initial_answer,
+            )
+            verdict = self.llm.generate(reflection_prompt)
+
+            # llm.generate() can return a dict if JSON is detected — normalise to str
+            if isinstance(verdict, dict):
+                verdict = str(verdict)
+            verdict = verdict.strip() if verdict else ""
+
+            logger.info(f"RAG reflection verdict: {verdict[:120]}")
+
+            if verdict.upper().startswith("GOOD"):
+                logger.info("RAG reflection: initial answer approved.")
+                return initial_answer
+
+            if verdict.upper().startswith("REVISE:"):
+                feedback = verdict[len("REVISE:"):].strip()
+                logger.info(f"RAG reflection: revising answer. Feedback: {feedback}")
+
+                revision_prompt = (
+                    RETRIEVE_PROMPT.format(
+                        query=query_str,
+                        retrieved_content=retrieved_content,
+                    )
+                    + f"\n\nAdditional instruction: {feedback}"
+                )
+                revised = self.llm.generate(revision_prompt)
+                if isinstance(revised, dict):
+                    revised = str(revised)
+                return revised.strip() if revised else initial_answer
+
+            # Unexpected verdict format — log and return original answer safely
+            logger.warning(
+                f"RAG reflection returned unexpected format: '{verdict[:80]}' — using initial answer."
+            )
+            return initial_answer
+
+        except Exception as e:
+            logger.error(f"RAG reflection step failed, using initial answer: {e}", exc_info=True)
+            return initial_answer
+
     def get_result_from_rag(self, query_str: str, user_id: str, content_ids=None):
         """
         Retrieves the result for a query by calling the query method
@@ -427,15 +480,23 @@ class RAG:
                 query=query_str, retrieved_content=combined_results
             )
             result = self.llm.generate(prompt)
-            
-            logger.info(f"Result generated successfully.{result}")
+
+            logger.info(f"Initial RAG answer generated.")
+
+            # --- Reflection loop ---
+            # Validate and potentially revise the initial answer before returning it.
+            if isinstance(result, str) and result.strip():
+                result = self._reflect_and_revise(query_str, combined_results, result)
+            # ----------------------
+
+            logger.info(f"Result generated successfully. {result}")
             response = {
-                        "text": result,
-                        "resource": {
-                            "type": "RAG",
-                            "content_sources": content_sources
-                        }
-                    }            
+                "text": result,
+                "resource": {
+                    "type": "RAG",
+                    "content_sources": content_sources
+                }
+            }
             return response
         except Exception as e:
             logger.error(f"An error occurred while generating the result: {e}")

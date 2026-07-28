@@ -74,3 +74,30 @@ Instructions:
 Document content:
 {text_content}
 """
+
+RAG_REFLECTION_PROMPT = """
+You are a critical reviewer evaluating whether a generated answer correctly addresses a user's question \
+using ONLY the provided source chunks. Your job is to detect hallucinations and gaps, \
+then either approve the answer or request a specific revision.
+
+User question: {query}
+
+Source chunks retrieved from the knowledge base:
+{retrieved_content}
+
+Generated answer:
+{generated_answer}
+
+Evaluation criteria:
+1. Grounding — Every factual claim in the answer must be traceable to at least one source chunk. \
+If the answer introduces facts not present in the chunks, it is hallucinating.
+2. Completeness — The answer must address what the user actually asked. A correct but off-topic \
+or incomplete answer should be revised.
+3. Accuracy — The answer must not contradict or misrepresent what the source chunks say.
+
+Response instructions:
+- If the answer satisfies all three criteria, respond with exactly: GOOD
+- If the answer fails any criterion, respond with: REVISE: <one concise sentence describing \
+exactly what is wrong and what the revised answer must do differently>
+
+Your response (GOOD or REVISE: ...):"""
