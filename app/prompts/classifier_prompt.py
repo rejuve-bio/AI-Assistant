@@ -245,7 +245,14 @@ Response: literature
 
 ## Your Response:
 
-Respond with ONLY a comma-separated list of agent types (no explanation, no extra text).
-Examples of valid responses: "rag, biogpt" or "annotation_biological, biogpt" or "galaxy, rag" or "hypothesis"
+Respond with ONLY valid JSON in the following format (no explanation, no extra text, no markdown code fences):
+{{"query_types": ["agent1", "agent2"]}}
+
+Examples of valid responses:
+{{"query_types": ["rag", "biogpt"]}}
+{{"query_types": ["annotation_biological", "biogpt"]}}
+{{"query_types": ["galaxy", "rag"]}}
+{{"query_types": ["hypothesis"]}}
+{{"query_types": ["literature"]}}
 
 Classification:"""

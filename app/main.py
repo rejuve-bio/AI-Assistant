@@ -281,15 +281,45 @@ class AiAssistance:
             query=query,
             content_summaries=content_summaries,
         )
-        response = self.advanced_llm.generate(classifier_prompt_text).lower()
+        response = self.advanced_llm.generate(classifier_prompt_text)
         logger.info(f"question classified as {response}")
 
         query_types = []
-        cleaned_response = response.replace("and", ",").replace("\n", ",")
-        potential_types = [t.strip() for t in cleaned_response.split(",")]
 
-        for qtype in potential_types:
-            self._classify_query_types(qtype, query_types)
+        # --- Structured output parsing ---
+        # The classifier prompt now requests JSON: {"query_types": ["rag", "biogpt"]}
+        # The LLM wrapper may have already parsed it into a dict for us,
+        # or it may still be a raw string that we need to json.loads().
+        parsed_types = None
+        if isinstance(response, dict):
+            # LLM wrapper already parsed JSON
+            parsed_types = response.get("query_types")
+        elif isinstance(response, str):
+            # Try to extract JSON from the raw string
+            try:
+                parsed = json.loads(response.strip())
+                parsed_types = parsed.get("query_types")
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+        if isinstance(parsed_types, list) and parsed_types:
+            # Successfully parsed structured output
+            logger.info(f"Classifier returned structured output: {parsed_types}")
+            for qtype in parsed_types:
+                if isinstance(qtype, str):
+                    self._classify_query_types(qtype.strip().lower(), query_types)
+        else:
+            # Fallback: comma-split parsing for backward compatibility
+            logger.warning(
+                f"Classifier did not return valid JSON, falling back to text parsing. "
+                f"Raw response: {str(response)[:200]}"
+            )
+            raw = str(response).lower()
+            cleaned_response = raw.replace("and", ",").replace("\n", ",")
+            potential_types = [t.strip() for t in cleaned_response.split(",")]
+            for qtype in potential_types:
+                self._classify_query_types(qtype, query_types)
+        # ---------------------------------
 
         if not query_types:
             query_types = ["rag"]
