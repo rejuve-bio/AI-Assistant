@@ -108,3 +108,30 @@ Response instructions — respond with ONLY valid JSON, no extra text:
   {{"verdict": "REVISE", "confidence": <float between 0.0 and 1.0>, "feedback": "<one concise sentence describing exactly what is wrong>"}}
 
 Your JSON response:"""
+
+QUERY_DECOMPOSITION_PROMPT = """\
+You are a query analysis assistant. Your job is to decide whether a user's question \
+should be broken into smaller, independent sub-queries for better information retrieval.
+
+User question: {query}
+
+Rules:
+1. If the question asks about a SINGLE topic or entity, return it unchanged.
+2. If the question asks about MULTIPLE distinct entities, comparisons, or contains \
+multiple independent sub-questions joined by "and", "also", "as well as", or commas, \
+split it into focused sub-queries (one topic per sub-query).
+3. Keep each sub-query self-contained — it should make sense on its own without the \
+original question.
+4. Maximum 4 sub-queries. If you could split further, group related parts together.
+5. Do NOT split questions that are genuinely about one topic described in detail.
+
+Respond with ONLY valid JSON, no extra text:
+- Single topic: {{"sub_queries": ["{query}"]}}
+- Multiple topics: {{"sub_queries": ["sub-query 1", "sub-query 2", ...]}}
+
+Examples:
+- "What is BRCA1?" → {{"sub_queries": ["What is BRCA1?"]}}
+- "Compare BRCA1 and TP53 in breast cancer" → {{"sub_queries": ["What is the role of BRCA1 in breast cancer?", "What is the role of TP53 in breast cancer?"]}}
+- "What does Rejuve Bio do and what are Methuselah flies?" → {{"sub_queries": ["What does Rejuve Bio do?", "What are Methuselah flies?"]}}
+
+Your JSON response:"""

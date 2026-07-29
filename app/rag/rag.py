@@ -1,4 +1,4 @@
-from app.prompts.rag_prompts import RETRIEVE_PROMPT, RAG_REFLECTION_PROMPT
+from app.prompts.rag_prompts import RETRIEVE_PROMPT, RAG_REFLECTION_PROMPT, QUERY_DECOMPOSITION_PROMPT
 from app.storage.memory_layer import MemoryManager
 import traceback
 import json
@@ -457,6 +457,52 @@ class RAG:
             logger.error(f"RAG reflection step failed, using initial answer: {e}", exc_info=True)
             return initial_answer, 0.5
 
+    def _decompose_query(self, query_str: str) -> list:
+        """
+        Decide whether a user query should be split into independent sub-queries
+        for better retrieval coverage.
+
+        Returns a list of sub-query strings.  For simple, single-topic questions
+        the list contains just the original query (no extra retrieval cost).
+        """
+        try:
+            prompt = QUERY_DECOMPOSITION_PROMPT.format(query=query_str)
+            raw = self.llm.generate(prompt)
+
+            # Parse JSON — the LLM wrapper may return a dict or a string.
+            parsed = None
+            if isinstance(raw, dict):
+                parsed = raw
+            elif isinstance(raw, str):
+                cleaned = raw.strip()
+                # Strip markdown code fences if present
+                if cleaned.startswith("```"):
+                    cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                try:
+                    parsed = json.loads(cleaned)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+            if isinstance(parsed, dict):
+                sub_queries = parsed.get("sub_queries", [])
+                if isinstance(sub_queries, list) and 1 <= len(sub_queries) <= 4:
+                    # Filter out empty strings
+                    sub_queries = [sq.strip() for sq in sub_queries if isinstance(sq, str) and sq.strip()]
+                    if sub_queries:
+                        if len(sub_queries) == 1:
+                            logger.info(f"[DECOMPOSE] Single topic — no split needed.")
+                        else:
+                            logger.info(f"[DECOMPOSE] Split into {len(sub_queries)} sub-queries: {sub_queries}")
+                        return sub_queries
+
+            # Fallback: no split
+            logger.info("[DECOMPOSE] Could not parse decomposition response — using original query.")
+            return [query_str]
+
+        except Exception as e:
+            logger.warning(f"[DECOMPOSE] Decomposition failed ({e}) — using original query.")
+            return [query_str]
+
     def get_result_from_rag(self, query_str: str, user_id: str, content_ids=None):
         """
         Retrieves the result for a query by calling the query method
@@ -468,33 +514,49 @@ class RAG:
         """
         try:
             logger.info("Generating result for the query.")
-                
-            result1 = []  # Initialize as empty
-            result2 = []
+
+            # --- Query Decomposition ---
+            # Split complex multi-part queries into focused sub-queries
+            # for better retrieval coverage from Qdrant.
+            sub_queries = self._decompose_query(query_str)
+
             content_sources = []
-            
+            combined_results = []
+            seen_texts = set()  # for deduplication across sub-query results
+
+            for sq in sub_queries:
+                result1 = []
+                result2 = []
+
+                if content_ids:
+                    logger.info(f"Querying user content for sub-query: '{sq}'")
+                    result2 = self.query(
+                        query_str=sq,
+                        user_id=user_id,
+                        filter=True,
+                        content_ids=content_ids,
+                    )
+                else:
+                    result1 = self.query(query_str=sq, user_id=user_id)
+
+                # Deduplicate: only add chunks we haven't seen yet
+                for chunk in (result1 or []) + (result2 or []):
+                    chunk_text = str(chunk.get("text", chunk)) if isinstance(chunk, dict) else str(chunk)
+                    if chunk_text not in seen_texts:
+                        seen_texts.add(chunk_text)
+                        combined_results.append(chunk)
+
+            # Build content_sources metadata (only once, outside the loop)
             if content_ids:
-                # Only query user collection with content_ids
-                logger.info(f"Generating result for the query from the specified content {content_ids}.")
-                result2 = self.query(
-                    query_str=query_str,
-                    user_id=user_id,
-                    filter=True,
-                    content_ids=content_ids,
-                )
-                
                 if not isinstance(content_ids, list):
                     content_ids = [content_ids]
-
                 for content_id in content_ids:
                     doc = mongo_db_manager.get_content_file_by_id(
                         user_id=user_id,
                         content_id=content_id
                     )
-
                     if not doc:
                         continue
-
                     content_sources.append({
                         "content_id": content_id,
                         "filename": doc.get("filename"),
@@ -502,18 +564,9 @@ class RAG:
                         "topics": doc.get("topics", ""),
                         "suggested_questions": doc.get("suggested_questions", "")
                     })
-            else:
-                # No content_ids - query general
-                result1 = self.query(query_str=query_str, user_id=user_id)
 
-                  
-            logger.info(f"Query executed successfully. result1 and result2 obtained. {result1} {result2}")
-            # Combine both results (general + user content)
-            combined_results = []
-            if isinstance(result1, list):
-                combined_results.extend(result1)
-            if isinstance(result2, list):
-                combined_results.extend(result2)
+            logger.info(f"Retrieved {len(combined_results)} unique chunks from {len(sub_queries)} sub-query(ies).")
+
             if not combined_results:
                 logger.error("No query result to process.")
                 return None          
