@@ -72,6 +72,10 @@ KNOWLEDGE_BASE = "knowledge base"
 GALAXY_PLATFORM = "Galaxy platform"
 ANALYZING_MSG = "Analyzing..."
 
+# When True, hypothesis/galaxy/biogpt agents return instant mock responses
+# instead of making real API calls. Set via USE_MOCK_RESPONSES env var.
+_USE_MOCKS = os.getenv("USE_MOCK_RESPONSES", "false").lower() == "true"
+
 
 class AiAssistance:
 
@@ -477,6 +481,18 @@ class AiAssistance:
         logger.info(
             f"Hypothesis agent processing query: {state['user_query']} for user: {state['user_id']}"
         )
+
+        if _USE_MOCKS:
+            logger.info("[MOCK] Returning mock hypothesis response")
+            return {
+                "hypothesis_response": {
+                    "text": "[Mock] Targeted modulation of the mTOR signaling pathway may extend cellular lifespan by enhancing autophagy and reducing senescence-associated secretory phenotype (SASP) markers.",
+                    "resource": None,
+                },
+                "agents_completed": ["hypothesis_agent"],
+                "messages": [AIMessage(content="Hypothesis mock response")],
+            }
+
         try:
             emit_to_user(user=state["user_id"], message="Generating hypothesis...")
             response = self.hypothesis_generation.generate_hypothesis(
@@ -584,7 +600,19 @@ class AiAssistance:
         logger.info(
             f"Galaxy agent processing query: {state['user_query']} for user: {state['user_id']}"
         )
-        
+
+        if _USE_MOCKS:
+            logger.info("[MOCK] Returning mock Galaxy response")
+            return {
+                "galaxy_response": {
+                    "text": "[Mock] Galaxy platform offers tools for RNA-seq alignment (HISAT2), variant calling (FreeBayes), and automated workflow execution for genomic analysis pipelines.",
+                    "json_format": None,
+                    "source": GALAXY_PLATFORM,
+                },
+                "agents_completed": ["galaxy_agent"],
+                "messages": [AIMessage(content="Galaxy mock response")],
+            }
+
         try:
             emit_to_user(
                 user=state["user_id"], 
@@ -768,6 +796,17 @@ class AiAssistance:
             }
 
     def _biogpt_agent(self, state: AgentState) -> dict:
+        if _USE_MOCKS:
+            logger.info("[MOCK] Returning mock BioGPT response")
+            return {
+                "biogpt_response": {
+                    "text": "[Mock] BioGPT analysis: The queried biological entity is associated with key aging-related pathways including mTOR, AMPK, and sirtuins, which regulate cellular senescence and metabolic homeostasis.",
+                    "source": "BioGPT (mock)",
+                },
+                "agents_completed": ["biogpt_agent"],
+                "messages": [AIMessage(content="BioGPT mock response")],
+            }
+
         try:
             emit_to_user(user=state["user_id"], message="Analyzing biomedical information...")
             response = self.biogpt.generate_answer(state["user_query"])
