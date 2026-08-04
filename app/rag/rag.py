@@ -2,6 +2,7 @@ from app.prompts.rag_prompts import RETRIEVE_PROMPT, RAG_REFLECTION_PROMPT, QUER
 from app.storage.memory_layer import MemoryManager
 import traceback
 import json
+import re
 import os
 import logging
 import uuid
@@ -33,6 +34,9 @@ class RAG:
         self.client = qdrant_client
         self.content_processor = ContentProcessor()
         self.content_analyzer = ContentAnalyzer(self.llm)
+        # Simple LRU cache for query decomposition results (avoids repeated LLM calls)
+        self._decompose_cache = {}
+        self._DECOMPOSE_CACHE_MAX = 64
         logger.info(
             "RAG initialized with LLM and shared Qdrant client/embedding model."
         )
@@ -395,7 +399,11 @@ class RAG:
 
             if isinstance(verdict_dict, dict) and "verdict" in verdict_dict:
                 verdict_label = str(verdict_dict.get("verdict", "")).upper()
-                confidence = float(verdict_dict.get("confidence", 0.5))
+                try:
+                    confidence = float(verdict_dict.get("confidence", 0.5))
+                except (TypeError, ValueError):
+                    logger.warning("Could not parse confidence value, defaulting to 0.5")
+                    confidence = 0.5
                 confidence = max(0.0, min(1.0, confidence))  # clamp to [0, 1]
 
                 logger.info(
@@ -457,14 +465,40 @@ class RAG:
             logger.error(f"RAG reflection step failed, using initial answer: {e}", exc_info=True)
             return initial_answer, 0.5
 
+    # Heuristic patterns that suggest a query may be multi-part
+    _SPLIT_HEURISTICS = re.compile(
+        r'\band\b|\balso\b|\bas well as\b|\bcompare\b|\bvs\.?\b|\bversus\b',
+        re.IGNORECASE,
+    )
+
     def _decompose_query(self, query_str: str) -> list:
         """
         Decide whether a user query should be split into independent sub-queries
         for better retrieval coverage.
 
+        A cheap heuristic check runs first — the LLM is only called when the
+        heuristic detects likely multi-part structure (commas, 'and', 'compare',
+        etc.). This saves latency and cost for simple queries.
+
         Returns a list of sub-query strings.  For simple, single-topic questions
         the list contains just the original query (no extra retrieval cost).
         """
+        # --- Heuristic gate: skip LLM for obviously single-topic queries ---
+        has_multiple_commas = query_str.count(',') >= 2
+        has_split_keyword = bool(self._SPLIT_HEURISTICS.search(query_str))
+
+        if not has_multiple_commas and not has_split_keyword:
+            logger.info("[DECOMPOSE] Heuristic: single topic — skipping LLM decomposition.")
+            return [query_str]
+
+        # --- Cache lookup ---
+        cache_key = query_str.strip().lower()
+        if cache_key in self._decompose_cache:
+            logger.info("[DECOMPOSE] Cache hit — returning cached sub-queries.")
+            return self._decompose_cache[cache_key]
+
+        logger.info("[DECOMPOSE] Heuristic triggered — calling LLM for decomposition.")
+
         try:
             prompt = QUERY_DECOMPOSITION_PROMPT.format(query=query_str)
             raw = self.llm.generate(prompt)
@@ -490,9 +524,14 @@ class RAG:
                     sub_queries = [sq.strip() for sq in sub_queries if isinstance(sq, str) and sq.strip()]
                     if sub_queries:
                         if len(sub_queries) == 1:
-                            logger.info(f"[DECOMPOSE] Single topic — no split needed.")
+                            logger.info(f"[DECOMPOSE] LLM returned single topic — no split needed.")
                         else:
                             logger.info(f"[DECOMPOSE] Split into {len(sub_queries)} sub-queries: {sub_queries}")
+                        # Store in cache (evict oldest if full)
+                        if len(self._decompose_cache) >= self._DECOMPOSE_CACHE_MAX:
+                            oldest_key = next(iter(self._decompose_cache))
+                            del self._decompose_cache[oldest_key]
+                        self._decompose_cache[cache_key] = sub_queries
                         return sub_queries
 
             # Fallback: no split
@@ -503,13 +542,14 @@ class RAG:
             logger.warning(f"[DECOMPOSE] Decomposition failed ({e}) — using original query.")
             return [query_str]
 
-    def get_result_from_rag(self, query_str: str, user_id: str, content_ids=None):
+    def get_result_from_rag(self, query_str: str, user_id: str, content_ids=None, conversation_history=None):
         """
         Retrieves the result for a query by calling the query method
         and generating a response based on the retrieved content.
         :param query_str: The query string to process.
         :param user_id: The ID of the user making the request.
         :param content_ids: Optional list of content IDs to filter user content.
+        :param conversation_history: Optional list of recent Q&A pairs for context.
         :return: The result from the LLM generated based on the query and retrieved content.
         """
         try:
@@ -522,7 +562,7 @@ class RAG:
 
             content_sources = []
             combined_results = []
-            seen_texts = set()  # for deduplication across sub-query results
+            seen_ids = set()  # deduplicate by chunk ID to preserve distinct provenance
 
             for sq in sub_queries:
                 result1 = []
@@ -539,11 +579,14 @@ class RAG:
                 else:
                     result1 = self.query(query_str=sq, user_id=user_id)
 
-                # Deduplicate: only add chunks we haven't seen yet
+                # Deduplicate by chunk ID (fall back to text hash if ID not available)
                 for chunk in (result1 or []) + (result2 or []):
-                    chunk_text = str(chunk.get("text", chunk)) if isinstance(chunk, dict) else str(chunk)
-                    if chunk_text not in seen_texts:
-                        seen_texts.add(chunk_text)
+                    if isinstance(chunk, dict):
+                        chunk_id = chunk.get("id") or hash(str(chunk.get("text", chunk)))
+                    else:
+                        chunk_id = hash(str(chunk))
+                    if chunk_id not in seen_ids:
+                        seen_ids.add(chunk_id)
                         combined_results.append(chunk)
 
             # Build content_sources metadata (only once, outside the loop)
@@ -571,7 +614,22 @@ class RAG:
                 logger.error("No query result to process.")
                 return None          
 
-            prompt = RETRIEVE_PROMPT.format(
+            # --- Build prompt with optional conversation context ---
+            history_context = ""
+            if conversation_history:
+                history_lines = []
+                for item in conversation_history[-3:]:  # last 3 turns max
+                    q = item.get("question", "")
+                    a = item.get("context", {}).get("answer", "") if isinstance(item.get("context"), dict) else ""
+                    if q:
+                        history_lines.append(f"User: {q}")
+                    if a:
+                        # Truncate long answers to keep prompt size manageable
+                        history_lines.append(f"Assistant: {a[:300]}")
+                if history_lines:
+                    history_context = "Recent conversation context:\n" + "\n".join(history_lines) + "\n\n"
+
+            prompt = history_context + RETRIEVE_PROMPT.format(
                 query=query_str, retrieved_content=combined_results
             )
             result = self.llm.generate(prompt)

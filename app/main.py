@@ -65,6 +65,8 @@ class AgentState(TypedDict):
     agents_to_run: List[str]
     agents_completed: Annotated[List[str], operator.add]
     stop_pipeline: Optional[bool]
+    # Conversation history for context-aware retrieval
+    conversation_history: Optional[List[Dict[str, Any]]]
 
 
 ANNOTATION_DB = "annotation database"
@@ -72,9 +74,21 @@ KNOWLEDGE_BASE = "knowledge base"
 GALAXY_PLATFORM = "Galaxy platform"
 ANALYZING_MSG = "Analyzing..."
 
-# When True, hypothesis/galaxy/biogpt agents return instant mock responses
-# instead of making real API calls. Set via USE_MOCK_RESPONSES env var.
-_USE_MOCKS = os.getenv("USE_MOCK_RESPONSES", "false").lower() == "true"
+# Confidence score labels for user-facing output
+_CONFIDENCE_LABELS = {
+    "high": 0.7,    # >= 0.7
+    "medium": 0.5,  # >= 0.5
+    "low": 0.0,     # < 0.5
+}
+
+
+def _confidence_label(score: float) -> str:
+    """Map a numeric confidence score (0.0–1.0) to a qualitative label."""
+    if score >= _CONFIDENCE_LABELS["high"]:
+        return "high"
+    elif score >= _CONFIDENCE_LABELS["medium"]:
+        return "medium"
+    return "low"
 
 
 class AiAssistance:
@@ -291,31 +305,49 @@ class AiAssistance:
         query_types = []
 
         # --- Structured output parsing ---
-        # The classifier prompt now requests JSON: {"query_types": ["rag", "biogpt"]}
-        # The LLM wrapper may have already parsed it into a dict for us,
-        # or it may still be a raw string that we need to json.loads().
+        # The classifier prompt requests JSON: {"query_types": ["rag", "biogpt"]}
+        # Parse with defensive handling for code fences, explanatory text, and malformed output.
         parsed_types = None
         if isinstance(response, dict):
-            # LLM wrapper already parsed JSON
             parsed_types = response.get("query_types")
         elif isinstance(response, str):
-            # Try to extract JSON from the raw string
+            # Strip surrounding whitespace and markdown code fences
+            sanitized = response.strip()
+            if sanitized.startswith("```"):
+                sanitized = sanitized.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            # Attempt JSON extraction even if wrapped in explanatory text
             try:
-                parsed = json.loads(response.strip())
+                parsed = json.loads(sanitized)
                 parsed_types = parsed.get("query_types")
             except (json.JSONDecodeError, AttributeError):
-                pass
+                # Try to find JSON object embedded in text
+                import re
+                json_match = re.search(r'\{[^{}]+\}', sanitized)
+                if json_match:
+                    try:
+                        parsed = json.loads(json_match.group())
+                        parsed_types = parsed.get("query_types")
+                    except (json.JSONDecodeError, AttributeError):
+                        pass
 
+        # Strict validation: must be a list of strings, max 5 entries
         if isinstance(parsed_types, list) and parsed_types:
-            # Successfully parsed structured output
-            logger.info(f"Classifier returned structured output: {parsed_types}")
-            for qtype in parsed_types:
-                if isinstance(qtype, str):
-                    self._classify_query_types(qtype.strip().lower(), query_types)
-        else:
+            validated = [
+                qtype.strip().lower()
+                for qtype in parsed_types
+                if isinstance(qtype, str) and qtype.strip()
+            ][:5]  # cap at 5 to prevent runaway lists
+            if validated:
+                logger.info(f"Classifier returned structured output: {validated}")
+                for qtype in validated:
+                    self._classify_query_types(qtype, query_types)
+            else:
+                parsed_types = None  # fall through to text fallback
+
+        if not parsed_types or not query_types:
             # Fallback: comma-split parsing for backward compatibility
             logger.warning(
-                f"Classifier did not return valid JSON, falling back to text parsing. "
+                f"Classifier did not return valid structured output, falling back to text parsing. "
                 f"Raw response: {str(response)[:200]}"
             )
             raw = str(response).lower()
@@ -482,17 +514,6 @@ class AiAssistance:
             f"Hypothesis agent processing query: {state['user_query']} for user: {state['user_id']}"
         )
 
-        if _USE_MOCKS:
-            logger.info("[MOCK] Returning mock hypothesis response")
-            return {
-                "hypothesis_response": {
-                    "text": "[Mock] Targeted modulation of the mTOR signaling pathway may extend cellular lifespan by enhancing autophagy and reducing senescence-associated secretory phenotype (SASP) markers.",
-                    "resource": None,
-                },
-                "agents_completed": ["hypothesis_agent"],
-                "messages": [AIMessage(content="Hypothesis mock response")],
-            }
-
         try:
             emit_to_user(user=state["user_id"], message="Generating hypothesis...")
             response = self.hypothesis_generation.generate_hypothesis(
@@ -546,6 +567,7 @@ class AiAssistance:
                 state["user_query"],
                 state["user_id"],
                 content_ids=state.get("content_ids"),
+                conversation_history=state.get("conversation_history"),
             )
 
             # Normalize response to dict with text key
@@ -579,7 +601,7 @@ class AiAssistance:
                     "confidence": confidence,
                 },
                 "agents_completed": ["rag_agent"],
-                "messages": [AIMessage(content=f"RAG query processed (confidence={confidence:.2f})")],
+                "messages": [AIMessage(content="RAG query processed")],
             }
             
         except Exception as e:
@@ -600,18 +622,6 @@ class AiAssistance:
         logger.info(
             f"Galaxy agent processing query: {state['user_query']} for user: {state['user_id']}"
         )
-
-        if _USE_MOCKS:
-            logger.info("[MOCK] Returning mock Galaxy response")
-            return {
-                "galaxy_response": {
-                    "text": "[Mock] Galaxy platform offers tools for RNA-seq alignment (HISAT2), variant calling (FreeBayes), and automated workflow execution for genomic analysis pipelines.",
-                    "json_format": None,
-                    "source": GALAXY_PLATFORM,
-                },
-                "agents_completed": ["galaxy_agent"],
-                "messages": [AIMessage(content="Galaxy mock response")],
-            }
 
         try:
             emit_to_user(
@@ -796,17 +806,6 @@ class AiAssistance:
             }
 
     def _biogpt_agent(self, state: AgentState) -> dict:
-        if _USE_MOCKS:
-            logger.info("[MOCK] Returning mock BioGPT response")
-            return {
-                "biogpt_response": {
-                    "text": "[Mock] BioGPT analysis: The queried biological entity is associated with key aging-related pathways including mTOR, AMPK, and sirtuins, which regulate cellular senescence and metabolic homeostasis.",
-                    "source": "BioGPT (mock)",
-                },
-                "agents_completed": ["biogpt_agent"],
-                "messages": [AIMessage(content="BioGPT mock response")],
-            }
-
         try:
             emit_to_user(user=state["user_id"], message="Analyzing biomedical information...")
             response = self.biogpt.generate_answer(state["user_query"])
@@ -1153,7 +1152,7 @@ class AiAssistance:
                 if content:
                     source_label = output.get('source', 'unknown')
                     if confidence is not None:
-                        source_label += f" [confidence: {confidence:.2f}]"
+                        source_label += f" [confidence: {_confidence_label(confidence)}]"
                     sources_info.append(f"From {source_label}: {content}")
 
             combined_text = "\n\n".join(sources_info)
@@ -1185,11 +1184,11 @@ class AiAssistance:
             if sources_footer:
                 aggregated_text = aggregated_text.rstrip() + "\n\n" + sources_footer
 
-            # Extract confidence scores to show in the final response
+            # Extract confidence as qualitative labels for the final response
             confidence_scores = {}
             for output in agent_outputs:
                 if "confidence" in output:
-                    confidence_scores[output["agent"]] = output["confidence"]
+                    confidence_scores[output["agent"]] = _confidence_label(output["confidence"])
 
             return {
                 "response": {
@@ -1207,7 +1206,7 @@ class AiAssistance:
             confidence_scores = {}
             for output in agent_outputs:
                 if "confidence" in output:
-                    confidence_scores[output["agent"]] = output["confidence"]
+                    confidence_scores[output["agent"]] = _confidence_label(output["confidence"])
                 content = output.get('content', '')
                 if isinstance(content, dict):
                     content = str(content)
@@ -1256,6 +1255,7 @@ class AiAssistance:
         graph_id: Optional[str] = None,
         urls: Optional[List[str]] = None,
         resource: Optional[Any] = None,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Main entry point for processing queries with parallel agent execution"""
         logger.info(
@@ -1288,6 +1288,7 @@ class AiAssistance:
                 "stop_pipeline": False,
                 "agents_to_run": [],
                 "agents_completed": [],
+                "conversation_history": conversation_history,
             }
 
             # Run the workflow
@@ -1321,7 +1322,7 @@ class AiAssistance:
 
 
     def _route_to_agent(self, response: str, query: str, user_id: str, token: str,
-                        graph_id, content_ids, urls, resource) -> Dict[str, Any]:
+                        graph_id, content_ids, urls, resource, conversation_history=None) -> Dict[str, Any]:
         if "response:" in response:
             result = response.split("response:")[1].strip()
             final_response = result.strip('"')
@@ -1347,6 +1348,7 @@ class AiAssistance:
                 graph_id=graph_id,
                 urls=urls,
                 resource=resource,
+                conversation_history=conversation_history,
             )
             if isinstance(agent_response, str):
                 agent_response = {"text": agent_response, "agents_completed": []}
@@ -1451,7 +1453,8 @@ class AiAssistance:
 
             return self._route_to_agent(
                 response or "",
-                query, user_id, token, graph_id, content_ids, urls, resource
+                query, user_id, token, graph_id, content_ids, urls, resource,
+                conversation_history=history,
             )
 
         except Exception as e:
