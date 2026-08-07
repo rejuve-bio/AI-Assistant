@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION")
 USER_COLLECTION = os.getenv("USER_COLLECTION", "CHAT_MEMORY")
 CONTENT_LIMIT = 10  # Total content limit (PDFs + web content)
+# Below this many unique retrieved chunks the initial answer is considered
+# weakly grounded, so the reflection critic runs to check/revise it. With
+# healthy retrieval the critic is skipped and a heuristic confidence is used,
+# saving up to 2 LLM round-trips per query.
+RAG_CRITIC_MIN_CHUNKS = int(os.getenv("RAG_CRITIC_MIN_CHUNKS", "3"))
 
 
 class RAG:
@@ -465,11 +470,64 @@ class RAG:
             logger.error(f"RAG reflection step failed, using initial answer: {e}", exc_info=True)
             return initial_answer, 0.5
 
-    # Heuristic patterns that suggest a query may be multi-part
-    _SPLIT_HEURISTICS = re.compile(
-        r'\band\b|\balso\b|\bas well as\b|\bcompare\b|\bvs\.?\b|\bversus\b',
+    # Heuristic patterns that suggest a query may be genuinely multi-part.
+    # A bare "and"/"also" is too weak a signal on its own — it appears in many
+    # single-topic questions ("what is BRCA1 and why is it important?") —
+    # so the heuristic only triggers on real multi-part structure: an explicit
+    # comparison, interrogatives in SEPARATE clauses, or comma-separated
+    # enumeration.
+    _SPLIT_COMPARISON = re.compile(
+        r'\bcompare\b|\bvs\.?\b|\bversus\b|\bdifference between\b',
         re.IGNORECASE,
     )
+    _INTERROGATIVE = re.compile(
+        r'\b(what|which|how|why|who|when|where)\b',
+        re.IGNORECASE,
+    )
+    # Clause boundaries used to split a query into independent segments.
+    # IMPORTANT: 'and'/'also' only count as clause boundaries when
+    # immediately followed by a *topic-introducing* interrogative
+    # (what/which/who/where/when).  'why' and 'how' are excluded because
+    # they almost always elaborate on the same topic rather than starting
+    # a new question — "What is X and why is it important?" is one topic,
+    # while "What does X do and what are Y?" is two.
+    _CLAUSE_BOUNDARY = re.compile(
+        r'\s*(?:'
+        r'(?:\band\b|\balso\b|\bas well as\b)\s+(?=(?:what|which|who|where|when)\b)'
+        r'|[,;?]'
+        r')\s*',
+        re.IGNORECASE,
+    )
+
+    def _looks_multipart(self, query_str: str) -> bool:
+        """Cheap structural check for whether a query is genuinely multi-part.
+
+        The key rule for interrogatives: they must appear in SEPARATE clauses
+        to count as multi-part.  'and'/'also' only act as clause boundaries
+        when immediately followed by a question word — so "What is X and why
+        does it happen?" stays as one clause (single topic), while "What does
+        X do and what are Y?" splits into two (genuinely separate questions).
+        """
+        # Explicit comparison keywords → always multi-part
+        if self._SPLIT_COMPARISON.search(query_str):
+            return True
+
+        # Comma-separated enumeration of items (e.g. "A, B, and C")
+        if query_str.count(',') >= 2:
+            return True
+
+        # Split by clause boundaries and count how many independent segments
+        # contain at least one interrogative.  Two or more such segments mean
+        # the user is genuinely asking separate questions.
+        clauses = self._CLAUSE_BOUNDARY.split(query_str)
+        clauses_with_interrogative = sum(
+            1 for clause in clauses
+            if clause.strip() and self._INTERROGATIVE.search(clause)
+        )
+        if clauses_with_interrogative >= 2:
+            return True
+
+        return False
 
     def _decompose_query(self, query_str: str) -> list:
         """
@@ -484,10 +542,7 @@ class RAG:
         the list contains just the original query (no extra retrieval cost).
         """
         # --- Heuristic gate: skip LLM for obviously single-topic queries ---
-        has_multiple_commas = query_str.count(',') >= 2
-        has_split_keyword = bool(self._SPLIT_HEURISTICS.search(query_str))
-
-        if not has_multiple_commas and not has_split_keyword:
+        if not self._looks_multipart(query_str):
             logger.info("[DECOMPOSE] Heuristic: single topic — skipping LLM decomposition.")
             return [query_str]
 
@@ -636,11 +691,22 @@ class RAG:
 
             logger.info(f"Initial RAG answer generated.")
 
-            # --- Reflection loop ---
-            # Validate and potentially revise the initial answer before returning it.
+            # --- Reflection loop (gated) ---
+            # The critic is a full second LLM call (plus a third if it requests a
+            # revision). To keep the common RAG path at a single LLM call, it only
+            # runs when retrieval is thin — the case where hallucination risk is
+            # highest. With healthy retrieval we use a cheap, deterministic
+            # confidence derived from how many unique chunks grounded the answer.
             confidence = 0.5  # default confidence
             if isinstance(result, str) and result.strip():
-                result, confidence = self._reflect_and_revise(query_str, combined_results, result)
+                if len(combined_results) < RAG_CRITIC_MIN_CHUNKS:
+                    result, confidence = self._reflect_and_revise(query_str, combined_results, result)
+                else:
+                    confidence = min(0.95, 0.75 + 0.02 * len(combined_results))
+                    logger.info(
+                        f"RAG reflection skipped (retrieved {len(combined_results)} chunks) — "
+                        f"using heuristic confidence={confidence:.2f}"
+                    )
             # ----------------------
 
             logger.info(f"Result generated successfully (confidence={confidence:.2f}). {result}")

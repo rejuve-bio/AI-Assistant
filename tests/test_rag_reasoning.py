@@ -157,7 +157,7 @@ class TestDecomposeQuery:
         mock_llm.generate.assert_not_called()
 
     def test_query_with_and_triggers_llm(self, rag_instance, mock_llm):
-        """'and' keyword triggers LLM decomposition."""
+        """Interrogatives in separate clauses joined by 'and' → LLM decomposition."""
         mock_llm.generate.return_value = json.dumps({
             "sub_queries": [
                 "What does Rejuve Bio do?",
@@ -196,7 +196,9 @@ class TestDecomposeQuery:
             "sub_queries": ["What is BRCA1 and its function?"]
         })
 
-        result = rag_instance._decompose_query("What is BRCA1 and its function?")
+        # This must first pass the heuristic to reach the LLM.
+        # "compare" triggers the heuristic so the LLM gets called.
+        result = rag_instance._decompose_query("Compare the function of BRCA1")
 
         assert len(result) == 1
 
@@ -205,10 +207,83 @@ class TestDecomposeQuery:
         mock_llm.generate.return_value = "I cannot decompose this query."
 
         result = rag_instance._decompose_query(
-            "Tell me about BRCA1 and TP53"
+            "Compare BRCA1 and TP53"
         )
 
-        assert result == ["Tell me about BRCA1 and TP53"]
+        assert result == ["Compare BRCA1 and TP53"]
+
+    def test_bare_and_without_second_interrogative_skips_llm(self, rag_instance, mock_llm):
+        """A bare 'and' inside a single-topic question must NOT trigger the LLM."""
+        result = rag_instance._decompose_query(
+            "What is the function of BRCA1 and its role in DNA repair?"
+        )
+
+        assert result == ["What is the function of BRCA1 and its role in DNA repair?"]
+        mock_llm.generate.assert_not_called()
+
+    def test_bare_also_without_second_interrogative_skips_llm(self, rag_instance, mock_llm):
+        """A bare 'also' inside a single-topic question must NOT trigger the LLM."""
+        result = rag_instance._decompose_query(
+            "Tell me about Rejuve Bio and also its research focus"
+        )
+
+        assert result == ["Tell me about Rejuve Bio and also its research focus"]
+        mock_llm.generate.assert_not_called()
+
+    def test_single_topic_what_and_why_skips_llm(self, rag_instance, mock_llm):
+        """'What is X and why does Y?' about one topic → no LLM decomposition."""
+        result = rag_instance._decompose_query(
+            "What is Rejuve Bio and why does it focus on longevity?"
+        )
+
+        assert result == ["What is Rejuve Bio and why does it focus on longevity?"]
+        mock_llm.generate.assert_not_called()
+
+    def test_single_topic_what_and_how_skips_llm(self, rag_instance, mock_llm):
+        """'What is X and how does it use Y?' about one topic → no LLM decomposition."""
+        result = rag_instance._decompose_query(
+            "What is Rejuve Bio and how does it use AI?"
+        )
+
+        assert result == ["What is Rejuve Bio and how does it use AI?"]
+        mock_llm.generate.assert_not_called()
+
+
+# ===========================================================================
+# Tests for the reflection critic gate
+# ===========================================================================
+
+class TestReflectionGate:
+    """The critic only runs when retrieval is thin (< RAG_CRITIC_MIN_CHUNKS)."""
+
+    def test_critic_runs_when_retrieval_thin(self, rag_instance, mock_llm):
+        """1 chunk → critic runs (extra LLM call) and its confidence is returned."""
+        rag_instance.query = MagicMock(
+            return_value=[{"id": "1", "text": "Rejuve Bio is a longevity research company."}]
+        )
+        mock_llm.generate.side_effect = [
+            "Rejuve Bio is a longevity research company.",
+            json.dumps({"verdict": "GOOD", "confidence": 0.8}),
+        ]
+
+        result = rag_instance.get_result_from_rag("What is Rejuve Bio?", "user1")
+
+        assert result["text"] == "Rejuve Bio is a longevity research company."
+        assert result["confidence"] == pytest.approx(0.8, abs=0.01)
+        assert mock_llm.generate.call_count == 2
+
+    def test_critic_skipped_when_retrieval_rich(self, rag_instance, mock_llm):
+        """>= 3 chunks → critic skipped, single LLM call, heuristic confidence."""
+        chunks = [{"id": str(i), "text": f"Supporting chunk number {i}."} for i in range(5)]
+        rag_instance.query = MagicMock(return_value=chunks)
+        mock_llm.generate.return_value = "A well-grounded answer drawn from the chunks."
+
+        result = rag_instance.get_result_from_rag("What is Rejuve Bio?", "user1")
+
+        assert result["text"] == "A well-grounded answer drawn from the chunks."
+        # 0.75 + 0.02 * 5 = 0.85
+        assert result["confidence"] == pytest.approx(0.85, abs=0.01)
+        assert mock_llm.generate.call_count == 1
 
 
 # ===========================================================================
