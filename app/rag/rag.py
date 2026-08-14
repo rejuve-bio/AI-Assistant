@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION")
+PUBMED_COLLECTION = os.getenv("PUBMED_COLLECTION", "pubmed_abstracts")
 USER_COLLECTION = os.getenv("USER_COLLECTION", "CHAT_MEMORY")
 CONTENT_LIMIT = 10  # Total content limit (PDFs + web content)
 # Below this many unique retrieved chunks the initial answer is considered
@@ -25,6 +26,12 @@ CONTENT_LIMIT = 10  # Total content limit (PDFs + web content)
 # healthy retrieval the critic is skipped and a heuristic confidence is used,
 # saving up to 2 LLM round-trips per query.
 RAG_CRITIC_MIN_CHUNKS = int(os.getenv("RAG_CRITIC_MIN_CHUNKS", "3"))
+
+# --- Two-stage retrieval (re-ranking) ---
+# Fetch a wide candidate pool from Qdrant, then cross-encoder re-rank to top-k.
+RAG_RERANK_ENABLED = os.getenv("RAG_RERANK_ENABLED", "true").lower() == "true"
+RAG_RERANK_FETCH   = int(os.getenv("RAG_RERANK_FETCH", "50"))   # Qdrant wide fetch
+RAG_RERANK_TOP_K   = int(os.getenv("RAG_RERANK_TOP_K",  "5"))    # candidates passed to LLM
 
 
 class RAG:
@@ -344,15 +351,16 @@ class RAG:
         content_ids=None,
     ):
         """
-        Unified query method for retrieving similar content from Qdrant.
-        :param query_str: The query string to process.
-        :param user_id: The ID of the user making the query.
-        :param content_ids: Optional list of content IDs to filter user content.
-        :return: List of relevant results.
+        Two-stage retrieval: fetch a wide candidate pool from Qdrant, then
+        optionally re-rank with a cross-encoder and return only the top-k
+        highest-confidence chunks.
+
+        For user-scoped queries (``filter=True``) we skip re-ranking because
+        user collections tend to be small and highly relevant by construction.
         """
         try:
             if filter:
-                # User content collection, optionally filtered by content_ids
+                # User content collection — narrow by user/content IDs.
                 return self.client.retrieve_similar_content(
                     collection_name=user_id,
                     query=query_str,
@@ -360,13 +368,30 @@ class RAG:
                     content_ids=content_ids,
                     top_k=10,
                 )
-            else:
-                # General collection
-                return self.client.retrieve_similar_content(
-                    collection_name=VECTOR_COLLECTION,
-                    query=query_str,
-                    top_k=10,
+
+            # --- General collection: two-stage retrieval ---
+            fetch_k = RAG_RERANK_FETCH if RAG_RERANK_ENABLED else RAG_RERANK_TOP_K
+
+            candidates = self.client.retrieve_similar_content(
+                collection_name=VECTOR_COLLECTION,
+                query=query_str,
+                top_k=fetch_k,
+            )
+
+            if not RAG_RERANK_ENABLED or len(candidates) <= RAG_RERANK_TOP_K:
+                return candidates[:RAG_RERANK_TOP_K]
+
+            try:
+                from app.rag.utils.reranker import rerank  # noqa: PLC0415
+                candidates = rerank(query_str, candidates, top_k=RAG_RERANK_TOP_K)
+            except Exception as exc:
+                logger.warning(
+                    f"Re-ranker failed, falling back to cosine-similarity order: {exc}"
                 )
+                candidates = candidates[:RAG_RERANK_TOP_K]
+
+            return candidates
+
         except Exception as e:
             logger.error(f"An error occurred during query processing: {e}")
             traceback.print_exc()

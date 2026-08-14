@@ -19,6 +19,7 @@ from app.socket_manager import init_socketio
 from app.storage.qdrant import Qdrant
 from app.storage.mongo_storage import MongoManager
 from app.annotation_graph.schema_handler import SchemaHandler
+from app.ingestion.scheduler import start_scheduler
 from app.llm_handle.llm_models import (
     get_llm_model,
     sentence_transformer_embedding_model,
@@ -195,6 +196,13 @@ def create_app():
 
     app.register_blueprint(main_bp)
     logger.info('Blueprint "main_bp" registered')
+
+    # Start PubMed background ingestion scheduler
+    # We assign these directly to the app object for the scheduler to access
+    app.qdrant_client = qdrant_client
+    app.mongo_db = mongo_db_manager.db
+    
+    app.scheduler = start_scheduler(app)
 
     logger.info("Flask app created successfully")
     return app, socketio
