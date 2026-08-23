@@ -12,6 +12,7 @@ packages = [
 python = ">=3.10,<3.13"
 Flask = "^3.0.3"
 python-dotenv = "^1.0.1"
+pydantic = "^2.13.4"
 requests = "^2.32.3"
 openai = "^1.51.0"
 PyYAML = "^6.0.2"
