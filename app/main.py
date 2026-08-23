@@ -20,53 +20,25 @@ from .hypothesis_generation.hypothesis import HypothesisGeneration
 from .socket_manager import emit_to_user
 from .Galaxy_integration.galaxy import GalaxyHandler
 from .biogpt_agent.biogpt import BioGPTAgent
-from typing import TypedDict, List, Annotated, Any, Dict, Optional
+from .orchestration.contracts import AgentName, AgentState, AssistantRequest
+from .orchestration.planner import QueryPlanner
+from .orchestration.registry import AgentDefinition, AgentRegistry
+from .orchestration.workflow import AssistantWorkflow
+from typing import List, Any, Dict, Optional
 from flask_socketio import emit
 from dotenv import load_dotenv
-from langgraph.graph import StateGraph, END
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_core.tools import tool
 import asyncio
 import traceback
 import json
 import os
-import operator
 import logging
 
 
 logger = logging.getLogger(__name__)
 
 load_dotenv()
-
-
-class AgentState(TypedDict):
-    messages: Annotated[List[BaseMessage], operator.add]
-    user_query: str
-    user_id: str
-    token: str
-    query_types: List[str]
-    response: Dict[str, Any]
-    error: str
-    content_ids: Optional[List[str]]
-    graph_id: Optional[str]
-    urls: Optional[List[str]]
-    resource: Optional[Any]
-    pipeline_details: Dict[str, Any]
-    # Agent-specific responses with source attribution
-    annotation_response: Optional[Dict[str, Any]]
-    rag_response: Optional[Dict[str, Any]]
-    galaxy_response: Optional[Dict[str, Any]]
-    content_retrieval_response: Optional[Dict[str, Any]]
-    biogpt_response:Optional[Dict[str, Any]]
-    hypothesis_response: Optional[Dict[str, Any]]
-    pubmed_response: Optional[Dict[str, Any]]
-    clinical_trials_response: Optional[Dict[str, Any]]
-    # Parallel execution control
-    agents_to_run: List[str]
-    agents_completed: Annotated[List[str], operator.add]
-    stop_pipeline: Optional[bool]
-    # Conversation history for context-aware retrieval
-    conversation_history: Optional[List[Dict[str, Any]]]
 
 
 ANNOTATION_DB = "annotation database"
@@ -119,65 +91,30 @@ class AiAssistance:
         )
         logger.info(f"Galaxy handler initialized: {type(self.galaxy_handler).__name__}")
 
-        # Initialize the LangGraph workflow
-        self.workflow = self._create_workflow()
-        self.app = self.workflow.compile()
-
-    def _create_workflow(self) -> StateGraph:
-        """Create the LangGraph workflow with proper parallel agent execution"""
-        logger.info("Creating LangGraph workflow with parallel agent execution")
-
-        workflow = StateGraph(AgentState)
-
-        # Add nodes
-        workflow.add_node("classifier", self._classify_query)
-        workflow.add_node("router", self._router)
-        workflow.add_node("hypothesis_agent", self._hypothesis_agent)
-        workflow.add_node("annotation_agent", self._annotation_agent)
-        workflow.add_node("rag_agent", self._rag_agent)
-        workflow.add_node("galaxy_agent", self._galaxy_agent)
-        workflow.add_node("content_retrieval_agent", self._content_retrieval_agent)
-        workflow.add_node("biogpt_agent", self._biogpt_agent)
-        workflow.add_node("aggregator", self._aggregate_responses)
-        workflow.add_node("finalizer", self._finalize_response)
-        workflow.add_node("pubmed_agent", self._pubmed_agent)
-        workflow.add_node("clinical_trials_agent", self._clinical_trials_agent)
-
-        # Define edges
-        workflow.set_entry_point("classifier")
-        workflow.add_edge("classifier", "router")
-
-        # Router decides which agents to invoke
-        workflow.add_conditional_edges(
-            "router",
-            self._should_run_agent,
-            {
-                "annotation_agent": "annotation_agent",
-                "hypothesis_agent": "hypothesis_agent",
-                "rag_agent": "rag_agent",
-                "galaxy_agent": "galaxy_agent",
-                "content_retrieval_agent": "content_retrieval_agent",
-                "biogpt_agent": "biogpt_agent",
-                "pubmed_agent": "pubmed_agent",
-                "clinical_trials_agent": "clinical_trials_agent",
-                "aggregator": "aggregator",
-                "error" : "finalizer"
-            },
+        # LangGraph wiring is intentionally kept outside this façade.  The
+        # registry is now the single extension point for executable agents.
+        self.agent_registry = AgentRegistry([
+            AgentDefinition(AgentName.ANNOTATION, self._annotation_agent, "annotation_response"),
+            AgentDefinition(AgentName.HYPOTHESIS, self._hypothesis_agent, "hypothesis_response"),
+            AgentDefinition(AgentName.RAG, self._rag_agent, "rag_response"),
+            AgentDefinition(AgentName.GALAXY, self._galaxy_agent, "galaxy_response"),
+            AgentDefinition(AgentName.CONTENT_RETRIEVAL, self._content_retrieval_agent, "content_retrieval_response"),
+            AgentDefinition(AgentName.BIOGPT, self._biogpt_agent, "biogpt_response"),
+            AgentDefinition(AgentName.PUBMED, self._pubmed_agent, "pubmed_response"),
+            AgentDefinition(AgentName.CLINICAL_TRIALS, self._clinical_trials_agent, "clinical_trials_response"),
+        ])
+        self.query_planner = QueryPlanner(
+            llm=self.advanced_llm,
+            classifier_prompt=main_classifier_prompt,
+            content_summaries=self.get_content_summaries,
+            registry=self.agent_registry,
         )
-
-        # All agents go back to router to check for next agent
-        workflow.add_edge("annotation_agent", "router")
-        workflow.add_edge("rag_agent", "router")
-        workflow.add_edge("galaxy_agent", "router")
-        workflow.add_edge("content_retrieval_agent", "router")
-        workflow.add_edge("biogpt_agent", "router")
-        workflow.add_edge("hypothesis_agent", "router")
-        workflow.add_edge("pubmed_agent", "router")
-        workflow.add_edge("clinical_trials_agent", "router")
-        # Aggregator flows to finalizer
-        workflow.add_edge("aggregator", "finalizer")
-        workflow.add_edge("finalizer", END)
-        return workflow
+        self.orchestrator = AssistantWorkflow(
+            planner=self.query_planner,
+            registry=self.agent_registry,
+            aggregate=self._aggregate_responses,
+            finalize=self._finalize_response,
+        )
 
     def get_content_summaries(self, user_id, content_ids=None):
         """Get summaries for all content types (PDF and web)"""
@@ -215,52 +152,6 @@ class AiAssistance:
                 )
 
         return content_summaries
-
-    def _classify_query_types(self, qtype: str, query_types: list) -> None:
-        if ("annotation_biological" in qtype or "annotation biological" in qtype) and "annotation_biological" not in query_types:
-            query_types.append("annotation_biological")
-        if ("annotation_general" in qtype or "annotation general" in qtype) and "annotation_general" not in query_types:
-            query_types.append("annotation_general")
-        if "galaxy" in qtype and "galaxy" not in query_types:
-            query_types.append("galaxy")
-        if "rag" in qtype and "rag" not in query_types:
-            query_types.append("rag")
-        if "hypothesis" in qtype and "hypothesis_generation" not in query_types:
-            query_types.append("hypothesis_generation")
-        if "biogpt" in qtype and "biogpt" not in query_types:
-            query_types.append("biogpt")
-        if "literature" in qtype and "literature" not in query_types:
-            query_types.append("literature")
-
-    def _build_agent_list(self, query_types: list, content_ids, urls, graph_id) -> list:
-        agents_to_run = []
-
-        # content_retrieval_agent always runs first when a graph_id is present,
-        # so subsequent agents have the graph context available in state.
-        if content_ids or urls or graph_id:
-            agents_to_run.append("content_retrieval_agent")
-
-        type_to_agent = {
-            "annotation_biological": "annotation_agent",
-            "hypothesis_generation": "hypothesis_agent",
-            "annotation_general": "annotation_agent",
-            "galaxy": "galaxy_agent",
-            "rag": "rag_agent",
-            "biogpt": "biogpt_agent",
-        }
-        for qtype in query_types:
-            if qtype == "literature":
-                for agent in ("rag_agent", "pubmed_agent", "clinical_trials_agent"):
-                    if agent not in agents_to_run:
-                        agents_to_run.append(agent)
-                continue
-            agent = type_to_agent.get(qtype)
-            if agent and agent not in agents_to_run:
-                agents_to_run.append(agent)
-
-        if not agents_to_run:
-            agents_to_run.append("rag_agent")
-        return agents_to_run
 
     def _classify_query(self, state: AgentState) -> Dict[str, Any]:
         """Classify query and determine which agents to invoke (can be multiple)"""
@@ -1263,49 +1154,17 @@ class AiAssistance:
             f"content_ids: {content_ids}, graph_id: {graph_id}, urls: {urls}"
         )
         try:
-            # Create initial state
-            initial_state = {
-                "messages": [HumanMessage(content=message)],
-                "user_query": message,
-                "user_id": user_id,
-                "token": token,
-                "query_types": [],
-                "response": {"text": "", "json_format": None},
-                "error": "",
-                "content_ids": content_ids,
-                "graph_id": graph_id,
-                "urls": urls,
-                "resource": resource,
-                "pipeline_details": {},
-                "annotation_response": None,
-                "rag_response": None,
-                "galaxy_response": None,
-                "biogpt_response": None,
-                "content_retrieval_response": None,
-                "hypothesis_response": None,
-                "pubmed_response": None,
-                "clinical_trials_response": None,
-                "stop_pipeline": False,
-                "agents_to_run": [],
-                "agents_completed": [],
-                "conversation_history": conversation_history,
-            }
-
-            # Run the workflow
-            result = self.app.invoke(initial_state)
-
-            # Extract the structured response
-            response = result.get("response", {"text": ""})
-            
-            # Ensure consistent structure
-            if not isinstance(response, dict):
-                response = {"text": str(response), "json_format": None}
-            else:
-                response.setdefault("text", "")
-                response.setdefault("json_format", None)
-
-            # ✅ Add agents_completed to the response so assistant_response can save it
-            response["agents_completed"] = result.get("agents_completed", [])
+            request = AssistantRequest(
+                message=message,
+                user_id=user_id,
+                token=token,
+                content_ids=content_ids,
+                graph_id=graph_id,
+                urls=urls,
+                resource=resource,
+                conversation_history=conversation_history,
+            )
+            response = self.orchestrator.invoke(request).model_dump()
             
             logger.info(f"Agent completed successfully for user: {user_id}")
             return response
