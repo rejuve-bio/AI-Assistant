@@ -1,3 +1,10 @@
+"""AiAssistance — thin composition root and HTTP-facing façade.
+
+All agent logic lives in ``app.orchestration.agents``.
+All aggregation lives in ``app.orchestration.composer``.
+This module only wires services together and handles the request/response boundary.
+"""
+
 from .llm_handle.llm_models import (
     LLMInterface,
     OpenAIModel,
@@ -8,7 +15,7 @@ from .prompts.classifier_prompt import (
     hypothesis_aggregator_prompt,
     classifier_prompt,
     main_classifier_prompt,
-    aggregator_prompt
+    aggregator_prompt,
 )
 from .annotation_graph.annotated_graph import Graph
 from .annotation_graph.schema_handler import SchemaHandler
@@ -24,6 +31,18 @@ from .orchestration.contracts import AgentName, AgentState, AssistantRequest
 from .orchestration.planner import QueryPlanner
 from .orchestration.registry import AgentDefinition, AgentRegistry
 from .orchestration.workflow import AssistantWorkflow
+from .orchestration.composer import ResponseComposer
+from .orchestration.agents import (
+    AnnotationAgent,
+    BioGPTQueryAgent,
+    ClinicalTrialsAgent,
+    ContentRetrievalAgent,
+    GalaxyAgent,
+    HypothesisAgent,
+    PubMedAgent,
+    RagQueryAgent,
+)
+from .orchestration.agents.dependencies import AgentDependencies
 from typing import List, Any, Dict, Optional
 from flask_socketio import emit
 from dotenv import load_dotenv
@@ -41,26 +60,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 
-ANNOTATION_DB = "annotation database"
-KNOWLEDGE_BASE = "knowledge base"
-GALAXY_PLATFORM = "Galaxy platform"
 ANALYZING_MSG = "Analyzing..."
-
-# Confidence score labels for user-facing output
-_CONFIDENCE_LABELS = {
-    "high": 0.7,    # >= 0.7
-    "medium": 0.5,  # >= 0.5
-    "low": 0.0,     # < 0.5
-}
-
-
-def _confidence_label(score: float) -> str:
-    """Map a numeric confidence score (0.0–1.0) to a qualitative label."""
-    if score >= _CONFIDENCE_LABELS["high"]:
-        return "high"
-    elif score >= _CONFIDENCE_LABELS["medium"]:
-        return "medium"
-    return "low"
 
 
 class AiAssistance:
@@ -91,30 +91,69 @@ class AiAssistance:
         )
         logger.info(f"Galaxy handler initialized: {type(self.galaxy_handler).__name__}")
 
-        # LangGraph wiring is intentionally kept outside this façade.  The
-        # registry is now the single extension point for executable agents.
+        # ----- Dependency Injection -----
+        agent_dependencies = AgentDependencies(
+            rag=self.rag,
+            biogpt=self.biogpt,
+            basic_llm=self.basic_llm,
+            advanced_llm=self.advanced_llm,
+            annotation_graph=self.annotation_graph,
+            hypothesis_generation=self.hypothesis_generation,
+            galaxy_handler=self.galaxy_handler,
+            graph_summarizer=self.graph_summarizer,
+            store=self.store,
+            emit_status=emit_to_user,
+        )
+
+        # ----- Agent Instantiation -----
+        rag_agent = RagQueryAgent(agent_dependencies)
+        biogpt_agent = BioGPTQueryAgent(agent_dependencies)
+        pubmed_agent = PubMedAgent(agent_dependencies)
+        clinical_trials_agent = ClinicalTrialsAgent(agent_dependencies)
+        annotation_agent = AnnotationAgent(agent_dependencies)
+        hypothesis_agent = HypothesisAgent(agent_dependencies)
+        galaxy_agent = GalaxyAgent(agent_dependencies)
+        content_retrieval_agent = ContentRetrievalAgent(agent_dependencies)
+
+        # ----- Response Composer -----
+        composer = ResponseComposer(
+            advanced_llm=self.advanced_llm,
+            aggregator_prompt=aggregator_prompt,
+            hypothesis_aggregator_prompt=hypothesis_aggregator_prompt,
+            emit_status=emit_to_user,
+        )
+
+        # ----- Agent Registry -----
         self.agent_registry = AgentRegistry([
-            AgentDefinition(AgentName.ANNOTATION, self._annotation_agent, "annotation_response"),
-            AgentDefinition(AgentName.HYPOTHESIS, self._hypothesis_agent, "hypothesis_response"),
-            AgentDefinition(AgentName.RAG, self._rag_agent, "rag_response"),
-            AgentDefinition(AgentName.GALAXY, self._galaxy_agent, "galaxy_response"),
-            AgentDefinition(AgentName.CONTENT_RETRIEVAL, self._content_retrieval_agent, "content_retrieval_response"),
-            AgentDefinition(AgentName.BIOGPT, self._biogpt_agent, "biogpt_response"),
-            AgentDefinition(AgentName.PUBMED, self._pubmed_agent, "pubmed_response"),
-            AgentDefinition(AgentName.CLINICAL_TRIALS, self._clinical_trials_agent, "clinical_trials_response"),
+            AgentDefinition(AgentName.ANNOTATION, annotation_agent.execute, "annotation_response"),
+            AgentDefinition(AgentName.HYPOTHESIS, hypothesis_agent.execute, "hypothesis_response"),
+            AgentDefinition(AgentName.RAG, rag_agent.execute, "rag_response"),
+            AgentDefinition(AgentName.GALAXY, galaxy_agent.execute, "galaxy_response"),
+            AgentDefinition(AgentName.CONTENT_RETRIEVAL, content_retrieval_agent.execute, "content_retrieval_response"),
+            AgentDefinition(AgentName.BIOGPT, biogpt_agent.execute, "biogpt_response"),
+            AgentDefinition(AgentName.PUBMED, pubmed_agent.execute, "pubmed_response"),
+            AgentDefinition(AgentName.CLINICAL_TRIALS, clinical_trials_agent.execute, "clinical_trials_response"),
         ])
+
+        # ----- Query Planner -----
         self.query_planner = QueryPlanner(
             llm=self.advanced_llm,
             classifier_prompt=main_classifier_prompt,
             content_summaries=self.get_content_summaries,
             registry=self.agent_registry,
         )
+
+        # ----- Orchestrator -----
         self.orchestrator = AssistantWorkflow(
             planner=self.query_planner,
             registry=self.agent_registry,
-            aggregate=self._aggregate_responses,
-            finalize=self._finalize_response,
+            aggregate=composer.aggregate,
+            finalize=composer.finalize,
         )
+
+    # ------------------------------------------------------------------
+    # Content summaries (used by the planner for classification context)
+    # ------------------------------------------------------------------
 
     def get_content_summaries(self, user_id, content_ids=None):
         """Get summaries for all content types (PDF and web)"""
@@ -153,989 +192,9 @@ class AiAssistance:
 
         return content_summaries
 
-    def _classify_query(self, state: AgentState) -> Dict[str, Any]:
-        """Classify query and determine which agents to invoke (can be multiple)"""
-        query = state["user_query"]
-        user_id = state["user_id"]
-        content_ids = state.get("content_ids")
-        graph_id = state.get("graph_id")
-        urls = state.get("urls")
-        resource = state.get("resource")
-
-        # If the client explicitly set resource="hypothesis", skip LLM classification.
-        # - graph_id present: query an existing hypothesis via content_retrieval_agent → get_by_hypothesis_id
-        # - no graph_id: generate a new hypothesis via hypothesis_agent
-        if resource == "hypothesis":
-            if graph_id:
-                logger.info("Resource='hypothesis' + graph_id — routing only to content_retrieval_agent")
-                return {
-                    "query_types": ["hypothesis_generation"],
-                    "agents_to_run": ["content_retrieval_agent"],
-                    "agents_completed": [],
-                    "messages": [HumanMessage(content="Query classified as: hypothesis_generation")],
-                }
-            else:
-                logger.info("Resource='hypothesis' + no graph_id — routing to hypothesis_agent")
-                return {
-                    "query_types": ["hypothesis_generation"],
-                    "agents_to_run": ["hypothesis_agent"],
-                    "agents_completed": [],
-                    "messages": [HumanMessage(content="Query classified as: hypothesis_generation")],
-                }
-
-        content_summaries = self.get_content_summaries(user_id, content_ids)
-        logger.info(f"Classifying query: {query}")
-
-        classifier_prompt_text = main_classifier_prompt.format(
-            query=query,
-            content_summaries=content_summaries,
-        )
-        response = self.advanced_llm.generate(classifier_prompt_text)
-        logger.info(f"question classified as {response}")
-
-        query_types = []
-
-        # --- Structured output parsing ---
-        # The classifier prompt requests JSON: {"query_types": ["rag", "biogpt"]}
-        # Parse with defensive handling for code fences, explanatory text, and malformed output.
-        parsed_types = None
-        if isinstance(response, dict):
-            parsed_types = response.get("query_types")
-        elif isinstance(response, str):
-            # Strip surrounding whitespace and markdown code fences
-            sanitized = response.strip()
-            if sanitized.startswith("```"):
-                sanitized = sanitized.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            # Attempt JSON extraction even if wrapped in explanatory text
-            try:
-                parsed = json.loads(sanitized)
-                parsed_types = parsed.get("query_types")
-            except (json.JSONDecodeError, AttributeError):
-                # Try to find JSON object embedded in text
-                import re
-                json_match = re.search(r'\{[^{}]+\}', sanitized)
-                if json_match:
-                    try:
-                        parsed = json.loads(json_match.group())
-                        parsed_types = parsed.get("query_types")
-                    except (json.JSONDecodeError, AttributeError):
-                        pass
-
-        # Strict validation: must be a list of strings, max 5 entries
-        if isinstance(parsed_types, list) and parsed_types:
-            validated = [
-                qtype.strip().lower()
-                for qtype in parsed_types
-                if isinstance(qtype, str) and qtype.strip()
-            ][:5]  # cap at 5 to prevent runaway lists
-            if validated:
-                logger.info(f"Classifier returned structured output: {validated}")
-                for qtype in validated:
-                    self._classify_query_types(qtype, query_types)
-            else:
-                parsed_types = None  # fall through to text fallback
-
-        if not parsed_types or not query_types:
-            # Fallback: comma-split parsing for backward compatibility
-            logger.warning(
-                f"Classifier did not return valid structured output, falling back to text parsing. "
-                f"Raw response: {str(response)[:200]}"
-            )
-            raw = str(response).lower()
-            cleaned_response = raw.replace("and", ",").replace("\n", ",")
-            potential_types = [t.strip() for t in cleaned_response.split(",")]
-            for qtype in potential_types:
-                self._classify_query_types(qtype, query_types)
-        # ---------------------------------
-
-        if not query_types:
-            query_types = ["rag"]
-
-        logger.info(f"Query classified as: {query_types}")
-
-        agents_to_run = self._build_agent_list(query_types, content_ids, urls, graph_id)
-
-        logger.info(f"Agents to run: {agents_to_run}")
-
-        return {
-            "query_types": query_types,
-            "agents_to_run": agents_to_run,
-            "agents_completed": [],
-            "messages": [HumanMessage(content=f"Query classified as: {', '.join(query_types)}")],
-        }
-
-    def _router(self, state: AgentState) -> Dict[str, Any]:
-        """Router node that doesn't change state, just passes through"""
-        return {}
-
-    def _should_run_agent(self, state: AgentState) -> Any:
-        """
-        Determine which agent(s) to run next.
-        Returns a single agent name, a list of agent names to run concurrently
-        (only when they're independent of each other's output), or 'aggregator'
-        once all agents have completed.
-        """
-        # Short-circuit: an agent signalled that no further processing is needed
-        if state.get("stop_pipeline"):
-            logger.info("stop_pipeline flag set — skipping remaining agents, going to aggregator")
-            return "aggregator"
-
-        agents_to_run = state.get("agents_to_run", [])
-        agents_completed = state.get("agents_completed", [])
-        remaining = [a for a in agents_to_run if a not in agents_completed]
-
-        if not remaining:
-            logger.info("All agents completed, moving to aggregator")
-            return "aggregator"
-
-        # When a graph_id is already attached, whether a fresh annotation is even
-        # needed depends on content_retrieval_agent's result (does the existing
-        # graph already cover the query?). Defer annotation_agent until that's
-        # known instead of racing it against content_retrieval_agent — but
-        # biogpt_agent doesn't depend on either, so keep it running concurrently.
-        if "content_retrieval_agent" in remaining and "annotation_agent" in remaining and state.get("graph_id"):
-            concurrent = ["content_retrieval_agent"]
-            if "biogpt_agent" in remaining:
-                concurrent.append("biogpt_agent")
-            logger.info(f"annotation_agent gated on content_retrieval_agent's result (graph_id present) — running {concurrent} now")
-            return concurrent if len(concurrent) > 1 else concurrent[0]
-
-        # annotation_agent and biogpt_agent never read each other's output — one
-        # queries the graph, the other queries the LLM/BioGPT service — and are
-        # now paired on nearly every annotation query (biogpt is always added
-        # alongside annotation_biological), so run them concurrently instead of
-        # one after another.
-        if "annotation_agent" in remaining and "biogpt_agent" in remaining:
-            logger.info("Running annotation_agent and biogpt_agent concurrently")
-            return ["annotation_agent", "biogpt_agent"]
-
-        next_agent = remaining[0]
-        logger.info(f"Running next agent: {next_agent}")
-        return next_agent
-
-    def _annotation_agent(self, state: AgentState) -> Dict[str, Any]:
-        """Handle annotation-related queries"""
-        query_types = state.get("query_types", [])
-        query_type = next((qt for qt in query_types if "annotation" in qt), "annotation_biological")
-        
-        logger.info(
-            f"Annotation agent processing query: {state['user_query']} for user: {state['user_id']}, type: {query_type}"
-        )
-        
-        try:
-            if query_type == "annotation_biological":
-                emit_to_user(
-                    user=state["user_id"], 
-                    message="Processing your biological query..."
-                )
-            elif query_type == "annotation_general":
-                emit_to_user(
-                    user=state["user_id"], 
-                    message="Analyzing database information..."
-                )
-
-            pipeline_response = self.annotation_graph.process_annotation_query(
-                query=state["user_query"],
-                user_id=state["user_id"],
-                query_type=query_type,
-            )
-
-            logger.info(f"Pipeline response: {pipeline_response}")
-
-            if pipeline_response.get("needs_confirmation"):
-                return {
-                    "annotation_response": {
-                        "text": pipeline_response.get("confirmation_text", ""),
-                        "json_format": None,
-                        "needs_confirmation": True,
-                        "source": ANNOTATION_DB,
-                    },
-                    "agents_completed": ["annotation_agent"],
-                    "messages": [AIMessage(content="Annotation needs user confirmation")],
-                }
-
-            if pipeline_response.get("success", False):
-                summary = pipeline_response.get("summary", "")
-                json_format = pipeline_response.get("json_format", None)
-                validation_report = pipeline_response.get("validation_report", {})
-                organism = pipeline_response.get("organism", "human")
-
-                response_dict = {
-                    "text": summary if summary else "",
-                    "json_format": json_format,
-                    "validation_report": validation_report,
-                    "organism": organism,
-                    "source": ANNOTATION_DB
-                }
-
-                return {
-                    "annotation_response": response_dict,
-                    "agents_completed": ["annotation_agent"],
-                    "messages": [AIMessage(content="Annotation processing completed")]
-                }
-
-            else:
-                error_msg = pipeline_response.get("error", "Unknown error")
-                logger.error(f"Annotation pipeline failed: {error_msg}")
-                return {
-                    "annotation_response": {
-                        "text": f"Error: {error_msg}", 
-                        "json_format": None,
-                        "source": ANNOTATION_DB
-                    },
-                    "agents_completed": ["annotation_agent"],
-                    "error": error_msg,
-                }
-
-        except Exception as e:
-            logger.error("Unexpected error in annotation agent", exc_info=True)
-            return {
-                "annotation_response": {
-                    "text": f"Error: {str(e)}", 
-                    "json_format": None,
-                    "source": ANNOTATION_DB
-                },
-                "agents_completed": ["annotation_agent"],
-                "error": str(e),
-            }
-
-    def _hypothesis_agent(self, state: AgentState) -> Dict[str, Any]:
-        """Handle hypothesis generation queries"""
-        logger.info(
-            f"Hypothesis agent processing query: {state['user_query']} for user: {state['user_id']}"
-        )
-
-        try:
-            emit_to_user(user=state["user_id"], message="Generating hypothesis...")
-            response = self.hypothesis_generation.generate_hypothesis(
-                token=state["token"],
-                user_query=state["user_query"],
-                user_id=state["user_id"],
-            )
-
-            hypothesis_text = response.get("text", "")
-            # A real hypothesis always returns resource: {id, type, graph} — all fallback/failure paths omit it
-            succeeded = isinstance(response.get("resource"), dict) and response["resource"].get("type") == "hypothesis"
-
-            state_update = {
-                "hypothesis_response": response,
-                "messages": [AIMessage(content=f"Hypothesis generated: {hypothesis_text}")],
-                "agents_completed": ["hypothesis_agent"],
-            }
-
-            if succeeded:
-                current_agents = state.get("agents_to_run", [])
-                extra = [a for a in ("clinical_trials_agent", "pubmed_agent") if a not in current_agents]
-                if extra:
-                    logger.info(f"Hypothesis succeeded — injecting literature agents: {extra}")
-                    state_update["agents_to_run"] = current_agents + extra
-
-            return state_update
-
-        except Exception as e:
-            logger.error("Error in hypothesis agent", exc_info=True)
-            return {
-                "hypothesis_response": {
-                    "text": "The hypothesis service is not returning any results at the moment. There is nothing I can help with for this request.",
-                    "resource": None,
-                },
-                "stop_pipeline": True,
-                "error": str(e),
-                "messages": [AIMessage(content=f"Error in hypothesis generation: {str(e)}")],
-                "agents_completed": ["hypothesis_agent"],
-            }
-
-    def _rag_agent(self, state: AgentState) -> Dict[str, Any]:
-        """Handle general information queries"""
-        logger.info(
-            f"RAG agent processing query: {state['user_query']} for user: {state['user_id']}"
-        )
-
-        try:
-            emit_to_user(user=state["user_id"], message="Retrieving information...")
-            
-            response = self.rag.get_result_from_rag(
-                state["user_query"],
-                state["user_id"],
-                content_ids=state.get("content_ids"),
-                conversation_history=state.get("conversation_history"),
-            )
-
-            # Normalize response to dict with text key
-            if response and isinstance(response, dict) and "text" in response:
-                response_text = response["text"]
-            else:
-                response_text = str(response) if response else ""
-
-            # Extract confidence score from RAG reflection (defaults to 0.5)
-            confidence = response.get("confidence", 0.5) if isinstance(response, dict) else 0.5
-            logger.debug(f"RAG response (confidence={confidence:.2f}): {response_text}")
-
-            # No useful results → inject PubMed as fallback
-            if self._rag_has_no_results(response_text):
-                current_agents = state.get("agents_to_run", [])
-                if "pubmed_agent" not in current_agents:
-                    logger.info("RAG found no results — injecting pubmed_agent as fallback")
-                    emit_to_user(user=state["user_id"], message="Nothing found in knowledge base, searching PubMed...")
-                    return {
-                        "rag_response": {"text": response_text, "json_format": None, "source": KNOWLEDGE_BASE, "confidence": 0.0},
-                        "agents_to_run": current_agents + ["pubmed_agent"],
-                        "agents_completed": ["rag_agent"],
-                        "messages": [AIMessage(content="RAG found no results — triggering PubMed fallback")],
-                    }
-
-            return {
-                "rag_response": {
-                    "text": response_text,
-                    "json_format": None,
-                    "source": KNOWLEDGE_BASE,
-                    "confidence": confidence,
-                },
-                "agents_completed": ["rag_agent"],
-                "messages": [AIMessage(content="RAG query processed")],
-            }
-            
-        except Exception as e:
-            logger.error("Error in RAG agent", exc_info=True)
-            return {
-                "rag_response": {
-                    "text": f"Error: {str(e)}", 
-                    "json_format": None,
-                    "source": KNOWLEDGE_BASE,
-                    "confidence": 0.0,
-                },
-                "agents_completed": ["rag_agent"],
-                "error": str(e),
-            }
-
-    def _galaxy_agent(self, state: AgentState) -> Dict[str, Any]:
-        """Handle Galaxy tools and workflows queries"""
-        logger.info(
-            f"Galaxy agent processing query: {state['user_query']} for user: {state['user_id']}"
-        )
-
-        try:
-            emit_to_user(
-                user=state["user_id"], 
-                message="Retrieving Galaxy tools information..."
-            )
-            
-            response = self.galaxy_handler.get_galaxy_info(
-                state["user_query"], 
-                state["user_id"], 
-                state["token"]
-            )
-
-            # Normalize response
-            if isinstance(response, dict) and "text" in response:
-                response_text = response["text"]
-            else:
-                response_text = str(response) if response else "No Galaxy information found"
-            logger.debug(f"Galaxy response: {response_text}")
-            return {
-                "galaxy_response": {
-                    "text": response_text, 
-                    "json_format": None,
-                    "source": GALAXY_PLATFORM
-                },
-                "agents_completed": ["galaxy_agent"],
-                "messages": [AIMessage(content="Galaxy query processed")],
-            }
-            
-        except Exception as e:
-            logger.error("Error in galaxy agent", exc_info=True)
-            return {
-                "galaxy_response": {
-                    "text": f"Error: {str(e)}", 
-                    "json_format": None,
-                    "source": GALAXY_PLATFORM
-                },
-                "agents_completed": ["galaxy_agent"],
-                "error": str(e),
-            }
-
-    def _retrieve_from_graph(self, query, user_id, graph_id, token, resource, content_parts, sources):
-        """Returns (early_return, entity_found) — early_return is a state update dict to
-        short-circuit the pipeline on graph-fetch failure, or None to continue normally.
-        entity_found is True/False/None (unknown) per whether the graph actually covered
-        the query, used to decide whether a fresh annotation_agent run is still needed."""
-        logger.info(f"Retrieving graph summary for graph_id: {graph_id}")
-        graph_summary = self.answer_from_graph_summaries(
-            query=query,
-            user_id=user_id,
-            graph_id=graph_id,
-            token=token,
-            resource=resource
-        )
-        if not graph_summary:
-            return None, None
-        entity_found = graph_summary.get("entity_found") if isinstance(graph_summary, dict) else None
-        graph_text = graph_summary.get("text", str(graph_summary)) if isinstance(graph_summary, dict) else str(graph_summary)
-        if graph_text and not graph_text.startswith("Failed to contact") and not graph_text.startswith("Error"):
-            content_parts.append({"source": f"graph:{graph_id}", "content": graph_text})
-            sources.append(f"graph:{graph_id}")
-            return None, entity_found
-        if graph_text:
-            logger.warning(f"Graph fetch failed for {graph_id}: {graph_text}")
-            last_topic = None
-            try:
-                history = self.store.get_context_and_memory(user_id)
-                for item in reversed(history):
-                    agents_used = item.get("context", {}).get("agents_used", [])
-                    if "annotation_agent" in agents_used:
-                        last_topic = item.get("question")
-                        break
-            except Exception:
-                pass
-            if last_topic:
-                confirmation_text = (
-                    f"I couldn't find the graph you referenced (ID: `{graph_id}`). "
-                    f"Did you mean to ask about your previous annotation: *\"{last_topic}\"*? "
-                    f"Or would you like to ask a different question?"
-                )
-            else:
-                confirmation_text = (
-                    f"I couldn't find the graph you referenced (ID: `{graph_id}`). "
-                    f"Please check that the graph exists, or let me know what you'd like to explore."
-                )
-            return {
-                "content_retrieval_response": {
-                    "text": confirmation_text,
-                    "json_format": None,
-                    "sources": []
-                },
-                "agents_completed": ["content_retrieval_agent"],
-                "stop_pipeline": True,
-            }, None
-        return None, entity_found
-
-    def _retrieve_from_galaxy(self, query, user_id, token, urls, content_parts, sources):
-        logger.info(f"Retrieving Galaxy urls for user: {user_id}")
-        urls_response = self.galaxy_handler.get_galaxy_info(
-            query=query, user_id=user_id, token=token, urls=urls
-        )
-        if urls_response:
-            urls_text = urls_response.get("text", str(urls_response)) if isinstance(urls_response, dict) else str(urls_response)
-            for file in (urls if isinstance(urls, list) else [urls]):
-                content_parts.append({"source": f"file:{file}", "content": urls_text})
-                sources.append(f"file:{file}")
-
-    def _retrieve_from_rag(self, query, user_id, content_ids, content_parts, sources):
-        logger.info(f"Retrieving RAG content for content_ids: {content_ids}")
-        rag_content = self.rag.get_result_from_rag(query, user_id, content_ids)
-        if rag_content:
-            rag_text = rag_content.get("text", str(rag_content)) if isinstance(rag_content, dict) else str(rag_content)
-            resources = rag_content.get("resource", {})
-            content_parts.append({
-                "source": f"content IDs: {', '.join(content_ids)}",
-                "content": rag_text,
-                "resource": resources
-            })
-            sources.append(f"content IDs: {', '.join(content_ids)}")
-
-    def _content_retrieval_agent(self, state: AgentState) -> Dict[str, Any]:
-        """
-        Retrieve relevant content from multiple sources with source attribution
-        """
-        query = state.get("user_query")
-        user_id = state.get("user_id")
-        token = state.get("token")
-        graph_id = state.get("graph_id")
-        urls = state.get("urls")
-        content_ids = state.get("content_ids")
-        resource = state.get("resource")
-
-        logger.info(f"ContentRetrievalAgent called for user: {user_id}")
-        emit_to_user(user=user_id, message="Retrieving relevant content...")
-
-        content_parts = []
-        sources = []
-        graph_covers_query = False
-
-        try:
-            if graph_id:
-                early_return, entity_found = self._retrieve_from_graph(query, user_id, graph_id, token, resource, content_parts, sources)
-                if early_return is not None:
-                    return early_return
-
-                if entity_found is True and "annotation_agent" in state.get("agents_to_run", []):
-                    graph_covers_query = True
-
-            if urls:
-                self._retrieve_from_galaxy(query, user_id, token, urls, content_parts, sources)
-
-            if content_ids:
-                self._retrieve_from_rag(query, user_id, content_ids, content_parts, sources)
-
-            response_dict = {
-                "text": content_parts,
-                "json_format": None,
-                "sources": sources
-            }
-            logger.info(f"Content retrieval response prepared with {len(content_parts)} parts. response is {response_dict}")
-            state_update = {
-                "content_retrieval_response": response_dict,
-                "agents_completed": ["content_retrieval_agent"],
-                "messages": [AIMessage(content="Content retrieval completed")]
-            }
-            if graph_covers_query:
-                logger.info("Existing attached graph already covers the query — skipping redundant annotation_agent run")
-                current_agents = state.get("agents_to_run", [])
-                state_update["agents_to_run"] = [a for a in current_agents if a != "annotation_agent"]
-            return state_update
-
-        except Exception as e:
-            logger.error(f"Error in ContentRetrievalAgent: {str(e)}", exc_info=True)
-            return {
-                "content_retrieval_response": {
-                    "text": [],
-                    "json_format": None,
-                    "sources": []
-                },
-                "agents_completed": ["content_retrieval_agent"],
-                "error": str(e),
-            }
-
-    def _biogpt_agent(self, state: AgentState) -> dict:
-        try:
-            emit_to_user(user=state["user_id"], message="Analyzing biomedical information...")
-            response = self.biogpt.generate_answer(state["user_query"])
-            logger.info(f"BioGPT response: {response}")
-            return {
-                "biogpt_response": {
-                    "text": response,
-                    "source": "BioGPT"
-                },
-                "agents_completed": ["biogpt_agent"],
-                "messages": [AIMessage(content="BioGPT query processed")]
-            }
-        except Exception as e:
-            logger.error(f"Error in biogpt agent: {str(e)}", exc_info=True)
-            return {
-                "biogpt_response": {
-                    "text": None,
-                    "json_format": None,
-                    "source": "BioGPT"
-                },
-                "agents_completed": ["biogpt_agent"],
-                "error": str(e)
-            }
-
-    _NO_RESULT_PHRASES = (
-        "couldn't find", "could not find", "no relevant", "no information",
-        "no results", "not found", "no documents", "unable to find",
-        "no data", "i don't have information", "i do not have",
-        "no specific", "no details",
-    )
-
-    def _rag_has_no_results(self, text: str) -> bool:
-        t = text.lower().strip()
-        return len(t) < 120 or any(p in t for p in self._NO_RESULT_PHRASES)
-
-    def _extract_search_term(self, user_query: str, context: str = "") -> str:
-        """Distil a question (and optional context) into a concise API-friendly search term."""
-        context_line = f"\nAdditional context: {context[:500]}" if context else ""
-        prompt = (
-            "Extract a short, keyword-based search term (3-7 words) suitable for searching "
-            "PubMed or ClinicalTrials.gov. Focus on the biological topic, gene, drug, or condition. "
-            "Do NOT include words like: clinical trials, studies, papers, literature, search, find, pubmed, research. "
-            "Do NOT use only a variant rs number — expand to the gene name and condition it is associated with. "
-            "Return ONLY the search term, no explanation, no punctuation.\n\n"
-            f"User question: {user_query}{context_line}\n\nSearch term:"
-        )
-        try:
-            term = self.basic_llm.generate(prompt).strip().strip('"').strip("'")
-            logger.info(f"Extracted search term: '{term}'")
-            return term if term else user_query
-        except Exception:
-            return user_query
-
-    def _pubmed_agent(self, state: AgentState) -> Dict[str, Any]:
-        from app.rag.literature import search_pubmed
-        user_id = state["user_id"]
-        hypothesis = state.get("hypothesis_response") or {}
-        context = hypothesis.get("text", "")
-        search_term = self._extract_search_term(state["user_query"], context=context)
-        logger.info(f"PubMed agent searching for: {search_term}")
-        try:
-            emit_to_user(user=user_id, message="Searching PubMed literature...")
-            result = search_pubmed(search_term, max_results=8)
-            papers = result.get("papers", [])
-            if not papers:
-                text = "No relevant publications found in PubMed for this query."
-            else:
-                lines = [f"Found {len(papers)} relevant paper(s) from PubMed:\n"]
-                for p in papers:
-                    authors = ", ".join(p.get("authors", [])) or "Unknown authors"
-                    lines.append(
-                        f"- **{p.get('title', 'No title')}** ({p.get('year', '')}) — {authors}\n"
-                        f"  {p.get('abstract', '')}\n"
-                        f"  URL: {p.get('url', '')}"
-                    )
-                text = "\n".join(lines)
-            return {
-                "pubmed_response": {"text": text, "source": "PubMed", "items": papers},
-                "agents_completed": ["pubmed_agent"],
-                "messages": [AIMessage(content="PubMed search completed")],
-            }
-        except Exception as e:
-            logger.error(f"PubMed agent error: {e}", exc_info=True)
-            return {
-                "pubmed_response": {"text": f"PubMed search unavailable: {str(e)}", "source": "PubMed", "items": []},
-                "agents_completed": ["pubmed_agent"],
-            }
-
-    def _clinical_trials_agent(self, state: AgentState) -> Dict[str, Any]:
-        from app.rag.literature import search_clinical_trials
-        user_id = state["user_id"]
-        hypothesis = state.get("hypothesis_response") or {}
-        context = hypothesis.get("text", "")
-        search_term = self._extract_search_term(state["user_query"], context=context)
-        logger.info(f"ClinicalTrials agent searching for: {search_term}")
-        try:
-            emit_to_user(user=user_id, message="Searching ClinicalTrials.gov...")
-            result = search_clinical_trials(search_term, status="RECRUITING", max_results=5)
-            trials = result.get("trials", [])
-            if not trials:
-                result = search_clinical_trials(search_term, status="", max_results=5)
-                trials = result.get("trials", [])
-            if not trials:
-                text = "No clinical trials found for this query on ClinicalTrials.gov."
-            else:
-                lines = [f"Found {len(trials)} clinical trial(s) on ClinicalTrials.gov:\n"]
-                for t in trials:
-                    phase = ", ".join(t.get("phase", [])) or "N/A"
-                    conditions = ", ".join(t.get("conditions", [])) or "N/A"
-                    interventions = ", ".join(t.get("interventions", [])) or "N/A"
-                    lines.append(
-                        f"- **{t.get('title', 'No title')}** ({t.get('nct_id', '')})\n"
-                        f"  Phase: {phase} | Status: {t.get('status', '')} | Started: {t.get('start_date', 'N/A')}\n"
-                        f"  Conditions: {conditions}\n"
-                        f"  Interventions: {interventions}\n"
-                        f"  URL: {t.get('url', '')}"
-                    )
-                text = "\n".join(lines)
-            return {
-                "clinical_trials_response": {"text": text, "source": "ClinicalTrials.gov", "items": trials},
-                "agents_completed": ["clinical_trials_agent"],
-                "messages": [AIMessage(content="ClinicalTrials search completed")],
-            }
-        except Exception as e:
-            logger.error(f"ClinicalTrials agent error: {e}", exc_info=True)
-            return {
-                "clinical_trials_response": {"text": f"ClinicalTrials search unavailable: {str(e)}", "source": "ClinicalTrials.gov",  "items": []},
-                "agents_completed": ["clinical_trials_agent"],
-            }
-
-    def _format_annotation_section(self, failed: list) -> str:
-        missing_parts = []
-        for n in failed:
-            not_validated = n.get("not_validated")
-            if not_validated:
-                items = not_validated if isinstance(not_validated, list) else [not_validated]
-                for item in items:
-                    missing_parts.append(f'"{item}"')
-            else:
-                props = n.get("properties", {})
-                name = next(iter(props.values()), n.get("type", "unknown"))
-                missing_parts.append(f'"{name}"')
-        verb = "was" if len(missing_parts) == 1 else "were"
-        joined = ", ".join(missing_parts)
-        return f" Note: {joined} {verb} not found in the database."
-
-    def _build_annotation_text(self, json_format: dict) -> str:
-        """Build human-readable text from annotation validation results for truly-failed nodes."""
-        nodes = json_format.get("nodes", [])
-        # Ignore nodes pending confirmation — those are handled by _build_confirmation_text
-        failed = [n for n in nodes if n.get("status") is False and not n.get("needs_confirmation")]
-        text = "The annotation structure was created successfully (see structured data)."
-        if failed:
-            text += self._format_annotation_section(failed)
-        return text
-
-    def _build_sources_footer(self, state: dict) -> str:
-        """Build a markdown Sources section with clickable links from PubMed and ClinicalTrials."""
-        sections = []
-
-        pubmed_resp = state.get("pubmed_response")
-        if pubmed_resp:
-            papers = pubmed_resp.get("items", [])
-            links = [
-                f"- [{p.get('title', p.get('pmid', 'Article'))}]({p['url']})"
-                for p in papers if p.get("url")
-            ]
-            if links:
-                sections.append("**PubMed Sources:**\n" + "\n".join(links))
-
-        clinical_resp = state.get("clinical_trials_response")
-        if clinical_resp:
-            trials = clinical_resp.get("items", [])
-            links = [
-                f"- [{t.get('title', t.get('nct_id', 'Trial'))} ({t.get('nct_id', '')})]({t['url']})"
-                for t in trials if t.get("url")
-            ]
-            if links:
-                sections.append("**ClinicalTrials.gov Sources:**\n" + "\n".join(links))
-
-        return "\n\n".join(sections)
-
-    def _aggregate_annotation_response(self, annotation_resp: dict, agent_outputs: list) -> tuple:
-        if annotation_resp.get("needs_confirmation"):
-            return None, None, True
-        text_content = annotation_resp.get("text") or annotation_resp.get("summary") or ""
-        json_format = annotation_resp.get("json_format")
-        organism = annotation_resp.get("organism") if json_format else None
-        if not text_content and json_format:
-            text_content = self._build_annotation_text(json_format)
-        if text_content:
-            agent_outputs.append({
-                "agent": "annotation_agent",
-                "source": annotation_resp.get("source", ANNOTATION_DB),
-                "content": text_content
-            })
-        return json_format, organism, False
-
-    def _aggregate_content_responses(self, state: dict, agent_outputs: list) -> Any:
-        rag_resp = state.get("rag_response")
-        if rag_resp:
-            text_content = rag_resp.get("text", "")
-            confidence = rag_resp.get("confidence")
-            if text_content:
-                entry = {"agent": "rag_agent", "source": rag_resp.get("source", KNOWLEDGE_BASE), "content": text_content}
-                if confidence is not None:
-                    entry["confidence"] = confidence
-                agent_outputs.append(entry)
-
-        galaxy_resp = state.get("galaxy_response")
-        if galaxy_resp:
-            text_content = galaxy_resp.get("text", "")
-            if text_content:
-                agent_outputs.append({"agent": "galaxy_agent", "source": galaxy_resp.get("source", GALAXY_PLATFORM), "content": text_content})
-
-        biogpt_resp = state.get("biogpt_response")
-        if biogpt_resp:
-            text_content = biogpt_resp.get("text", "")
-            if text_content:
-                agent_outputs.append({"agent": "biogpt_agent", "source": biogpt_resp.get("source", "biogpt"), "content": text_content})
-
-        resource_to_save = state.get("resource")
-
-        content_resp = state.get("content_retrieval_response")
-        if content_resp:
-            content_parts = content_resp.get("text", [])
-            if isinstance(content_parts, list):
-                for part in content_parts:
-                    if isinstance(part, dict) and part.get("content"):
-                        agent_outputs.append({"agent": "content_retrieval_agent", "source": part.get("source", "external content"), "content": part["content"]})
-            elif isinstance(content_parts, str) and content_parts:
-                sources = content_resp.get("sources", ["external content"])
-                agent_outputs.append({"agent": "content_retrieval_agent", "source": ", ".join(sources), "content": content_parts})
-
-        pubmed_resp = state.get("pubmed_response")
-        if pubmed_resp:
-            text_content = pubmed_resp.get("text", "")
-            if text_content:
-                agent_outputs.append({"agent": "pubmed_agent", "source": pubmed_resp.get("source", "PubMed"), "content": text_content})
-
-        clinical_trials_resp = state.get("clinical_trials_response")
-        if clinical_trials_resp:
-            text_content = clinical_trials_resp.get("text", "")
-            if text_content:
-                agent_outputs.append({"agent": "clinical_trials_agent", "source": clinical_trials_resp.get("source", "ClinicalTrials.gov"), "content": text_content})
-
-        return resource_to_save
-
-    def _aggregate_responses(self, state: AgentState) -> Dict[str, Any]:
-        """
-        Aggregate responses from all agents with source attribution.
-        Ensures that text content is combined coherently and structured JSON data (json_format)
-        is always included when available.
-        """
-        # If an agent already set a final response (e.g. hypothesis failure with stop_pipeline),
-        # return it directly without re-aggregating.
-        if state.get("stop_pipeline") and state.get("response", {}).get("text"):
-            logger.info("stop_pipeline with pre-built response — skipping aggregation")
-            return {"response": state["response"]}
-
-        # Hypothesis fast-path — bypass LLM aggregation entirely
-        hyp_resp = state.get("hypothesis_response") or {}
-        if hyp_resp:
-            hyp_succeeded = isinstance(hyp_resp.get("resource"), dict) and hyp_resp["resource"].get("type") == "hypothesis"
-            if hyp_succeeded:
-                # Success: return hypothesis text + supporting literature links
-                hyp_text = hyp_resp.get("text", "")
-                sources_footer = self._build_sources_footer(state)
-                final_text = hyp_text.rstrip()
-                if sources_footer:
-                    final_text += "\n\n" + sources_footer
-                return {
-                    "response": {"text": final_text, "json_format": None, "organism": None},
-                    "resource": hyp_resp.get("resource"),
-                }
-            else:
-                # Soft failure (no project, validation failed) — return module message as-is
-                # Hard failure (exception) routes through literature fallback instead, so hyp_text here is always a user-facing message
-                hyp_text = hyp_resp.get("text") or "The hypothesis service is not returning any results at the moment. There is nothing I can help with directly, but I can search for similar clinical trials and published research — please try asking about the topic directly."
-                return {
-                    "response": {"text": hyp_text, "json_format": None, "organism": None},
-                }
-
-        user_query = state.get("user_query", "")
-        logger.info("Aggregating responses from multiple agents with source attribution")
-
-        agent_outputs = []
-        json_format = None
-        organism = None
-
-        # ---------------- Annotation Agent ----------------
-        annotation_resp = state.get("annotation_response")
-        if annotation_resp:
-            json_format, organism, needs_confirm = self._aggregate_annotation_response(annotation_resp, agent_outputs)
-            if needs_confirm:
-                return {
-                    "response": {
-                        "text": annotation_resp.get("text", ""),
-                        "json_format": None,
-                    }
-                }
-
-        resource_to_save = self._aggregate_content_responses(state, agent_outputs)
-
-        # ---------------- Handle JSON-only case ----------------
-        if json_format and not agent_outputs:
-            nodes = json_format.get("nodes", [])
-            logger.info(f"[note-check] node statuses: { {n.get('node_id'): n.get('status') for n in nodes} }")
-            failed = [n for n in nodes if n.get("status") is False]
-            logger.info(f"[note-check] failed nodes: {[n.get('node_id') for n in failed]}")
-            return {
-                "response": {
-                    "text": self._build_annotation_text(json_format),
-                    "json_format": json_format,
-                    "organism": organism
-                }
-            }
-
-        if not agent_outputs:
-            return {
-                "response": {
-                    "text": "I couldn't find any relevant information to answer your query.",
-                    "json_format": None
-                }
-            }
-
-        # ---------------- LLM Aggregation ----------------
-        try:
-            sources_info = []
-            for output in agent_outputs:
-                confidence = output.get("confidence")
-                confidence_tag = f" (confidence={confidence:.2f})" if confidence is not None else ""
-                logger.info("=== [%s] source=%s%s ===\n%s",
-                output['agent'],
-                output.get('source', 'unknown'),
-                confidence_tag,
-                str(output.get('content', ''))[:300])
-
-                content = output.get("content", "")
-                # Handle if content is a dict (convert to string)
-                if isinstance(content, dict):
-                    content = str(content)
-                content = content.strip() if isinstance(content, str) else ""
-                if content:
-                    source_label = output.get('source', 'unknown')
-                    if confidence is not None:
-                        source_label += f" [confidence: {_confidence_label(confidence)}]"
-                    sources_info.append(f"From {source_label}: {content}")
-
-            combined_text = "\n\n".join(sources_info)
-
-            json_note = ""
-            if json_format:
-                nodes = json_format.get("nodes", [])
-                predicates = json_format.get("predicates", [])
-                if nodes or predicates:
-                    node_ids = [n.get("id", "") for n in nodes if n.get("id")]
-                    json_note = (
-                        f"\n\nNote: An annotation query was successfully built for "
-                        f"{', '.join(node_ids) if node_ids else 'the requested entities'} "
-                        f"and will be displayed on the graph."
-                    )
-                else:
-                    json_note = "\n\nNote: Structured annotation data is also available for this query."
-
-            query_types = state.get("query_types", [])
-            if "hypothesis_generation" in query_types and state.get("graph_id"):
-                prompt = hypothesis_aggregator_prompt.format(user_query=user_query, combined_text=combined_text)
-            else:
-                prompt = aggregator_prompt.format(user_query=user_query, combined_text=combined_text, json_note=json_note)
-
-            aggregated_text = self.advanced_llm.generate(prompt)
-            logger.info(f"Successfully aggregated response: {aggregated_text[:100]}...")
-
-            sources_footer = self._build_sources_footer(state)
-            if sources_footer:
-                aggregated_text = aggregated_text.rstrip() + "\n\n" + sources_footer
-
-            # Extract confidence as qualitative labels for the final response
-            confidence_scores = {}
-            for output in agent_outputs:
-                if "confidence" in output:
-                    confidence_scores[output["agent"]] = _confidence_label(output["confidence"])
-
-            return {
-                "response": {
-                    "text": aggregated_text,
-                    "json_format": json_format,
-                    "organism": organism,
-                    "confidence_scores": confidence_scores
-                },
-                "resource": resource_to_save
-            }
-
-        except Exception as e:
-            logger.error(f"Error in aggregation: {str(e)}", exc_info=True)
-            fallback_parts = []
-            confidence_scores = {}
-            for output in agent_outputs:
-                if "confidence" in output:
-                    confidence_scores[output["agent"]] = _confidence_label(output["confidence"])
-                content = output.get('content', '')
-                if isinstance(content, dict):
-                    content = str(content)
-                if content:
-                    content_str = content.strip() if isinstance(content, str) else str(content)
-                    fallback_parts.append(f"**From {output.get('source', 'unknown')}:**\n{content_str}")
-
-            fallback_text = "\n\n".join(fallback_parts) if fallback_parts else "Annotation data retrieved."
-
-            return {
-                "response": {
-                    "text": fallback_text,
-                    "json_format": json_format,
-                    "organism": organism,
-                    "confidence_scores": confidence_scores
-                },
-                "resource": resource_to_save
-            }
-
-    def _finalize_response(self, state: AgentState) -> Dict[str, Any]:
-        """Finalize and return the response"""
-        response = state.get("response", {})
-        user_id = state.get("user_id")
-        
-        logger.info(f"Finalizing response for user: {user_id}")
-        logger.info(f"here is the response : {response}")
-        
-        # Ensure response has correct structure
-        if not isinstance(response, dict):
-            response = {"text": str(response), "json_format": None}
-        response.setdefault("text", "")
-         # Include the resource (hypothesis graph) if available
-        if state.get("resource"):
-            response["resource"] = state.get("resource")
-
-        emit_to_user(user=user_id, message=response, status="completed")
-
-        return {"response": response}
+    # ------------------------------------------------------------------
+    # Public entry points (HTTP / SocketIO boundary)
+    # ------------------------------------------------------------------
 
     def agent(
         self,
@@ -1165,7 +224,7 @@ class AiAssistance:
                 conversation_history=conversation_history,
             )
             response = self.orchestrator.invoke(request).model_dump()
-            
+
             logger.info(f"Agent completed successfully for user: {user_id}")
             return response
 
@@ -1178,7 +237,6 @@ class AiAssistance:
             }
             emit_to_user(user=user_id, message=error_response, status="error")
             return error_response
-
 
     def _route_to_agent(self, response: str, query: str, user_id: str, token: str,
                         graph_id, content_ids, urls, resource, conversation_history=None) -> Dict[str, Any]:
@@ -1342,7 +400,7 @@ class AiAssistance:
             f"Answer from graph summaries called with query: {query}, user_id: {user_id}, "
             f"resource: {resource}, graph_id: {graph_id}"
         )
-        
+
         try:
             entity_found = None
             if resource == "annotation":
@@ -1365,7 +423,7 @@ class AiAssistance:
 
             # Return summary as dict for consistency
             return {"text": summary_text, "json_format": None, "entity_found": entity_found}
-            
+
         except Exception as e:
             logger.error("Error in answer_from_graph_summaries", exc_info=True)
             return {

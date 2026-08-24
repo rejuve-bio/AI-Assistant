@@ -294,22 +294,22 @@ class TestConfidenceLabel:
     """Tests for confidence score → qualitative label mapping."""
 
     def test_high_confidence(self):
-        from app.main import _confidence_label
+        from app.orchestration.composer import _confidence_label
         assert _confidence_label(0.9) == "high"
         assert _confidence_label(0.7) == "high"
 
     def test_medium_confidence(self):
-        from app.main import _confidence_label
+        from app.orchestration.composer import _confidence_label
         assert _confidence_label(0.6) == "medium"
         assert _confidence_label(0.5) == "medium"
 
     def test_low_confidence(self):
-        from app.main import _confidence_label
+        from app.orchestration.composer import _confidence_label
         assert _confidence_label(0.4) == "low"
         assert _confidence_label(0.0) == "low"
 
     def test_boundary_values(self):
-        from app.main import _confidence_label
+        from app.orchestration.composer import _confidence_label
         assert _confidence_label(0.7) == "high"    # exact boundary
         assert _confidence_label(0.69) == "medium"  # just below
         assert _confidence_label(0.5) == "medium"   # exact boundary

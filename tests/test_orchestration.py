@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import pytest
+from unittest.mock import MagicMock
 
 from app.orchestration.contracts import AgentName, AssistantRequest
+from app.orchestration.agents.biogpt import BioGPTQueryAgent
+from app.orchestration.agents.dependencies import AgentDependencies
+from app.orchestration.agents.rag import RagQueryAgent
 from app.orchestration.planner import ExecutionPolicy, QueryPlanner
 from app.orchestration.registry import AgentDefinition, AgentRegistry
 from app.orchestration.workflow import AssistantWorkflow
@@ -122,3 +126,41 @@ def test_workflow_executes_a_registered_agent_and_normalizes_its_response():
 
     assert response.text == "RNA is a nucleic acid."
     assert response.agents_completed == [AgentName.RAG.value]
+
+
+def test_rag_agent_injects_pubmed_fallback_without_knowing_the_workflow():
+    rag = MagicMock()
+    rag.get_result_from_rag.return_value = {"text": "No relevant information found.", "confidence": 0.1}
+    emit_status = MagicMock()
+    dependencies = AgentDependencies(
+        rag=rag, biogpt=MagicMock(), basic_llm=MagicMock(), advanced_llm=MagicMock(),
+        annotation_graph=MagicMock(), hypothesis_generation=MagicMock(),
+        galaxy_handler=MagicMock(), graph_summarizer=MagicMock(),
+        store=MagicMock(), emit_status=emit_status,
+    )
+
+    state = AssistantRequest(message="RNA", user_id="user-1").initial_state()
+    state["agents_to_run"] = ["rag_agent"]
+    update = RagQueryAgent(dependencies).execute(state)
+
+    assert update["agents_to_run"] == ["rag_agent", "pubmed_agent"]
+    assert update["agents_completed"] == ["rag_agent"]
+    assert update["rag_response"]["confidence"] == 0.0
+
+
+def test_biogpt_agent_uses_only_injected_dependencies():
+    biogpt = MagicMock()
+    biogpt.generate_answer.return_value = "RNA carries genetic information."
+    dependencies = AgentDependencies(
+        rag=MagicMock(), biogpt=biogpt, basic_llm=MagicMock(), advanced_llm=MagicMock(),
+        annotation_graph=MagicMock(), hypothesis_generation=MagicMock(),
+        galaxy_handler=MagicMock(), graph_summarizer=MagicMock(),
+        store=MagicMock(), emit_status=MagicMock(),
+    )
+
+    update = BioGPTQueryAgent(dependencies).execute(
+        AssistantRequest(message="What is RNA?", user_id="user-1").initial_state()
+    )
+
+    assert update["biogpt_response"]["text"] == "RNA carries genetic information."
+    assert update["agents_completed"] == ["biogpt_agent"]
