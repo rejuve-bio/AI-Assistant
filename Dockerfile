@@ -22,4 +22,4 @@ RUN poetry config virtualenvs.create false && \
     poetry install --no-root --no-interaction
 
 # Run the application
-CMD ["gunicorn", "-w", "4", "--preload", "--bind", "0.0.0.0:$FLASK_PORT", "run:app"]
+CMD ["uvicorn", "run:asgi_app", "--host", "0.0.0.0", "--port", "$FASTAPI_PORT", "--workers", "4"]
