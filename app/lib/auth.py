@@ -1,64 +1,61 @@
-from flask import Flask, request, jsonify
-from flask_socketio import disconnect
-import jwt
-from functools import wraps
-from dotenv import load_dotenv
 import logging
 import os
+from dataclasses import dataclass
+
+import jwt
+from dotenv import load_dotenv
+from fastapi import Header, HTTPException
 
 load_dotenv()
 
 # JWT Secret Key
 JWT_SECRET = os.getenv("JWT_SECRET")
 
-def token_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = request.headers.get('Authorization')
-        if not token:
-            return jsonify({'text': 'Token is missing!'}), 403
-        
-        try:
-            # Remove 'Bearer' prefix if present
-            if 'Bearer' in token:
-                token = token.split()[1]
-            
-            data = jwt.decode(token, JWT_SECRET, algorithms=["HS256"], options={"verify_sub": False})
-            current_user_id = data['user_id']
-        except Exception as e:
-            logging.error(f"Error docodcing token: {e}")
-            return {'text': 'Token is invalid!'}, 403
-        
-        # Pass current_user_id, Bearer token and maintain other args
-        return f(current_user_id, token, *args, **kwargs)
-    return decorated
 
-def socket_token_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        try:
-            # Get token from Authorization header (most reliable)
-            auth_header = request.headers.get('Authorization')
-            
-            if not auth_header:
-                logging.error("No Authorization header found")
-                disconnect()
-                return False
+@dataclass
+class AuthContext:
+    """Resolved identity for a request, passed to route handlers via Depends(token_required)."""
+    user_id: str
+    token: str
 
-            # Extract token (remove 'Bearer ' prefix)
-            token = auth_header.split()[1] if 'Bearer' in auth_header else auth_header
-            
-            # Decode token
-            data = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-            current_user_id = data['user_id']
-            
-            logging.info(f"Token decoded successfully for user: {current_user_id}")
-            
-            # Pass current_user_id AND original token to the function
-            return f(current_user_id, token, *args, **kwargs)
-            
-        except Exception as e:
-            logging.error(f"Socket auth error: {e}")
-            disconnect()
-            return False
-    return decorated
+
+def _decode_user_id(token: str) -> str:
+    data = jwt.decode(token, JWT_SECRET, algorithms=["HS256"], options={"verify_sub": False})
+    return data["user_id"]
+
+
+def _strip_bearer(auth_header: str) -> str:
+    return auth_header.split()[1] if "Bearer" in auth_header else auth_header
+
+
+async def token_required(authorization: str = Header(None)) -> AuthContext:
+    """FastAPI dependency: validates the Authorization header and resolves the user.
+
+    Use as `auth: AuthContext = Depends(token_required)` on any route that needs it.
+    """
+    if not authorization:
+        raise HTTPException(status_code=403, detail="Token is missing!")
+
+    try:
+        token = _strip_bearer(authorization)
+        current_user_id = _decode_user_id(token)
+    except Exception as e:
+        logging.error(f"Error decoding token: {e}")
+        raise HTTPException(status_code=403, detail="Token is invalid!")
+
+    return AuthContext(user_id=current_user_id, token=token)
+
+
+def decode_socket_token(auth_header: str) -> AuthContext:
+    """Validates a token supplied at Socket.IO connect time.
+
+    Framework-agnostic on purpose: raises ValueError on failure and lets the
+    caller (the socket connect handler) decide how to reject the connection,
+    instead of reaching into a specific socket library itself.
+    """
+    if not auth_header:
+        raise ValueError("No Authorization header found")
+
+    token = _strip_bearer(auth_header)
+    current_user_id = _decode_user_id(token)
+    return AuthContext(user_id=current_user_id, token=token)
