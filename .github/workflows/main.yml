@@ -20,7 +20,7 @@ jobs:
       ADVANCED_LLM_VERSION: ${{ vars.ADVANCED_LLM_VERSION }}
       BASIC_LLM_PROVIDER: ${{ vars.BASIC_LLM_PROVIDER }}
       BASIC_LLM_VERSION: ${{ vars.BASIC_LLM_VERSION }}
-      FLASK_PORT: ${{ vars.FLASK_PORT }}
+      FASTAPI_PORT: ${{ vars.FASTAPI_PORT }}
 
       # Mock/Test configuration (add these if not in secrets)
       REDIS_URL: ${{ vars.REDIS_URL }}
@@ -85,7 +85,7 @@ jobs:
         run: |
           echo "JWT_SECRET set: $([[ -n "$JWT_SECRET" ]] && echo YES || echo NO)"
           echo "GEMINI_API_KEY set: $([[ -n "$GEMINI_API_KEY" ]] && echo YES || echo NO)"
-          echo "FLASK_PORT: $FLASK_PORT"
+          echo "FASTAPI_PORT: $FASTAPI_PORT"
 
       - name: Run tests
         run: |
