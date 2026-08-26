@@ -2,7 +2,6 @@ from collections import defaultdict
 import json
 import logging
 from biocypher import BioCypher
-from flask import current_app, jsonify
 import yaml
 
 logger = logging.getLogger(__name__)
