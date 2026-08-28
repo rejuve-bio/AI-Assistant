@@ -64,16 +64,26 @@ def register_socket_events(sio_instance, fastapi_app):
             auth_header = environ.get("HTTP_AUTHORIZATION")
             auth_context = decode_socket_token(auth_header)
         except Exception as e:
-            logger.error(f"Socket auth error: {e}")
+            logger.warning(f"Socket auth rejected for sid={sid}: {e}")
             return False  # rejects the connection
 
-        await sio_instance.save_session(sid, {"user_id": auth_context.user_id, "token": auth_context.token})
-        logger.info("Client connected")
+        user_id = auth_context.user_id
+        await sio_instance.save_session(sid, {"user_id": user_id, "token": auth_context.token})
+
+        # Auto-join the user's personal room so emits targeting user_id
+        # reach this socket immediately, without requiring a separate
+        # join_room round-trip from the client.
+        await sio_instance.enter_room(sid, user_id)
+        logger.info(f"Client connected: sid={sid}, user={user_id}")
         await sio_instance.emit("response", {"message": "Connected successfully"}, room=sid)
 
     @sio_instance.event
     async def disconnect(sid):
-        logger.info("Client disconnected")
+        session = await sio_instance.get_session(sid)
+        user_id = session.get("user_id") if session else None
+        if user_id:
+            await sio_instance.leave_room(sid, user_id)
+        logger.info(f"Client disconnected: sid={sid}, user={user_id}")
 
     @sio_instance.event
     async def join_room(sid, data):
