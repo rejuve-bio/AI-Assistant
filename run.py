@@ -5,7 +5,7 @@ from app import create_app
 from dotenv import load_dotenv
 
 # Creating log directory
-log_dir = "/AI-Assistant/logfiles"
+log_dir = os.path.join(os.path.dirname(__file__), "logfiles")
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, "Assistant.log")
 

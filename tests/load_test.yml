@@ -1,0 +1,47 @@
+config:
+  target: "http://localhost:5002"
+  engines:
+    socketio-v3: {}
+  phases:
+    - duration: 30
+      arrivalRate: 2
+      rampTo: 10
+      name: "Warm up phase"
+    - duration: 60
+      arrivalRate: 10
+      name: "Sustained load"
+  environments:
+    local:
+      target: "http://localhost:5002"
+  variables:
+    # This reads the environment variable we exported from the Python script
+    token: "{{ $processEnvironment.TEST_TOKEN }}"
+
+scenarios:
+  - name: "HTTP Query API - REST"
+    weight: 2
+    flow:
+      - post:
+          url: "/query"
+          headers:
+            Authorization: "Bearer {{ token }}"
+          form:
+            query: "What is the biological definition of aging?"
+          capture:
+            - json: "$.response"
+              as: "reply"
+      - log: "HTTP Request completed"
+
+  - name: "Socket.IO WebSockets - Connect & Query"
+    weight: 1
+    engine: socketio-v3
+    flow:
+      - connect:
+          extraHeaders:
+            Authorization: "Bearer {{ token }}"
+      - emit:
+          channel: "question"
+          data:
+            question: "What are the hallmarks of cancer?"
+      - think: 5 # Allow time for the AI response to come back
+      - log: "Socket interaction completed"
