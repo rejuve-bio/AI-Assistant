@@ -108,9 +108,19 @@ def register_socket_events(sio_instance, fastapi_app):
             else:
                 responses = await run_in_threadpool(ai_assistant.agent, query, user_id, token)
 
-            logger.info(f"Responses generated for user {user_id}: {responses}")
+            logger.info(f"Responses generated for user {user_id}")
+
+            # Emit the final structured response back to the client.
+            # The agent() path already fires intermediate "update" events
+            # via emit_to_user(); this final emit carries the complete answer
+            # and signals the client that processing is done.
+            await sio_instance.emit(
+                "response",
+                {"status": "completed", "response": responses},
+                room=user_id,
+            )
         except Exception as e:
-            logger.error(f"Error processing question: {e}")
+            logger.error(f"Error processing question: {e}", exc_info=True)
             await sio_instance.emit("error", {"error": str(e)}, room=user_id)
 
 
