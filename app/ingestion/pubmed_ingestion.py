@@ -8,21 +8,25 @@ aging topics, embeds them, and upserts them into a dedicated Qdrant collection
 Design principles:
 - **Idempotent**: each abstract is keyed by its PMID; re-running never
   duplicates data.
-- **Incremental**: a MongoDB ``pubmed_index`` collection tracks ingested PMIDs
+- **Incremental**: a MongoDB ``paper_index`` collection tracks ingested papers
   so only genuinely new papers are embedded (saves embedding API calls).
 - **Non-blocking**: intended to be called from an APScheduler background job,
   not from a request path.
+- **Pluggable**: inherits from :class:`BaseIngester` so the same dedup /
+  tracking layer is shared with future source adapters (bioRxiv, etc.).
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from typing import Any
 
 import requests
+
+from app.ingestion.base_ingester import BaseIngester, Paper, content_hash
 
 logger = logging.getLogger(__name__)
 
@@ -101,32 +105,18 @@ def _fetch_pmids(topic: str, max_results: int, min_date: str) -> list[str]:
         return []
 
 
-def _fetch_abstracts(pmids: list[str]) -> list[dict[str, Any]]:
-    """Fetch full abstract records for a list of PMIDs."""
-    if not pmids:
-        return []
-    import xml.etree.ElementTree as ET  # noqa: PLC0415
-
+def _parse_articles(content: bytes, topic: str) -> list[Paper]:
+    """Parse PubMed XML response into a list of ``Paper`` objects."""
     try:
-        resp = requests.get(
-            f"{NCBI_BASE}/efetch.fcgi",
-            params=_ncbi_params(
-                db="pubmed",
-                id=",".join(pmids),
-                retmode="xml",
-            ),
-            timeout=30,
-        )
-        resp.raise_for_status()
-        root = ET.fromstring(resp.content)
+        root = ET.fromstring(content)
     except Exception as exc:
-        logger.error(f"efetch failed: {exc}")
+        logger.error(f"XML parsing failed: {exc}")
         return []
 
     def _text(el) -> str:
         return "".join(el.itertext()).strip() if el is not None else ""
 
-    papers = []
+    papers: list[Paper] = []
     for article in root.findall(".//PubmedArticle"):
         pmid  = article.findtext(".//PMID", "")
         title = _text(article.find(".//ArticleTitle"))
@@ -144,72 +134,73 @@ def _fetch_abstracts(pmids: list[str]) -> list[dict[str, Any]]:
             f"{a.findtext('LastName', '')} {a.findtext('Initials', '')}".strip()
             for a in article.findall(".//Author")[:3]
         ]
-        papers.append({
-            "pmid": pmid,
-            "title": title,
-            "authors": authors,
-            "year": year,
-            "abstract": abstract,
-            "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
-        })
+        # Try to extract a DOI for cross-source deduplication.
+        doi = ""
+        for aid in article.findall(".//ArticleId"):
+            if aid.get("IdType") == "doi":
+                doi = (aid.text or "").strip()
+                break
+
+        papers.append(Paper(
+            source_id=pmid,
+            source="pubmed",
+            title=title,
+            abstract=abstract,
+            authors=authors,
+            year=year,
+            url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+            doi=doi,
+            topic=topic,
+        ))
     return papers
-
-
-# ---------------------------------------------------------------------------
-# Deduplication helpers
-# ---------------------------------------------------------------------------
-
-def _content_hash(pmid: str, abstract: str) -> str:
-    return hashlib.md5(f"{pmid}:{abstract}".encode()).hexdigest()
-
-
-def _get_indexed_pmids(mongo_db) -> set[str]:
-    """Return the set of PMIDs already stored in MongoDB's pubmed_index."""
-    try:
-        col = mongo_db["pubmed_index"]
-        return {doc["pmid"] for doc in col.find({}, {"pmid": 1})}
-    except Exception as exc:
-        logger.warning(f"Could not read pubmed_index: {exc}")
-        return set()
-
-
-def _mark_ingested(mongo_db, pmid: str, content_hash: str, topic: str):
-    """Record a successfully ingested PMID so it won't be processed again."""
-    try:
-        col = mongo_db["pubmed_index"]
-        col.update_one(
-            {"pmid": pmid},
-            {
-                "$set": {
-                    "pmid": pmid,
-                    "content_hash": content_hash,
-                    "topic": topic,
-                    "ingested_at": datetime.utcnow(),
-                }
-            },
-            upsert=True,
-        )
-    except Exception as exc:
-        logger.warning(f"Could not update pubmed_index for PMID {pmid}: {exc}")
 
 
 # ---------------------------------------------------------------------------
 # Main ingester
 # ---------------------------------------------------------------------------
 
-class PubMedIngester:
+class PubMedIngester(BaseIngester):
     """
     Orchestrates fetch → dedup → embed → upsert for PubMed abstracts.
 
-    Args:
-        qdrant_client:  The project's shared :class:`~app.storage.qdrant.Qdrant`
-                        instance (already initialised with an embedding model).
-        mongo_db:       A PyMongo ``Database`` instance for tracking ingested PMIDs.
+    Inherits shared deduplication and tracking logic from
+    :class:`~app.ingestion.base_ingester.BaseIngester`.
     """
 
-    def __init__(self, qdrant_client, mongo_db):
-        self.qdrant = qdrant_client
-        self.mongo  = mongo_db
+    # ------ BaseIngester interface ------
+
+    def fetch_papers(
+        self,
+        topic: str,
+        min_date: str,
+        max_results: int,
+    ) -> list[Paper]:
+        """Fetch papers from PubMed for a single topic."""
+        time.sleep(_NCBI_DELAY)
+        pmids = _fetch_pmids(topic, max_results, min_date)
+        if not pmids:
+            return []
+
+        # Fetch full article XML.
+        time.sleep(_NCBI_DELAY)
+        try:
+            resp = requests.get(
+                f"{NCBI_BASE}/efetch.fcgi",
+                params=_ncbi_params(
+                    db="pubmed",
+                    id=",".join(pmids),
+                    retmode="xml",
+                ),
+                timeout=30,
+            )
+            resp.raise_for_status()
+        except Exception as exc:
+            logger.error(f"efetch failed: {exc}")
+            return []
+
+        return _parse_articles(resp.content, topic)
+
+    # ------ Ingestion orchestrator ------
 
     def ingest(
         self,
@@ -237,7 +228,7 @@ class PubMedIngester:
             return {"error": "no topics configured"}
 
         min_date = (datetime.utcnow() - timedelta(days=lookback_days)).strftime("%Y/%m/%d")
-        indexed_pmids = _get_indexed_pmids(self.mongo)
+        indexed_ids = self.get_indexed_ids()
 
         stats = {
             "topics_processed": 0,
@@ -251,41 +242,36 @@ class PubMedIngester:
         self.qdrant.ensure_collection_exists(PUBMED_COLLECTION)
 
         for topic in topics:
-            logger.info(f"[ingestion] Fetching PMIDs for: '{topic}' (since {min_date})")
-            time.sleep(_NCBI_DELAY)
-            pmids = _fetch_pmids(topic, ABSTRACTS_PER_TOPIC, min_date)
+            logger.info(f"[ingestion] Fetching papers for: '{topic}' (since {min_date})")
+            papers = self.fetch_papers(topic, min_date, ABSTRACTS_PER_TOPIC)
 
-            new_pmids = [p for p in pmids if p not in indexed_pmids]
+            new_papers = [p for p in papers if p.source_id not in indexed_ids]
             logger.info(
-                f"[ingestion] '{topic}': {len(pmids)} hits, "
-                f"{len(new_pmids)} new, {len(pmids) - len(new_pmids)} already indexed"
+                f"[ingestion] '{topic}': {len(papers)} hits, "
+                f"{len(new_papers)} new, {len(papers) - len(new_papers)} already indexed"
             )
-            stats["skipped_duplicates"] += len(pmids) - len(new_pmids)
+            stats["skipped_duplicates"] += len(papers) - len(new_papers)
 
-            if not new_pmids:
+            if not new_papers:
                 stats["topics_processed"] += 1
                 continue
 
-            time.sleep(_NCBI_DELAY)
-            papers = _fetch_abstracts(new_pmids)
-
-            for paper in papers:
+            for paper in new_papers:
                 try:
-                    pmid     = paper["pmid"]
-                    abstract = paper["abstract"]
-                    chash    = _content_hash(pmid, abstract)
+                    chash = content_hash(paper.source_id, paper.abstract)
 
                     # Build the text to embed: title + abstract for richer context.
-                    embed_text = f"{paper['title']}. {abstract}"
+                    embed_text = f"{paper.title}. {paper.abstract}"
 
                     # Metadata stored in the Qdrant payload alongside the text.
                     metadata = {
-                        "source":       "pubmed",
-                        "pmid":         pmid,
-                        "title":        paper["title"],
-                        "authors":      ", ".join(paper.get("authors", [])),
-                        "year":         paper.get("year", ""),
-                        "url":          paper["url"],
+                        "source":       paper.source,
+                        "pmid":         paper.source_id,
+                        "title":        paper.title,
+                        "authors":      ", ".join(paper.authors),
+                        "year":         paper.year,
+                        "url":          paper.url,
+                        "doi":          paper.doi,
                         "topic":        topic,
                         "content_hash": chash,
                         "ingested_at":  datetime.utcnow().isoformat(),
@@ -300,12 +286,12 @@ class PubMedIngester:
                         metadata=metadata,
                     )
 
-                    _mark_ingested(self.mongo, pmid, chash, topic)
-                    indexed_pmids.add(pmid)  # update local set for this run
+                    self.mark_ingested(paper, chash, topic)
+                    indexed_ids.add(paper.source_id)  # update local set for this run
                     stats["new_papers_ingested"] += 1
 
                 except Exception as exc:
-                    logger.error(f"[ingestion] Failed to ingest PMID {paper.get('pmid')}: {exc}")
+                    logger.error(f"[ingestion] Failed to ingest PMID {paper.source_id}: {exc}")
                     stats["errors"] += 1
 
             stats["topics_processed"] += 1
