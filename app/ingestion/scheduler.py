@@ -3,6 +3,7 @@ import os
 from apscheduler.schedulers.background import BackgroundScheduler
 from app.ingestion.pubmed_ingestion import PubMedIngester
 from app.ingestion.europepmc_ingestion import EuropePMCIngester
+from app.ingestion.semantic_scholar_ingestion import SemanticScholarIngester
 
 logger = logging.getLogger(__name__)
 
@@ -14,9 +15,13 @@ ENABLED = os.getenv("PUBMED_INGESTION_ENABLED", "true").lower() == "true"
 EPMC_ENABLED = os.getenv("EPMC_INGESTION_ENABLED", "true").lower() == "true"
 EPMC_SCHEDULE_CRON = os.getenv("EPMC_INGESTION_SCHEDULE", "15 2 * * *")
 
-# Fine-tuning QA generation: runs after ingestion to create training pairs.
+# Semantic Scholar: runs 30 min after PubMed, adds citation-heavy uniquely indexed papers.
+S2_ENABLED = os.getenv("S2_INGESTION_ENABLED", "true").lower() == "true"
+S2_SCHEDULE_CRON = os.getenv("S2_INGESTION_SCHEDULE", "30 2 * * *")
+
+# Fine-tuning QA generation: runs after all ingestion sources finish.
 FT_GENERATION_ENABLED = os.getenv("FT_GENERATION_ENABLED", "false").lower() == "true"
-FT_SCHEDULE_CRON = os.getenv("FT_GENERATION_SCHEDULE", "30 2 * * *")
+FT_SCHEDULE_CRON = os.getenv("FT_GENERATION_SCHEDULE", "45 2 * * *")
 
 
 def _run_ingestion_job(qdrant_client, mongo_db):
@@ -38,6 +43,17 @@ def _run_epmc_ingestion_job(qdrant_client, mongo_db):
         logger.info(f"[scheduler] Europe PMC ingestion cycle finished: {stats}")
     except Exception as exc:
         logger.error(f"[scheduler] Europe PMC ingestion cycle failed: {exc}")
+
+
+def _run_s2_ingestion_job(qdrant_client, mongo_db):
+    """Ingest papers from Semantic Scholar (adds AI-curated uniqueness)."""
+    try:
+        logger.info("[scheduler] Starting scheduled Semantic Scholar ingestion cycle...")
+        ingester = SemanticScholarIngester(qdrant_client, mongo_db)
+        stats = ingester.ingest()
+        logger.info(f"[scheduler] Semantic Scholar ingestion cycle finished: {stats}")
+    except Exception as exc:
+        logger.error(f"[scheduler] Semantic Scholar ingestion cycle failed: {exc}")
 
 
 def _run_qa_generation_job(llm, mongo_db):
@@ -101,11 +117,32 @@ def start_scheduler(app):
             )
             logger.info(f"Started Europe PMC ingestion scheduler (cron: {EPMC_SCHEDULE_CRON})")
 
-        # Optionally schedule QA pair generation after ingestion.
+        # Semantic Scholar ingestion (runs after EPMC).
+        if S2_ENABLED:
+            s2_parts = S2_SCHEDULE_CRON.split()
+            if len(s2_parts) != 5:
+                s2_parts = ["30", "2", "*", "*", "*"]
+            s2_min, s2_hr, s2_day, s2_mon, s2_dow = s2_parts
+
+            scheduler.add_job(
+                _run_s2_ingestion_job,
+                "cron",
+                minute=s2_min,
+                hour=s2_hr,
+                day=s2_day,
+                month=s2_mon,
+                day_of_week=s2_dow,
+                args=[app.qdrant_client, app.mongo_db],
+                id="s2_ingestion_job",
+                replace_existing=True,
+            )
+            logger.info(f"Started Semantic Scholar ingestion scheduler (cron: {S2_SCHEDULE_CRON})")
+
+        # Optionally schedule QA pair generation after all ingestion sources finish.
         if FT_GENERATION_ENABLED:
             ft_parts = FT_SCHEDULE_CRON.split()
             if len(ft_parts) != 5:
-                ft_parts = ["30", "2", "*", "*", "*"]
+                ft_parts = ["45", "2", "*", "*", "*"]
             ft_min, ft_hr, ft_day, ft_mon, ft_dow = ft_parts
 
             scheduler.add_job(
