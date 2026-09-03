@@ -2,12 +2,17 @@ import logging
 import os
 from apscheduler.schedulers.background import BackgroundScheduler
 from app.ingestion.pubmed_ingestion import PubMedIngester
+from app.ingestion.europepmc_ingestion import EuropePMCIngester
 
 logger = logging.getLogger(__name__)
 
 # Default: Run at 2 AM every day
 SCHEDULE_CRON = os.getenv("PUBMED_INGESTION_SCHEDULE", "0 2 * * *")
 ENABLED = os.getenv("PUBMED_INGESTION_ENABLED", "true").lower() == "true"
+
+# Europe PMC: runs 15 min after PubMed so cross-source dedup catches overlaps.
+EPMC_ENABLED = os.getenv("EPMC_INGESTION_ENABLED", "true").lower() == "true"
+EPMC_SCHEDULE_CRON = os.getenv("EPMC_INGESTION_SCHEDULE", "15 2 * * *")
 
 # Fine-tuning QA generation: runs after ingestion to create training pairs.
 FT_GENERATION_ENABLED = os.getenv("FT_GENERATION_ENABLED", "false").lower() == "true"
@@ -22,6 +27,17 @@ def _run_ingestion_job(qdrant_client, mongo_db):
         logger.info(f"[scheduler] Scheduled PubMed ingestion cycle finished: {stats}")
     except Exception as exc:
         logger.error(f"[scheduler] Scheduled PubMed ingestion cycle failed: {exc}")
+
+
+def _run_epmc_ingestion_job(qdrant_client, mongo_db):
+    """Ingest papers from Europe PMC (catches what PubMed misses)."""
+    try:
+        logger.info("[scheduler] Starting scheduled Europe PMC ingestion cycle...")
+        ingester = EuropePMCIngester(qdrant_client, mongo_db)
+        stats = ingester.ingest()
+        logger.info(f"[scheduler] Europe PMC ingestion cycle finished: {stats}")
+    except Exception as exc:
+        logger.error(f"[scheduler] Europe PMC ingestion cycle failed: {exc}")
 
 
 def _run_qa_generation_job(llm, mongo_db):
@@ -63,6 +79,27 @@ def start_scheduler(app):
             replace_existing=True,
         )
         logger.info(f"Started PubMed ingestion scheduler (cron: {SCHEDULE_CRON})")
+
+        # Europe PMC ingestion (runs after PubMed, cross-source dedup via DOI).
+        if EPMC_ENABLED:
+            epmc_parts = EPMC_SCHEDULE_CRON.split()
+            if len(epmc_parts) != 5:
+                epmc_parts = ["15", "2", "*", "*", "*"]
+            epmc_min, epmc_hr, epmc_day, epmc_mon, epmc_dow = epmc_parts
+
+            scheduler.add_job(
+                _run_epmc_ingestion_job,
+                "cron",
+                minute=epmc_min,
+                hour=epmc_hr,
+                day=epmc_day,
+                month=epmc_mon,
+                day_of_week=epmc_dow,
+                args=[app.qdrant_client, app.mongo_db],
+                id="epmc_ingestion_job",
+                replace_existing=True,
+            )
+            logger.info(f"Started Europe PMC ingestion scheduler (cron: {EPMC_SCHEDULE_CRON})")
 
         # Optionally schedule QA pair generation after ingestion.
         if FT_GENERATION_ENABLED:
