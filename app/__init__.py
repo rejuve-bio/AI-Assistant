@@ -21,6 +21,7 @@ from app.rag.rag import RAG
 from app.socket_manager import create_socket_app, set_event_loop
 from app.storage.qdrant import Qdrant
 from app.storage.mongo_storage import MongoManager
+from app.storage.checkpointer import create_checkpointer
 from app.annotation_graph.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import (
     get_llm_model,
@@ -152,6 +153,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Error seeding FAQ questions: {e}")
 
+    checkpointer = create_checkpointer(mongo_db_manager.client)
+
     ai_assistant = AiAssistance(
         advanced_llm,
         basic_llm,
@@ -160,6 +163,7 @@ async def lifespan(app: FastAPI):
         embedding_model=embedding_model,
         qdrant_client=qdrant_client,
         mongo_db_manager=mongo_db_manager,
+        checkpointer=checkpointer,
     )
     logger.info("AiAssistance initialized")
 

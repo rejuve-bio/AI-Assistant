@@ -23,6 +23,7 @@ from .biogpt_agent.biogpt import BioGPTAgent
 from typing import TypedDict, List, Annotated, Any, Dict, Optional
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
+from langgraph.types import interrupt, Command
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_core.tools import tool
 import asyncio
@@ -53,6 +54,9 @@ class AgentState(TypedDict):
     pipeline_details: Dict[str, Any]
     # Agent-specific responses with source attribution
     annotation_response: Optional[Dict[str, Any]]
+    # Generic pause/resume payload for ANY agent's human-in-the-loop confirmation,
+    pending_confirmation: Optional[Dict[str, Any]]
+    confirmation_outcome: Optional[str]
     rag_response: Optional[Dict[str, Any]]
     galaxy_response: Optional[Dict[str, Any]]
     content_retrieval_response: Optional[Dict[str, Any]]
@@ -83,6 +87,7 @@ class AiAssistance:
         qdrant_client=None,
         embedding_model=None,
         mongo_db_manager=None,
+        checkpointer=None,
     ) -> None:
         self.advanced_llm = advanced_llm
         self.basic_llm = basic_llm
@@ -102,7 +107,7 @@ class AiAssistance:
 
         # Initialize the LangGraph workflow
         self.workflow = self._create_workflow()
-        self.app = self.workflow.compile()
+        self.app = self.workflow.compile(checkpointer=checkpointer)
 
     def _create_workflow(self) -> StateGraph:
         """Create the LangGraph workflow with proper parallel agent execution"""
@@ -115,6 +120,7 @@ class AiAssistance:
         workflow.add_node("router", self._router)
         workflow.add_node("hypothesis_agent", self._hypothesis_agent)
         workflow.add_node("annotation_agent", self._annotation_agent)
+        workflow.add_node("annotation_confirmation_agent", self._annotation_confirmation_agent)
         workflow.add_node("rag_agent", self._rag_agent)
         workflow.add_node("galaxy_agent", self._galaxy_agent)
         workflow.add_node("content_retrieval_agent", self._content_retrieval_agent)
@@ -134,6 +140,7 @@ class AiAssistance:
             self._should_run_agent,
             {
                 "annotation_agent": "annotation_agent",
+                "annotation_confirmation_agent": "annotation_confirmation_agent",
                 "hypothesis_agent": "hypothesis_agent",
                 "rag_agent": "rag_agent",
                 "galaxy_agent": "galaxy_agent",
@@ -146,8 +153,12 @@ class AiAssistance:
             },
         )
 
-        # All agents go back to router to check for next agent
         workflow.add_edge("annotation_agent", "router")
+        workflow.add_conditional_edges(
+            "annotation_confirmation_agent",
+            self._confirmation_agent_next,
+            {"finalizer": "finalizer", "router": "router"},
+        )
         workflow.add_edge("rag_agent", "router")
         workflow.add_edge("galaxy_agent", "router")
         workflow.add_edge("content_retrieval_agent", "router")
@@ -322,6 +333,10 @@ class AiAssistance:
             logger.info("stop_pipeline flag set — skipping remaining agents, going to aggregator")
             return "aggregator"
 
+        pending_confirmation = state.get("pending_confirmation")
+        if pending_confirmation:
+            return f"{pending_confirmation['agent']}_confirmation_agent"
+
         agents_to_run = state.get("agents_to_run", [])
         agents_completed = state.get("agents_completed", [])
         remaining = [a for a in agents_to_run if a not in agents_completed]
@@ -330,11 +345,6 @@ class AiAssistance:
             logger.info("All agents completed, moving to aggregator")
             return "aggregator"
 
-        # When a graph_id is already attached, whether a fresh annotation is even
-        # needed depends on content_retrieval_agent's result (does the existing
-        # graph already cover the query?). Defer annotation_agent until that's
-        # known instead of racing it against content_retrieval_agent — but
-        # biogpt_agent doesn't depend on either, so keep it running concurrently.
         if "content_retrieval_agent" in remaining and "annotation_agent" in remaining and state.get("graph_id"):
             concurrent = ["content_retrieval_agent"]
             if "biogpt_agent" in remaining:
@@ -342,11 +352,6 @@ class AiAssistance:
             logger.info(f"annotation_agent gated on content_retrieval_agent's result (graph_id present) — running {concurrent} now")
             return concurrent if len(concurrent) > 1 else concurrent[0]
 
-        # annotation_agent and biogpt_agent never read each other's output — one
-        # queries the graph, the other queries the LLM/BioGPT service — and are
-        # now paired on nearly every annotation query (biogpt is always added
-        # alongside annotation_biological), so run them concurrently instead of
-        # one after another.
         if "annotation_agent" in remaining and "biogpt_agent" in remaining:
             logger.info("Running annotation_agent and biogpt_agent concurrently")
             return ["annotation_agent", "biogpt_agent"]
@@ -386,13 +391,12 @@ class AiAssistance:
 
             if pipeline_response.get("needs_confirmation"):
                 return {
-                    "annotation_response": {
-                        "text": pipeline_response.get("confirmation_text", ""),
-                        "json_format": None,
-                        "needs_confirmation": True,
-                        "source": ANNOTATION_DB,
-                    },
-                    "agents_completed": ["annotation_agent"],
+                    "pending_confirmation": {
+                        "agent": "annotation",
+                        "confirmation_text": pipeline_response.get("confirmation_text", ""),
+                        "data": pipeline_response.get("pending") or {},
+                    },                    
+                    "agents_completed": [],
                     "messages": [AIMessage(content="Annotation needs user confirmation")],
                 }
 
@@ -433,13 +437,98 @@ class AiAssistance:
             logger.error("Unexpected error in annotation agent", exc_info=True)
             return {
                 "annotation_response": {
-                    "text": f"Error: {str(e)}", 
+                    "text": f"Error: {str(e)}",
                     "json_format": None,
                     "source": ANNOTATION_DB
                 },
                 "agents_completed": ["annotation_agent"],
                 "error": str(e),
             }
+
+    def _annotation_confirmation_agent(self, state: AgentState) -> Dict[str, Any]:
+        """Pauses on interrupt() to ask the user about an unrecognised annotation
+        entity, then resumes with their reply.
+
+        Deliberately its own node (not folded into _annotation_agent): interrupt()
+        replays the whole node function on resume
+        """
+        pending_confirmation = state.get("pending_confirmation") or {}
+        data = pending_confirmation.get("data", {})
+        user_reply = interrupt(pending_confirmation.get("confirmation_text", ""))
+
+        override_value = None
+        if isinstance(user_reply, dict) and user_reply.get("type") == "direct":
+            value = user_reply.get("value")
+            if value in ("confirm", "reject", "show_alternatives"):
+                verdict = value
+            else:
+                verdict = "confirm"
+                override_value = value
+        else:
+            verdict = self.annotation_graph._classify_confirmation(user_reply)
+            if verdict == "confirm":
+                override_value = self._named_candidate_in_reply(user_reply, data)
+
+        if verdict in ("confirm", "reject"):
+            resolved = self.annotation_graph._apply_pending_substitutions(
+                data.get("json", {}), apply=(verdict == "confirm"), override_value=override_value
+            )
+            text = self.annotation_graph._describe_annotation_result(state["user_query"], resolved)
+            return {
+                "annotation_response": {
+                    "text": text,
+                    "json_format": resolved,
+                    "organism": data.get("organism", "human"),
+                    "source": ANNOTATION_DB,
+                },
+                "pending_confirmation": None,
+                "confirmation_outcome": "resolved",
+                "agents_completed": ["annotation_agent"],
+            }
+
+        if verdict == "show_alternatives":
+            alt_text = self.annotation_graph._build_alternatives_text(data)
+            return {
+                "pending_confirmation": {
+                    **pending_confirmation,
+                    "confirmation_text": alt_text,
+                    "data": {**data, "alternatives_shown": True},
+                },
+                "confirmation_outcome": "pending",
+                "agents_completed": [],
+            }
+
+        logger.info("Annotation confirmation abandoned for an unrelated new query")
+        return {
+            "pending_confirmation": None,
+            "confirmation_outcome": "abandoned",
+            "agents_completed": [],
+        }
+
+    def _named_candidate_in_reply(self, user_reply: str, data: Dict[str, Any]) -> Optional[str]:
+        if not isinstance(user_reply, str) or not data:
+            return None
+
+        candidates = set(self.annotation_graph._alternative_candidate_values(data) or [])
+        for entry in data.get("unconfirmed", []) or []:
+            if entry.get("suggestion"):
+                candidates.add(entry["suggestion"])
+        if not candidates:
+            return None
+
+        tokens = {t.strip(" \t\n.,;:!?'\"()[]").lower() for t in user_reply.split()}
+        named = [c for c in candidates if c.lower() in tokens]
+        # Only act when it's unambiguous — if they somehow named several, fall
+        # back to the plain confirm rather than guessing which one they meant.
+        if len(named) == 1:
+            logger.info(f"Free-text reply named candidate '{named[0]}' — applying it instead of the default suggestion")
+            return named[0]
+        return None
+
+    def _confirmation_agent_next(self, state: AgentState) -> str:
+        if state.get("confirmation_outcome") == "abandoned":
+            return "finalizer"
+        return "router"
 
     def _hypothesis_agent(self, state: AgentState) -> Dict[str, Any]:
         """Handle hypothesis generation queries"""
@@ -479,6 +568,8 @@ class AiAssistance:
                 "hypothesis_response": {
                     "text": "The hypothesis service is not returning any results at the moment. There is nothing I can help with for this request.",
                     "resource": None,
+                    "status": "failed",
+                    "reason": str(e),
                 },
                 "stop_pipeline": True,
                 "error": str(e),
@@ -637,7 +728,9 @@ class AiAssistance:
                 "content_retrieval_response": {
                     "text": confirmation_text,
                     "json_format": None,
-                    "sources": []
+                    "sources": [],
+                    "status": "needs_input",
+                    "reason": "graph_not_found",
                 },
                 "agents_completed": ["content_retrieval_agent"],
                 "stop_pipeline": True,
@@ -982,11 +1075,22 @@ class AiAssistance:
         Ensures that text content is combined coherently and structured JSON data (json_format)
         is always included when available.
         """
-        # If an agent already set a final response (e.g. hypothesis failure with stop_pipeline),
-        # return it directly without re-aggregating.
-        if state.get("stop_pipeline") and state.get("response", {}).get("text"):
-            logger.info("stop_pipeline with pre-built response — skipping aggregation")
-            return {"response": state["response"]}
+        # If an agent stopped the pipeline (e.g. content_retrieval_agent couldn't find
+        # the referenced graph), surface its response directly with a structured
+        # status/reason instead of letting it get paraphrased by LLM aggregation below.
+        if state.get("stop_pipeline"):
+            fallback_resp = state.get("content_retrieval_response") or state.get("response") or {}
+            fallback_text = fallback_resp.get("text", "")
+            if fallback_text:
+                logger.info("stop_pipeline — returning structured fallback response")
+                return {
+                    "response": {
+                        "text": fallback_text,
+                        "json_format": fallback_resp.get("json_format"),
+                        "status": fallback_resp.get("status", "needs_input"),
+                        "reason": fallback_resp.get("reason"),
+                    }
+                }
 
         # Hypothesis fast-path — bypass LLM aggregation entirely
         hyp_resp = state.get("hypothesis_response") or {}
@@ -1008,7 +1112,13 @@ class AiAssistance:
                 # Hard failure (exception) routes through literature fallback instead, so hyp_text here is always a user-facing message
                 hyp_text = hyp_resp.get("text") or "The hypothesis service is not returning any results at the moment. There is nothing I can help with directly, but I can search for similar clinical trials and published research — please try asking about the topic directly."
                 return {
-                    "response": {"text": hyp_text, "json_format": None, "organism": None},
+                    "response": {
+                        "text": hyp_text,
+                        "json_format": None,
+                        "organism": None,
+                        "status": hyp_resp.get("status", "needs_input"),
+                        "reason": hyp_resp.get("reason"),
+                    },
                 }
 
         user_query = state.get("user_query", "")
@@ -1078,12 +1188,24 @@ class AiAssistance:
                 nodes = json_format.get("nodes", [])
                 predicates = json_format.get("predicates", [])
                 if nodes or predicates:
+                    failed = [n for n in nodes if n.get("status") is False]
                     node_ids = [n.get("id", "") for n in nodes if n.get("id")]
-                    json_note = (
-                        f"\n\nNote: An annotation query was successfully built for "
-                        f"{', '.join(node_ids) if node_ids else 'the requested entities'} "
-                        f"and will be displayed on the graph."
-                    )
+                    if failed:
+                        missing = ", ".join(
+                            f"'{(n.get('properties') or {}).get('gene_name') or n.get('id') or n.get('node_id')}'"
+                            for n in failed
+                        )
+                        json_note = (
+                            f"\n\nNote: Only a partial annotation structure was built — these entities were "
+                            f"NOT found in the database and remain unresolved: {missing}. Do NOT describe the "
+                            f"annotation as successful or complete; state plainly that they were not found."
+                        )
+                    else:
+                        json_note = (
+                            f"\n\nNote: An annotation query was successfully built for "
+                            f"{', '.join(node_ids) if node_ids else 'the requested entities'} "
+                            f"and will be displayed on the graph."
+                        )
                 else:
                     json_note = "\n\nNote: Structured annotation data is also available for this query."
 
@@ -1160,10 +1282,18 @@ class AiAssistance:
         graph_id: Optional[str] = None,
         urls: Optional[List[str]] = None,
         resource: Optional[Any] = None,
+        thread_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Main entry point for processing queries with parallel agent execution"""
+        """Main entry point for processing queries with parallel agent execution.
+
+        `thread_id` scopes the checkpointer — defaults to `user_id` (today's
+        behavior: one thread per user) when the caller doesn't pick one, so
+        clients that haven't adopted real per-conversation thread_ids yet keep
+        working unchanged.
+        """
+        thread_id = thread_id or user_id
         logger.info(
-            f"Agent called with message: {message}, user_id: {user_id}, "
+            f"Agent called with message: {message}, user_id: {user_id}, thread_id: {thread_id}, "
             f"content_ids: {content_ids}, graph_id: {graph_id}, urls: {urls}"
         )
         try:
@@ -1182,6 +1312,8 @@ class AiAssistance:
                 "resource": resource,
                 "pipeline_details": {},
                 "annotation_response": None,
+                "pending_confirmation": None,
+                "confirmation_outcome": None,
                 "rag_response": None,
                 "galaxy_response": None,
                 "biogpt_response": None,
@@ -1194,22 +1326,12 @@ class AiAssistance:
                 "agents_completed": [],
             }
 
-            # Run the workflow
-            result = self.app.invoke(initial_state)
+            # Run the workflow, scoped to this thread so the checkpointer can
+            # persist/resume this conversation's graph state.
+            config = {"configurable": {"thread_id": thread_id}}
+            result = self.app.invoke(initial_state, config=config)
 
-            # Extract the structured response
-            response = result.get("response", {"text": ""})
-            
-            # Ensure consistent structure
-            if not isinstance(response, dict):
-                response = {"text": str(response), "json_format": None}
-            else:
-                response.setdefault("text", "")
-                response.setdefault("json_format", None)
-
-            # ✅ Add agents_completed to the response so assistant_response can save it
-            response["agents_completed"] = result.get("agents_completed", [])
-            
+            response = self._extract_response_or_interrupt(result, config)
             logger.info(f"Agent completed successfully for user: {user_id}")
             return response
 
@@ -1223,9 +1345,214 @@ class AiAssistance:
             emit_to_user(user=user_id, message=error_response, status="error")
             return error_response
 
+    def _confirmation_options(self, pending: dict) -> List[Dict[str, str]]:
+        
+        if pending.get("alternatives_shown"):
+            options = [
+                {"label": f"Use {v}", "value": v}
+                for v in self.annotation_graph._alternative_candidate_values(pending)
+            ]
+            options.append({"label": "No, skip it", "value": "reject"})
+            return options
+        return [
+            {"label": "Yes, use the suggested match", "value": "confirm"},
+            {"label": "No, skip it", "value": "reject"},
+            {"label": "Show other matches", "value": "show_alternatives"},
+        ]
+
+    def _extract_response_or_interrupt(self, result: Dict[str, Any], config: dict) -> Dict[str, Any]:
+        """Build the response dict from an invoke() result, whether the graph
+        finished normally or paused on any agent's confirmation interrupt().
+        """
+        state = self.app.get_state(config)
+        if state.next:
+            # Paused — the graph never reached the aggregator, so state["response"]
+            # is still the empty placeholder from initial_state. Surface the
+            # confirmation question instead.
+            pending_confirmation = state.values.get("pending_confirmation") or {}
+            data = pending_confirmation.get("data", {})
+            return {
+                "text": pending_confirmation.get("confirmation_text", ""),
+                "json_format": None,
+                "needs_confirmation": True,
+                "confirmation": {
+                    "options": self._confirmation_options(data),
+                    "allow_free_text": True,
+                },
+                "agents_completed": result.get("agents_completed", []),
+            }
+
+        # pause/resume window, not the whole conversation.
+        self._reset_thread(config)
+
+        response = result.get("response", {"text": ""})
+        if not isinstance(response, dict):
+            response = {"text": str(response), "json_format": None}
+        else:
+            response.setdefault("text", "")
+            response.setdefault("json_format", None)
+
+        # ✅ Add agents_completed to the response so assistant_response can save it
+        response["agents_completed"] = result.get("agents_completed", [])
+        return response
+
+    # Threads grow unbounded before compaction kicks in — summarizing every
+    # single message would be wasteful. Only compact once there's real bulk to
+    # fold in, and always leave this many recent messages verbatim afterward.
+    _THREAD_COMPACT_THRESHOLD = 20
+    _THREAD_KEEP_RECENT = 10
+
+    def _record_thread_turn(self, thread_id: str, user_id: str, query: str, resp: Dict[str, Any],
+                            graph_id: Optional[str] = None, resource: Optional[Any] = None) -> None:
+        try:
+            # graph_id on the USER turn = what they pointed at, typed by whatever
+            # resource kind the client said it was (context.resource).
+            self.store.append_message(
+                thread_id, user_id, "user", query,
+                graph_id=graph_id,
+                resource_type=resource if isinstance(resource, str) else None,
+            )
+
+            resource = resp.get("resource")
+            answered_about = graph_id
+            # Always keep the type next to the id — an untyped id can't be
+            # disambiguated later ("the annotation <id> or the hypothesis <id>?").
+            resource_type = resource if isinstance(resource, str) else None
+            if isinstance(resource, dict) and resource.get("id"):
+                answered_about = resource["id"]
+                resource_type = resource.get("type") or resource_type
+            if answered_about and not resource_type:
+                agents = resp.get("agents_completed") or []
+                if "hypothesis_agent" in agents:
+                    resource_type = "hypothesis"
+                elif "annotation_agent" in agents:
+                    resource_type = "annotation"
+
+            thread_doc = self.store.append_message(
+                thread_id,
+                user_id,
+                "assistant",
+                resp.get("text", ""),
+                json_format=resp.get("json_format"),
+                agents=resp.get("agents_completed"),
+                graph_id=answered_about,
+                resource_type=resource_type,
+            )
+
+            label = (resp.get("text") or "")[:80]
+            if isinstance(resource, dict) and resource.get("id"):
+                self.store.record_tool_call(thread_id, resource.get("type", "unknown"), resource["id"], label)
+            elif graph_id and resp.get("text"):
+                # e.g. content_retrieval_agent summarizing an existing graph — no
+                # new resource was created, but this turn is still a reference to
+                # that graph and belongs in the thread's resource trail.
+                agents = resp.get("agents_completed") or []
+                agent = "content_retrieval" if "content_retrieval_agent" in agents else (agents[0] if agents else "unknown")
+                self.store.record_tool_call(thread_id, agent, graph_id, label)
+
+            if thread_doc.get("message_count", 0) >= self._THREAD_COMPACT_THRESHOLD:
+                self._compact_thread(thread_id, thread_doc)
+        except Exception as e:
+            logger.warning(f"Failed to record thread turn for {thread_id}: {e}")
+
+    def _compact_thread(self, thread_id: str, thread_doc: Dict[str, Any]) -> None:
+
+        messages = thread_doc.get("messages", [])
+        keep = self._THREAD_KEEP_RECENT
+        if len(messages) <= keep:
+            return
+        older, recent = messages[:-keep], messages[-keep:]
+        transcript = "\n".join(f"{m.get('role', '?')}: {m.get('text', '')}" for m in older)
+        prior_summary = thread_doc.get("running_summary", "")
+        prompt = (
+            "Summarize this conversation excerpt into a concise running summary an "
+            "assistant can use as context later. Merge it with the prior summary "
+            "below rather than replacing it — keep anything from the prior summary "
+            "still relevant.\n\n"
+            f"Prior summary: {prior_summary or '(none yet)'}\n\n"
+            f"Conversation excerpt:\n{transcript}\n\n"
+            "Write the merged summary, 3-6 sentences, factual, no meta-commentary."
+        )
+        try:
+            new_summary = self.advanced_llm.generate(prompt)
+            new_summary = new_summary.strip() if isinstance(new_summary, str) else str(new_summary)
+        except Exception as e:
+            logger.warning(f"Thread compaction summarization failed for {thread_id}: {e}")
+            return
+        self.store.compact_thread(thread_id, new_summary, recent)
+
+    def _reset_thread(self, config: dict) -> None:
+
+        thread_id = config.get("configurable", {}).get("thread_id")
+        checkpointer = getattr(self.app, "checkpointer", None)
+        if not thread_id or not checkpointer:
+            return
+        try:
+            checkpointer.delete_thread(thread_id)
+        except Exception as e:
+            logger.warning(f"Failed to reset checkpoint thread {thread_id}: {e}")
+
+    def resume_confirmation_with_value(self, resume_value: str, user_id: str, thread_id: Optional[str] = None) -> Dict[str, Any]:
+
+        thread_id = thread_id or user_id
+        config = {"configurable": {"thread_id": thread_id}}
+        state = self.app.get_state(config)
+        if not state.next:
+            return {
+                "text": "There's nothing pending to confirm right now.",
+                "json_format": None,
+                "error": "no_pending_confirmation",
+            }
+
+        data = (state.values.get("pending_confirmation") or {}).get("data", {})
+        valid_values = {opt["value"] for opt in self._confirmation_options(data)}
+        if resume_value not in valid_values:
+            logger.warning(f"Rejected stale/invalid resume value '{resume_value}' — valid: {valid_values}")
+            return {
+                "text": "That option isn't available anymore. Here's what's currently available:",
+                "json_format": None,
+                "needs_confirmation": True,
+                "confirmation": {"options": self._confirmation_options(data), "allow_free_text": True},
+                "error": "invalid_resume_value",
+            }
+
+        try:
+            result = self.app.invoke(Command(resume={"type": "direct", "value": resume_value}), config=config)
+            return self._extract_response_or_interrupt(result, config)
+        except Exception as e:
+            logger.error("Error resuming annotation confirmation with a direct value", exc_info=True)
+            error_response = {
+                "text": f"I apologize, but I encountered an error while processing your request: {str(e)}",
+                "json_format": None,
+                "agents_completed": [],
+            }
+            emit_to_user(user=user_id, message=error_response, status="error")
+            return error_response
+
+    def resume_pending_confirmation(self, query: str, user_id: str, thread_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+
+        thread_id = thread_id or user_id
+        config = {"configurable": {"thread_id": thread_id}}
+        try:
+            result = self.app.invoke(Command(resume=query), config=config)
+            if result.get("confirmation_outcome") == "abandoned":
+                logger.info("Resumed confirmation was abandoned for an unrelated query — falling back to normal flow")
+                self._reset_thread(config)
+                return None
+            return self._extract_response_or_interrupt(result, config)
+        except Exception as e:
+            logger.error("Error resuming annotation confirmation", exc_info=True)
+            error_response = {
+                "text": f"I apologize, but I encountered an error while processing your request: {str(e)}",
+                "json_format": None,
+                "agents_completed": [],
+            }
+            emit_to_user(user=user_id, message=error_response, status="error")
+            return error_response
+
 
     def _route_to_agent(self, response: str, query: str, user_id: str, token: str,
-                        graph_id, content_ids, urls, resource) -> Dict[str, Any]:
+                        graph_id, content_ids, urls, resource, thread_id: Optional[str] = None) -> Dict[str, Any]:
         if "response:" in response:
             result = response.split("response:")[1].strip()
             final_response = result.strip('"')
@@ -1238,6 +1565,7 @@ class AiAssistance:
                 urls=urls,
                 agents_used=[],
             )
+            self._record_thread_turn(thread_id, user_id, query, {"text": final_response}, graph_id=graph_id, resource=resource)
             emit_to_user(user=user_id, message=final_response, status="completed")
             return {"text": final_response}
 
@@ -1251,6 +1579,7 @@ class AiAssistance:
                 graph_id=graph_id,
                 urls=urls,
                 resource=resource,
+                thread_id=thread_id,
             )
             if isinstance(agent_response, str):
                 agent_response = {"text": agent_response, "agents_completed": []}
@@ -1272,6 +1601,7 @@ class AiAssistance:
                 urls=urls,
                 agents_used=agents_used,
             )
+            self._record_thread_turn(thread_id, user_id, query, agent_response, graph_id=graph_id, resource=resource)
             emit_to_user(user=user_id, message=agent_response, status="completed")
             return agent_response
 
@@ -1298,20 +1628,39 @@ class AiAssistance:
         urls: Optional[List[str]] = None,
         content_ids: Optional[List[str]] = None,
         resource: Optional[Any] = None,
+        resume: Optional[str] = None,
+        thread_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        Main entry point for assistant responses.
-        Routes to parallel agent execution system.
-        """
+        
+        thread_id = thread_id or user_id
         try:
             logger.info(
-                f"Assistant response called with query={query}, user_id={user_id}, "
-                f"graph_id={graph_id}, content_ids={content_ids}, urls={urls}, resource={resource}"
+                f"Assistant response called with query={query}, user_id={user_id}, thread_id={thread_id}, "
+                f"graph_id={graph_id}, content_ids={content_ids}, urls={urls}, resource={resource}, resume={resume}"
             )
 
-            # Delegate to annotation_graph if a confirmation is pending for this user
-            if self.annotation_graph.has_pending_for(user_id):
-                resp = self.annotation_graph.handle_confirmation_response(user_id, query)
+            if resume is not None:
+                resp = self.resume_confirmation_with_value(resume, user_id, thread_id=thread_id)
+                self.store.create_history(
+                    user_id=user_id,
+                    user_message=f"[resume:{resume}]",
+                    assistant_answer=resp.get("text", ""),
+                    graph_id_referenced=graph_id,
+                    content_ids=content_ids,
+                    urls=urls,
+                    agents_used=resp.get("agents_completed", []),
+                )
+                self._record_thread_turn(thread_id, user_id, f"[resume:{resume}]", resp, graph_id=graph_id, resource=resource)
+                emit_to_user(user=user_id, message=resp, status="completed")
+                return resp
+            try:
+                is_pending = bool(self.app.get_state({"configurable": {"thread_id": thread_id}}).next)
+            except Exception as e:
+                logger.warning(f"Could not check for a pending annotation confirmation: {e}")
+                is_pending = False
+
+            if is_pending:
+                resp = self.resume_pending_confirmation(query, user_id, thread_id=thread_id)
                 if resp is not None:
                     self.store.create_history(
                         user_id=user_id,
@@ -1322,20 +1671,31 @@ class AiAssistance:
                         urls=urls,
                         agents_used=resp.get("agents_completed", []),
                     )
+                    self._record_thread_turn(thread_id, user_id, query, resp, graph_id=graph_id, resource=resource)
                     emit_to_user(user=user_id, message=resp, status="completed")
                     return resp
-                # else: new unrelated query — annotation_graph cleared the pending state, continue normally
 
-            # Get conversation history and memory
             try:
-                user_information = self.store.get_context_and_memory(user_id)
+                thread_doc = self.store.get_thread(thread_id)
+                running_summary = thread_doc.get("running_summary", "")
+                messages = thread_doc.get("messages", [])
                 history = []
-                memory = []
-                for item in user_information:
-                    q = item["question"]
-                    c = item["context"]
-                    history.append({"question": q, "asked": item.get("asked", "unknown time ago"), "context": c})
-                    memory.append(c["memory"])
+                i = 0
+                while i < len(messages):
+                    if messages[i].get("role") == "user":
+                        # Capture the question BEFORE advancing past the paired
+                        # assistant message — reading messages[i] after the skip
+                        # picked up the assistant's own text as the "question",
+                        # feeding the LLM a history where every entry was the
+                        # assistant talking to itself.
+                        question = messages[i].get("text", "")
+                        answer = ""
+                        if i + 1 < len(messages) and messages[i + 1].get("role") == "assistant":
+                            answer = messages[i + 1].get("text", "")
+                            i += 1
+                        history.append({"question": question, "context": {"answer": answer}})
+                    i += 1
+                memory = [running_summary] if running_summary else []
             except Exception:
                 history = []
                 memory = []
@@ -1355,7 +1715,8 @@ class AiAssistance:
 
             return self._route_to_agent(
                 response or "",
-                query, user_id, token, graph_id, content_ids, urls, resource
+                query, user_id, token, graph_id, content_ids, urls, resource,
+                thread_id=thread_id,
             )
 
         except Exception as e:
