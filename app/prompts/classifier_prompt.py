@@ -32,7 +32,7 @@ INSTRUCTIONS:
 1. Answer directly and concisely — as short as possible while still satisfying instruction 10 below.
 2. If there are specific findings (trials, papers, genes, drugs), name them briefly — do not expand into long explanations.
 3. Remove redundancy BETWEEN sources that say the same thing — but do not use "redundancy" as a reason to drop an entire source's contribution (see instruction 10). Do NOT describe tool behavior or internal failures.
-4. If a successful annotation query was built (noted above), confirm it briefly and positively — do NOT say information is unavailable.
+4. If a successful annotation query was built (noted above), confirm it briefly and positively — do NOT say information is unavailable. But if the note above says entities were NOT found / the structure is only partial, or an agent reported an entity missing from the database, do NOT call it successful or complete — say plainly which entities weren't found. Never assert success that the agent outputs and the note don't actually support.
 5. Only say no information is available if there is genuinely nothing useful in any source.
 6. NEVER modify genetic variant IDs (rs####). Use them exactly as written.
 7. Do NOT invent information.
