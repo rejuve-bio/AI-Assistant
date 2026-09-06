@@ -81,7 +81,8 @@ def test_query_endpoint(client, auth_headers):
         '/query',
         headers=auth_headers,
         data={
-            "query": "hello"
+            "query": "hello",
+            "thread_id": "test_query_endpoint",
             }
     )
     print(f"Status Code: {response.status_code}")
@@ -102,7 +103,10 @@ def test_query_responses(client, auth_headers):
             headers=auth_headers,
             data={
                 **case["input"],
-                "context": json.dumps({"id": None, "resource": "annotation"})
+                "context": json.dumps({"id": None, "resource": "annotation"}),
+                # /query now requires a thread_id — the client picks one per
+                # conversation. A fresh one per case keeps these independent.
+                "thread_id": f"test_query_responses_{case['expected_key']}",
             }
         )
         assert response.status_code == 200
