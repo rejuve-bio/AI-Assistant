@@ -16,10 +16,9 @@ RUN pip install --upgrade pip "wheel>=0.46.2" poetry
 
 # Copy the application code
 COPY . /AI-Assistant
-
-# Install dependencies 
 RUN poetry config virtualenvs.create false && \
-    poetry install --no-root --no-interaction
-
+    poetry install --no-root --no-interaction && \
+    rm -rf /root/.cache/pypoetry /root/.cache/pip
+    
 # Run the application
 CMD ["uvicorn", "run:asgi_app", "--host", "0.0.0.0", "--port", "$FASTAPI_PORT", "--workers", "4"]
