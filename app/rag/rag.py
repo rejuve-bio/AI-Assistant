@@ -5,7 +5,7 @@ import os
 import logging
 import uuid
 from datetime import datetime
-import fitz
+import pymupdf
 from app.rag.utils.content_processor import ContentProcessor
 from app.rag.utils.content_analyzer import ContentAnalyzer
 from app.storage.mongo_storage import mongo_db_manager
@@ -145,7 +145,7 @@ class RAG:
 
             # Get number of pages
             try:
-                with fitz.open(pdf_path) as doc:
+                with pymupdf.open(pdf_path) as doc:
                     num_pages = doc.page_count
             except Exception:
                 num_pages = None

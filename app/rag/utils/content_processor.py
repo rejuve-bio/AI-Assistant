@@ -1,4 +1,3 @@
-import fitz  # PyMuPDF
 from langchain_text_splitters.character import RecursiveCharacterTextSplitter
 import trafilatura
 import requests
