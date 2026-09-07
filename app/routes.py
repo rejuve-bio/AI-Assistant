@@ -1,5 +1,8 @@
-from app.lib.auth import token_required
-from flask import Blueprint, request, current_app, jsonify, Response
+from typing import List, Optional
+
+from app.lib.auth import token_required, AuthContext
+from fastapi import APIRouter, Depends, Form, File, UploadFile, Query, Request
+from fastapi.responses import JSONResponse, Response
 from dotenv import load_dotenv
 import logging
 import traceback
@@ -10,10 +13,20 @@ from app.storage.redis import redis_manager
 from app.storage.mongo_storage import mongo_db_manager
 
 load_dotenv()
-main_bp = Blueprint("main", __name__)
+main_router = APIRouter()
 logger = logging.getLogger(__name__)
 
 AUDIO_MIME = "audio/mpeg"
+
+
+def get_ai_assistant(request: Request):
+    """FastAPI dependency: resolves the AiAssistance instance from app.state."""
+    return request.app.state.ai_assistant
+
+
+def get_qdrant_client(request: Request):
+    """FastAPI dependency: resolves the shared Qdrant client from app.state."""
+    return request.app.state.qdrant_client
 
 
 def _handle_uploads(uploaded_files, ai_assistant, user_id, content_ids):
@@ -88,16 +101,16 @@ def _dispatch_query(ai_assistant, question, json_query, uploaded_files, upload_r
                     suggested_questions.extend(sq)
                 else:
                     suggested_questions.append(sq)
-        return jsonify({
+        return JSONResponse(status_code=200, content={
             "text": "Files uploaded successfully.",
             "content_ids": content_ids,
             "suggested_questions": suggested_questions,
-        }), 200
+        })
 
     if not uploaded_files and not question and not json_query:
-        return jsonify({
+        return JSONResponse(status_code=400, content={
             "error": "No input provided. Please upload files or submit a question."
-        }), 400
+        })
 
     response = ai_assistant.assistant_response(
         query=question,
@@ -108,12 +121,19 @@ def _dispatch_query(ai_assistant, question, json_query, uploaded_files, upload_r
         content_ids=content_ids,
         urls=url
     )
-    return jsonify(response)
+    return JSONResponse(content=response)
 
 
-@main_bp.route("/query", methods=["POST"])
-@token_required
-def process_query(current_user_id, auth_token):
+@main_router.post("/query")
+def process_query(
+    auth: AuthContext = Depends(token_required),
+    ai_assistant=Depends(get_ai_assistant),
+    question: Optional[str] = Form(None),
+    query: Optional[str] = Form(None),
+    context: str = Form("{}"),
+    json_query: Optional[str] = Form(None),
+    uploaded_files: Optional[List[UploadFile]] = File(None),
+):
     """
     Unified question answering endpoint for the Rejuve platform.
 
@@ -130,32 +150,33 @@ def process_query(current_user_id, auth_token):
     - Handles both user-uploaded content question answering and general knowledge queries.
     """
     try:
-        ai_assistant = current_app.config["ai_assistant"]
-        user_id = current_user_id
+        user_id = auth.user_id
 
-        uploaded_files = request.files.getlist("uploaded_files") if "uploaded_files" in request.files else None
-        question, graph_id, resource, url, json_query, content_ids = _parse_context(request.form)
+        question_parsed, graph_id, resource, url, json_query_parsed, content_ids = _parse_context(
+            {"context": context, "json_query": json_query, "question": question, "query": query}
+        )
 
         upload_results = []
         if uploaded_files:
             upload_results, content_ids = _handle_uploads(uploaded_files, ai_assistant, user_id, content_ids)
 
-        return _dispatch_query(ai_assistant, question, json_query, uploaded_files, upload_results, content_ids, user_id, auth_token, graph_id, resource, url)
+        return _dispatch_query(ai_assistant, question_parsed, json_query_parsed, uploaded_files, upload_results, content_ids, user_id, auth.token, graph_id, resource, url)
     except Exception as e:
-        current_app.logger.error(f"Exception: {e}")
+        logger.error(f"Exception: {e}")
         traceback.print_exc()
-        return f"Bad Response: {e}", 400
+        return Response(content=f"Bad Response: {e}", status_code=400, media_type="text/html")
 
 
-@main_bp.route("/user_status/documents/", methods=["GET"])
-@token_required
-def user_status(current_user_id, auth_token):
+@main_router.get("/user_status/documents/")
+def user_status(
+    auth: AuthContext = Depends(token_required),
+    user_id: Optional[str] = Form(None),
+):
     # Get user's content status and limits (PDFs + web content)
     try:
-        data = request.form
-        user_id = data.get("user_id") or current_user_id
+        user_id = user_id or auth.user_id
         if not user_id:
-            return jsonify(error="Missing user_id"), 400
+            return JSONResponse(status_code=400, content={"error": "Missing user_id"})
 
         # Get all content files using unified method
         all_content_files = mongo_db_manager.get_user_content_files(user_id)
@@ -207,32 +228,31 @@ def user_status(current_user_id, auth_token):
         # Combine all content
         all_files = pdf_files_data + web_files_data
 
-        return (
-            jsonify(
-                user_id=user_id,
-                total_count=total_count,
-                pdf_count=pdf_count,
-                web_count=web_count,
-                files=all_files,
-            ),
-            200,
-        )
+        return JSONResponse(status_code=200, content={
+            "user_id": user_id,
+            "total_count": total_count,
+            "pdf_count": pdf_count,
+            "web_count": web_count,
+            "files": all_files,
+        })
 
     except Exception as e:
-        current_app.logger.error(f"User status error: {e}")
+        logger.error(f"User status error: {e}")
         traceback.print_exc()
-        return jsonify(error=f"Error getting user status: {str(e)}"), 500
+        return JSONResponse(status_code=500, content={"error": f"Error getting user status: {str(e)}"})
 
 
-@main_bp.route("/clear_user_data", methods=["DELETE"])
-@token_required
-def clear_user_data(current_user_id, auth_token):
+@main_router.delete("/clear_user_data")
+def clear_user_data(
+    auth: AuthContext = Depends(token_required),
+    qdrant_client=Depends(get_qdrant_client),
+    user_id: Optional[str] = Form(None),
+):
     # Clear all content data and conversation history for a specific user
     try:
-        data = request.form
-        user_id = data.get("user_id") or current_user_id
+        user_id = user_id or auth.user_id
         if not user_id:
-            return jsonify(error="Missing user_id"), 400
+            return JSONResponse(status_code=400, content={"error": "Missing user_id"})
 
         # Get all content files using unified method
         all_content_files = mongo_db_manager.get_user_content_files(user_id)
@@ -254,39 +274,38 @@ def clear_user_data(current_user_id, auth_token):
 
         # Clear Qdrant collection for this user
         try:
-            qdrant_client = current_app.config["qdrant_client"]
             qdrant_client.client.delete_collection(collection_name=user_id)
             logger.info(f"Qdrant collection '{user_id}' deleted")
         except Exception as qdrant_error:
             logger.warning(f"Qdrant collection deletion error (may not exist): {qdrant_error}")
 
-        return (
-            jsonify(message=f"User data and Qdrant collection cleared for {user_id}"),
-            200,
-        )
+        return JSONResponse(status_code=200, content={
+            "message": f"User data and Qdrant collection cleared for {user_id}"
+        })
 
     except Exception as e:
-        current_app.logger.error(f"Clear user data error: {e}")
+        logger.error(f"Clear user data error: {e}")
         traceback.print_exc()
-        return jsonify(error=f"Error clearing user data: {str(e)}"), 500
+        return JSONResponse(status_code=500, content={"error": f"Error clearing user data: {str(e)}"})
 
 
-@main_bp.route("/delete_content", methods=["DELETE"])
-@token_required
-def delete_content(current_user_id, auth_token):
+@main_router.delete("/delete_content")
+def delete_content(
+    auth: AuthContext = Depends(token_required),
+    qdrant_client=Depends(get_qdrant_client),
+    content_id: Optional[str] = Form(None),
+    content_type: str = Form("pdf"),
+):
     # Unified endpoint for deleting content (PDF or web)
     try:
-        data = request.form
-        user_id = current_user_id
-        content_id = data.get("content_id")
-        content_type = data.get("content_type", "pdf")
+        user_id = auth.user_id
         if not user_id or not content_id:
-            return jsonify(error="Missing user_id or content_id"), 400
+            return JSONResponse(status_code=400, content={"error": "Missing user_id or content_id"})
 
         # Get content details from database
         content_file = mongo_db_manager.get_content_file_by_id(user_id, content_id)
         if not content_file:
-            return jsonify(error="Content not found for this user"), 404
+            return JSONResponse(status_code=404, content={"error": "Content not found for this user"})
 
         # Handle PDF-specific deletion
         if content_type == "pdf" or content_file.get("content_type") == "pdf":
@@ -295,161 +314,157 @@ def delete_content(current_user_id, auth_token):
             if os.path.exists(pdf_path):
                 os.remove(pdf_path)
             else:
-                current_app.logger.warning(
-                    f"PDF file {pdf_path} not found for deletion."
-                )
+                logger.warning(f"PDF file {pdf_path} not found for deletion.")
 
         # Remove from database
         mongo_db_manager.delete_content_file(user_id, content_id)
 
         # Remove from Qdrant
-        qdrant_client = current_app.config["qdrant_client"]
         qdrant_client.delete_content_by_id(user_id, content_id)
 
-        return (
-            jsonify(
-                message=f"{content_file.get('content_type', 'unknown').upper()} {content_id} deleted for user {user_id}"
-            ),
-            200,
-        )
+        return JSONResponse(status_code=200, content={
+            "message": f"{content_file.get('content_type', 'unknown').upper()} {content_id} deleted for user {user_id}"
+        })
     except Exception as e:
-        current_app.logger.error(f"Delete content error: {e}")
+        logger.error(f"Delete content error: {e}")
         traceback.print_exc()
-        return jsonify(error=f"Error deleting content: {str(e)}"), 500
+        return JSONResponse(status_code=500, content={"error": f"Error deleting content: {str(e)}"})
 
 
-@main_bp.route("/audio/summary", methods=["GET"])
-@token_required
-def get_summary_audio(current_user_id, auth_token):
+@main_router.get("/audio/summary")
+def get_summary_audio(
+    auth: AuthContext = Depends(token_required),
+    content_id: Optional[str] = Form(None),
+):
     # Generate and serve summary audio on-demand, with Redis caching
     try:
-        data = request.form
-        user_id = current_user_id
-        content_id = data.get("content_id") if data else None
+        user_id = auth.user_id
 
         if not user_id or not content_id:
-            return jsonify(error="Missing user_id or content_id"), 400
+            return JSONResponse(status_code=400, content={"error": "Missing user_id or content_id"})
 
         # Redis cache key
         cache_key = f"audio:summary:{user_id}:{content_id}"
         audio_data = redis_manager.get_audio_cache(cache_key)
         if audio_data:
-            current_app.logger.info(
+            logger.info(
                 f"[AUDIO CACHE] Served summary audio for user_id={user_id}, content_id={content_id} from Redis cache."
             )
-            return Response(audio_data, mimetype=AUDIO_MIME)
+            return Response(content=audio_data, media_type=AUDIO_MIME)
 
         # Get content file using unified method
         content_file = mongo_db_manager.get_content_file_by_id(user_id, content_id)
 
         if not content_file:
-            return jsonify(error="Content not found for this user"), 404
+            return JSONResponse(status_code=404, content={"error": "Content not found for this user"})
 
         # Get the summary from the stored user data
         summary_text = content_file.get("summary") or ""
 
         if not summary_text:
-            return jsonify(error="No summary found for this content"), 404
+            return JSONResponse(status_code=404, content={"error": "No summary found for this content"})
 
         # Generate audio on-demand
         audio_data = tts_manager.generate_audio_on_demand(summary_text, voice="russell")
 
         if audio_data is None:
-            return jsonify(error="Failed to generate audio"), 500
+            return JSONResponse(status_code=500, content={"error": "Failed to generate audio"})
 
         # Store in Redis cache for 10 minutes
         redis_manager.set_audio_cache(cache_key, audio_data, expire_seconds=600)
 
         # Return the audio data directly
-        return Response(audio_data, mimetype=AUDIO_MIME)
+        return Response(content=audio_data, media_type=AUDIO_MIME)
 
     except Exception as e:
-        current_app.logger.error(f"Summary audio error: {e}")
+        logger.error(f"Summary audio error: {e}")
         traceback.print_exc()
-        return jsonify(error=f"Error generating summary audio: {str(e)}"), 500
+        return JSONResponse(status_code=500, content={"error": f"Error generating summary audio: {str(e)}"})
 
 
-@main_bp.route("/audio/query", methods=["GET"])
-@token_required
-def get_query_audio(current_user_id, auth_token):
+@main_router.get("/audio/query")
+def get_query_audio(
+    auth: AuthContext = Depends(token_required),
+    query_id: Optional[str] = Form(None),
+):
     # Generate and serve query audio on-demand using query_id, with Redis caching
     try:
-        data = request.form
-        user_id = current_user_id
-        query_id = data.get("query_id") if data else None
+        user_id = auth.user_id
 
         if not user_id or not query_id:
-            return jsonify(error="Missing user_id or query_id"), 400
+            return JSONResponse(status_code=400, content={"error": "Missing user_id or query_id"})
 
         # Redis cache key
         cache_key = f"audio:query:{user_id}:{query_id}"
         audio_data = redis_manager.get_audio_cache(cache_key)
         if audio_data:
-            current_app.logger.info(
+            logger.info(
                 f"[AUDIO CACHE] Served query audio for user_id={user_id}, query_id={query_id} from Redis cache."
             )
-            return Response(audio_data, mimetype=AUDIO_MIME)
+            return Response(content=audio_data, media_type=AUDIO_MIME)
 
         # Get the specific conversation entry by query_id
         entry = mongo_db_manager.get_entry_by_query_id(user_id, query_id)
 
         if not entry:
-            return jsonify(error="Query not found in history"), 404
+            return JSONResponse(status_code=404, content={"error": "Query not found in history"})
 
         # Get the assistant's answer text
         text_content = entry.get("assistant answer", "")
 
         if not text_content:
-            return jsonify(error="No text found for this query"), 404
+            return JSONResponse(status_code=404, content={"error": "No text found for this query"})
 
         # Generate audio on-demand
         audio_data = tts_manager.generate_audio_on_demand(text_content, voice="russell")
 
         if audio_data is None:
-            return jsonify(error="Failed to generate audio"), 500
+            return JSONResponse(status_code=500, content={"error": "Failed to generate audio"})
 
         # Store in Redis cache for 10 minutes
         redis_manager.set_audio_cache(cache_key, audio_data, expire_seconds=600)
 
         # Return the audio data directly
-        return Response(audio_data, mimetype=AUDIO_MIME)
+        return Response(content=audio_data, media_type=AUDIO_MIME)
 
     except Exception as e:
-        current_app.logger.error(f"Query audio error: {e}")
+        logger.error(f"Query audio error: {e}")
         traceback.print_exc()
-        return jsonify(error=f"Error generating query audio: {str(e)}"), 500
+        return JSONResponse(status_code=500, content={"error": f"Error generating query audio: {str(e)}"})
 
 
-@main_bp.route("/history", methods=["GET"])
-@token_required
-def get_user_history(current_user_id, auth_token):
+@main_router.get("/history")
+def get_user_history(
+    auth: AuthContext = Depends(token_required),
+    user_id: Optional[str] = Form(None),
+):
     # Get conversation history for a user
     try:
-        data = request.form
-        user_id = data.get("user_id") or current_user_id
+        user_id = user_id or auth.user_id
 
         history = mongo_db_manager.retrieve_user_history(user_id)
 
-        return jsonify(history), 200
+        return JSONResponse(status_code=200, content=history)
     except Exception as e:
-        current_app.logger.error(f"Error retrieving history: {e}")
-        return jsonify(error=f"Error retrieving history: {str(e)}"), 500
+        logger.error(f"Error retrieving history: {e}")
+        return JSONResponse(status_code=500, content={"error": f"Error retrieving history: {str(e)}"})
 
 
-@main_bp.route("/history", methods=["DELETE"])
-@token_required
-def clear_user_history(current_user_id, auth_token):
+@main_router.delete("/history")
+def clear_user_history(
+    auth: AuthContext = Depends(token_required),
+    user_id: Optional[str] = Form(None),
+):
     # Clear conversation history for a user
     try:
-        data = request.form
-        user_id = data.get("user_id") or current_user_id
+        user_id = user_id or auth.user_id
 
         mongo_db_manager.clear_user_history(user_id)
 
-        return jsonify(message="History cleared successfully"), 200
+        return JSONResponse(status_code=200, content={"message": "History cleared successfully"})
     except Exception as e:
-        current_app.logger.error(f"Error clearing history: {e}")
-        return jsonify(error=f"Error clearing history: {str(e)}"), 500
+        logger.error(f"Error clearing history: {e}")
+        return JSONResponse(status_code=500, content={"error": f"Error clearing history: {str(e)}"})
 
 
 def _process_hypothesis_question(projects_api_url, headers, projects):
@@ -507,8 +522,7 @@ def _process_hypothesis_question(projects_api_url, headers, projects):
     return project_map
 
 
-def handle_hypothesis_faq(auth_token):
-    import os
+def handle_hypothesis_faq(auth_token, ai_assistant):
     import requests
     projects_api_url = os.getenv("HYPOTHESIS_DATA_API")
     headers = {"Authorization": auth_token}
@@ -542,27 +556,26 @@ def handle_hypothesis_faq(auth_token):
 
                 Return JSON list of strings only.
                 """
-    ai_assistant = current_app.config["ai_assistant"]
     llm_response = ai_assistant.advanced_llm.generate(llm_prompt)
-    return jsonify({
+    return JSONResponse(status_code=200, content={
         "text": "Here’s your hypothesis-based AI-generated questions:",
         "projects": project_map,
         "sample_questions": llm_response
-    }), 200
+    })
 
-   
 
-@main_bp.route("/faq", methods=["GET"])
-@token_required
-def get_faq_intro(current_user_id,auth_token):
+@main_router.get("/faq")
+def get_faq_intro(
+    auth: AuthContext = Depends(token_required),
+    ai_assistant=Depends(get_ai_assistant),
+    context: Optional[str] = Query(None),
+):
     """
     Get welcome message and list of FAQ questions.
-    No authentication required - public endpoint for discovery.
     """
     try:
-        context = request.args.get("context",None)
         if context == "hypothesis":
-            return handle_hypothesis_faq(auth_token)
+            return handle_hypothesis_faq(auth.token, ai_assistant)
 
         questions = mongo_db_manager.get_all_faq_questions(context)
         question_list = [
@@ -570,48 +583,49 @@ def get_faq_intro(current_user_id,auth_token):
             for q in questions
         ]
 
-        return jsonify({
+        return JSONResponse(status_code=200, content={
             "text": "Hello! I’m MOZI, your AI assistant for exploring and annotating "
                 "biomedical entities in the BioAtomspace. "
                 f"To help you get started, here are some example questions you can try on {context} "
                 "Just click one to begin:",
             "questions": question_list
-        }), 200
+        })
     except Exception as e:
-            current_app.logger.error(f"Error in FAQ intro: {e}")
-            traceback.print_exc()
-            return jsonify({"error": str(e)}), 500
+        logger.error(f"Error in FAQ intro: {e}")
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-@main_bp.route("/faq/<question_id>", methods=["GET"])
-@token_required
-def get_faq_answer(current_user_id,auth_token,question_id):
+@main_router.get("/faq/{question_id}")
+def get_faq_answer(
+    question_id: str,
+    auth: AuthContext = Depends(token_required),
+):
     """
     Get answer for a FAQ question from MongoDB.
-    No authentication required for demo purposes.
     Returns pre-populated answer instantly.
     """
     try:
         faq = mongo_db_manager.get_faq_by_id(question_id)
-        
+
         if not faq:
-            return jsonify({
+            return JSONResponse(status_code=404, content={
                 "error": f"Question ID '{question_id}' not found in FAQ",
                 "text": "Use POST /query for custom questions"
-            }), 404
-        
-        return jsonify({
+            })
+
+        return JSONResponse(status_code=200, content={
             "question": faq["question_text"],
             "text": faq["text"],
             "json_format": faq["json_format"]
-        }), 200
-        
+        })
+
     except Exception as e:
-        current_app.logger.error(f"Error in FAQ answer: {e}")
+        logger.error(f"Error in FAQ answer: {e}")
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-@main_bp.route("/", methods=["GET"])
+@main_router.get("/")
 def health_check():
-    return jsonify("This is health check")
+    return "This is health check"

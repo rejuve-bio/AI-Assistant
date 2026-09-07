@@ -56,9 +56,10 @@ def mock_external_services():
 @pytest.fixture
 def client():
     """Create test client with test config"""
+    from fastapi.testclient import TestClient
     from app import create_app
-    app, socket = create_app()
-    with app.test_client() as client:
+    app, socket_app = create_app()
+    with TestClient(app) as client:
         yield client
 
 @pytest.fixture
@@ -72,7 +73,7 @@ def auth_headers():
 def test_health_check(client):
     response = client.get('/')
     assert response.status_code == 200
-    assert response.json == "This is health check"
+    assert response.json() == "This is health check"
 
 def test_query_endpoint(client, auth_headers):
     """Test endpoint with valid token"""
@@ -84,7 +85,7 @@ def test_query_endpoint(client, auth_headers):
             }
     )
     print(f"Status Code: {response.status_code}")
-    print(f"Response Data: {response.get_data(as_text=True)}")
+    print(f"Response Data: {response.text}")
     print(f"Response Headers: {dict(response.headers)}")
     assert response.status_code == 200
 
@@ -105,4 +106,4 @@ def test_query_responses(client, auth_headers):
             }
         )
         assert response.status_code == 200
-        assert case["expected_key"] in response.json
+        assert case["expected_key"] in response.json()

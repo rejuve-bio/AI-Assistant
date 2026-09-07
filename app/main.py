@@ -21,7 +21,6 @@ from .socket_manager import emit_to_user
 from .Galaxy_integration.galaxy import GalaxyHandler
 from .biogpt_agent.biogpt import BioGPTAgent
 from typing import TypedDict, List, Annotated, Any, Dict, Optional
-from flask_socketio import emit
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage

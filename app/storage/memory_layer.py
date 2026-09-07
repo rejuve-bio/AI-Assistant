@@ -10,19 +10,18 @@ from ..llm_handle.llm_models import (
 )
 from app.storage.qdrant import Qdrant
 import traceback
-from flask import current_app
 
 
 class MemoryManager:
-    def __init__(self, llm):
+    def __init__(self, llm, qdrant_client):
         """
         Initializes the MemoryManager with the necessary components.
         :param llm: The language model instance.
-        :param client: The Qdrant client instance.
+        :param qdrant_client: The Qdrant client instance (already carries its own embedding_model).
         """
         self.llm = llm
-        self.embedding_model = current_app.config["embedding_model"]
-        self.client = current_app.config["qdrant_client"]
+        self.client = qdrant_client
+        self.embedding_model = qdrant_client.embedding_model
 
     def get_fact_retrieval_message(self, messages):
         """

@@ -1,21 +1,24 @@
+import asyncio
 import logging
 import os
 import json
-import traceback
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from flask import Flask
-from flask_cors import CORS
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from .logging_config import setup_logging
 setup_logging()
 
-from .routes import main_bp
+from .routes import main_router
 from app.main import AiAssistance
 from app.rag.rag import RAG
-from app.socket_manager import init_socketio
+from app.socket_manager import create_socket_app, set_event_loop
 from app.storage.qdrant import Qdrant
 from app.storage.mongo_storage import MongoManager
 from app.annotation_graph.schema_handler import SchemaHandler
@@ -97,24 +100,13 @@ def _seed_faq_questions(mongo_db_manager):
     mongo_db_manager.seed_faq_questions(initial_faqs)
 
 
-def create_app():
-    """Creates and configures the Flask application."""
-    logger.info("Creating Flask app")
-    app = Flask(__name__)
-    CORS(app)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Builds all shared services once at startup and attaches them to app.state."""
+    logger.info("Running FastAPI startup")
 
-    config = load_config()
-    app.config.update(config)
-    logger.info("App config updated with loaded configuration")
-
-    Limiter(
-        get_remote_address,
-        app=app,
-        default_limits=["200 per minute"],
-        storage_uri=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-        in_memory_fallback_enabled=True,
-    )
-    logger.info("FlaskLimiter initialized")
+    set_event_loop(asyncio.get_running_loop())
+    load_config()
 
     schema_handler = SchemaHandler(
         schema_config_path="./app/annotation_graph/schema/human/schema_config.yaml",
@@ -146,9 +138,6 @@ def create_app():
     embedding_model, vector_size = _init_embedding_model(embedding)
 
     qdrant_client = Qdrant(embedding_model=embedding_model, vector_size=vector_size)
-    app.config["qdrant_client"] = qdrant_client
-    app.config["embedding_model"] = embedding_model
-    app.config["embedding_vector_size"] = vector_size
 
     try:
         _init_site_collection(qdrant_client, advanced_llm)
@@ -156,8 +145,7 @@ def create_app():
         logger.error(f"An error occurred during the application setup for SITE INFORMATION: {e}", exc_info=True)
 
     mongo_db_manager = MongoManager()
-    app.config["mongo_db_manager"] = mongo_db_manager
-    logger.info("MongoDB manager initialized and stored in app config")
+    logger.info("MongoDB manager initialized")
 
     try:
         _seed_faq_questions(mongo_db_manager)
@@ -175,16 +163,17 @@ def create_app():
     )
     logger.info("AiAssistance initialized")
 
-    app.config["basic_llm"] = basic_llm
-    app.config["advanced_llm"] = advanced_llm
-    app.config["schema_handler"] = schema_handler
-    app.config["fly_schema_handler"] = fly_schema_handler
-    app.config["ai_assistant"] = ai_assistant
-    logger.info("App config populated with models and assistants")
-
-    socketio = init_socketio(app)
-    app.config["socketio"] = socketio
-    logger.info("SocketIO initialized and stored in app config")
+    # Shared state for route/socket handlers -- replaces Flask's app.config[...] locator.
+    app.state.qdrant_client = qdrant_client
+    app.state.embedding_model = embedding_model
+    app.state.embedding_vector_size = vector_size
+    app.state.mongo_db_manager = mongo_db_manager
+    app.state.basic_llm = basic_llm
+    app.state.advanced_llm = advanced_llm
+    app.state.schema_handler = schema_handler
+    app.state.fly_schema_handler = fly_schema_handler
+    app.state.ai_assistant = ai_assistant
+    logger.info("app.state populated with models and assistants")
 
     try:
         initialize_database()
@@ -193,8 +182,45 @@ def create_app():
         logger.error(f"Error initializing database: {e}")
         raise
 
-    app.register_blueprint(main_bp)
-    logger.info('Blueprint "main_bp" registered')
+    logger.info("FastAPI startup complete")
+    yield
+    logger.info("FastAPI shutdown")
 
-    logger.info("Flask app created successfully")
-    return app, socketio
+
+def create_app():
+    """Creates and configures the FastAPI application.
+
+    Returns (app, socket_app): `app` is the plain FastAPI instance (routes,
+    state, used directly by tests); `socket_app` is `app` wrapped with the
+    Socket.IO ASGI app and is what actually gets served by Uvicorn.
+    """
+    logger.info("Creating FastAPI app")
+    app = FastAPI(lifespan=lifespan)
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    limiter = Limiter(
+        key_func=get_remote_address,
+        default_limits=["200/minute"],
+        storage_uri=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+        in_memory_fallback_enabled=True,
+    )
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_middleware(SlowAPIMiddleware)
+    logger.info("Rate limiter initialized")
+
+    app.include_router(main_router)
+    logger.info('Router "main_router" registered')
+
+    socket_app = create_socket_app(app)
+    logger.info("Socket.IO app created")
+
+    logger.info("FastAPI app created successfully")
+    return app, socket_app

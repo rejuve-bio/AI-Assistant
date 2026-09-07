@@ -5,7 +5,7 @@ import os
 import logging
 import uuid
 from datetime import datetime
-import fitz
+import pymupdf
 from app.rag.utils.content_processor import ContentProcessor
 from app.rag.utils.content_analyzer import ContentAnalyzer
 from app.storage.mongo_storage import mongo_db_manager
@@ -140,11 +140,12 @@ class RAG:
             upload_folder = "pdfs_uploaded/pdfs"
             os.makedirs(upload_folder, exist_ok=True)
             pdf_path = os.path.join(upload_folder, f"{content_id}.pdf")
-            file.save(pdf_path)
+            with open(pdf_path, "wb") as out_file:
+                out_file.write(file.file.read())
 
             # Get number of pages
             try:
-                with fitz.open(pdf_path) as doc:
+                with pymupdf.open(pdf_path) as doc:
                     num_pages = doc.page_count
             except Exception:
                 num_pages = None
@@ -206,7 +207,7 @@ class RAG:
                 )
 
             # Add memory for the upload
-            MemoryManager(self.llm).add_memory(f"pdf file : {file.filename}", user_id)
+            MemoryManager(self.llm, self.client).add_memory(f"pdf file : {file.filename}", user_id)
 
             # Add a history entry for the PDF upload
             mongo_db_manager.create_history(
@@ -307,7 +308,7 @@ class RAG:
                 )
 
             # Add memory for the upload
-            MemoryManager(self.llm).add_memory(f"web content : {url}", user_id)
+            MemoryManager(self.llm, self.client).add_memory(f"web content : {url}", user_id)
 
             # Add a history entry for the web content upload
             mongo_db_manager.create_history(

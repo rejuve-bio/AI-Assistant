@@ -52,8 +52,8 @@ jobs:
     - name: Run tests with coverage
       env:
         # Port Configuration - hardcoded for tests
-        FLASK_HOST_PORT: 5000
-        FLASK_INTERNAL_PORT: 5000
+        FASTAPI_HOST_PORT: 5000
+        FASTAPI_INTERNAL_PORT: 5000
         REDIS_HOST_PORT: 6379
         REDIS_INTERNAL_PORT: 6379
         MONGODB_HOST_PORT: 27017
@@ -161,8 +161,8 @@ jobs:
     - name: Run unit tests
       env:
         # Port Configuration - hardcoded for tests
-        FLASK_HOST_PORT: 5000
-        FLASK_INTERNAL_PORT: 5000
+        FASTAPI_HOST_PORT: 5000
+        FASTAPI_INTERNAL_PORT: 5000
         REDIS_HOST_PORT: 6379
         REDIS_INTERNAL_PORT: 6379
         MONGODB_HOST_PORT: 27017
@@ -294,8 +294,8 @@ jobs:
       run: |
         echo "=== Creating .env file from GitHub Secrets ==="
 
-        echo "FLASK_HOST_PORT=${{ secrets.FLASK_HOST_PORT }}" >> .env
-        echo "FLASK_INTERNAL_PORT=${{ secrets.FLASK_INTERNAL_PORT }}" >> .env
+        echo "FASTAPI_HOST_PORT=${{ secrets.FASTAPI_HOST_PORT }}" >> .env
+        echo "FASTAPI_INTERNAL_PORT=${{ secrets.FASTAPI_INTERNAL_PORT }}" >> .env
         echo "REDIS_HOST_PORT=${{ secrets.REDIS_HOST_PORT }}" >> .env
         echo "REDIS_INTERNAL_PORT=${{ secrets.REDIS_INTERNAL_PORT }}" >> .env
         echo "MONGODB_HOST_PORT=${{ secrets.MONGODB_HOST_PORT }}" >> .env
@@ -344,10 +344,10 @@ jobs:
               - static:/static
               - ${HF_CACHE_DIR}:/root/.cache/huggingface
             ports:
-              - "${FLASK_HOST_PORT}:${FLASK_INTERNAL_PORT}"
+              - "${FASTAPI_HOST_PORT}:${FASTAPI_INTERNAL_PORT}"
             command: >
               sh -c "
-              gunicorn -w 4 --preload --bind 0.0.0.0:${FLASK_INTERNAL_PORT} --timeout 180 --log-level debug run:app
+              uvicorn run:asgi_app --host 0.0.0.0 --port ${FASTAPI_INTERNAL_PORT} --workers 4 --log-level debug
               "
             restart: always
             depends_on:
@@ -361,8 +361,8 @@ jobs:
               ADVANCED_LLM_VERSION: ${ADVANCED_LLM_VERSION}
               GEMINI_API_KEY: ${GEMINI_API_KEY}
               OPENAI_API_KEY: ${OPENAI_API_KEY}
-              FLASK_INTERNAL_PORT: ${FLASK_INTERNAL_PORT}
-              FLASK_HOST_PORT: ${FLASK_HOST_PORT}
+              FASTAPI_INTERNAL_PORT: ${FASTAPI_INTERNAL_PORT}
+              FASTAPI_HOST_PORT: ${FASTAPI_HOST_PORT}
               JWT_SECRET: ${JWT_SECRET}
               MODEL_PATH: ${MODEL_PATH}
               REDIS_HOST: redis
@@ -420,10 +420,10 @@ jobs:
         echo "=== Waiting for assistant service to become healthy (up to 240s) ==="
         echo "Gunicorn --preload blocks on BioGPT model load before any worker can respond,"
         echo "so a fixed short sleep isn't reliable here — poll instead."
-        FLASK_HOST_PORT_WAIT=${{ secrets.FLASK_HOST_PORT || '5000' }}
+        FASTAPI_HOST_PORT_WAIT=${{ secrets.FASTAPI_HOST_PORT || '5000' }}
         for i in $(seq 1 24); do
-          if curl -f -s http://localhost:${FLASK_HOST_PORT_WAIT}/health >/dev/null 2>&1 || \
-             curl -f -s http://localhost:${FLASK_HOST_PORT_WAIT}/ >/dev/null 2>&1; then
+          if curl -f -s http://localhost:${FASTAPI_HOST_PORT_WAIT}/health >/dev/null 2>&1 || \
+             curl -f -s http://localhost:${FASTAPI_HOST_PORT_WAIT}/ >/dev/null 2>&1; then
             echo "[SUCCESS] Assistant became healthy after ~$((i * 10))s"
             break
           fi
@@ -493,14 +493,14 @@ jobs:
 
         APP_HEALTHY=true
         echo "=== Testing application health endpoint ==="
-        FLASK_HOST_PORT=${{ secrets.FLASK_HOST_PORT || '5000' }}
-        echo "Testing health on port: ${FLASK_HOST_PORT}"
+        FASTAPI_HOST_PORT=${{ secrets.FASTAPI_HOST_PORT || '5000' }}
+        echo "Testing health on port: ${FASTAPI_HOST_PORT}"
         echo "=== Debug: Container port mapping ==="
         docker port ai-assistant-assistant-1
         echo "=== Debug: Testing connectivity ==="
-        curl -v http://localhost:${FLASK_HOST_PORT}/ 2>&1 | head -20 || echo "Curl failed with detailed output above"
-        if curl -f http://localhost:${FLASK_HOST_PORT}/health 2>/dev/null || \
-          curl -f http://localhost:${FLASK_HOST_PORT}/ 2>/dev/null; then
+        curl -v http://localhost:${FASTAPI_HOST_PORT}/ 2>&1 | head -20 || echo "Curl failed with detailed output above"
+        if curl -f http://localhost:${FASTAPI_HOST_PORT}/health 2>/dev/null || \
+          curl -f http://localhost:${FASTAPI_HOST_PORT}/ 2>/dev/null; then
           echo "[SUCCESS] Application is responding"
         else
           echo "[ERROR] Application is NOT responding"
@@ -567,10 +567,10 @@ jobs:
                 self.client.get("/")
         EOF
 
-        FLASK_HOST_PORT=${{ secrets.FLASK_HOST_PORT || '5000' }}
+        FASTAPI_HOST_PORT=${{ secrets.FASTAPI_HOST_PORT || '5000' }}
         locust -f /tmp/locustfile.py --headless \
           -u 10 -r 2 --run-time 30s \
-          --host http://localhost:${FLASK_HOST_PORT} \
+          --host http://localhost:${FASTAPI_HOST_PORT} \
           --html /tmp/locust-report.html || echo "Load test completed with warnings"
 
         echo "Load test completed - check artifacts for detailed report"
@@ -605,13 +605,13 @@ jobs:
       if: steps.validate-container.outcome == 'success'
       run: |
         echo "=== Running smoke tests on critical endpoints ==="
-        FLASK_HOST_PORT=${{ secrets.FLASK_HOST_PORT || '5000' }}
+        FASTAPI_HOST_PORT=${{ secrets.FASTAPI_HOST_PORT || '5000' }}
 
         ENDPOINTS=("/health" "/" "/api/status")
 
         for endpoint in "${ENDPOINTS[@]}"; do
           echo "Testing endpoint: $endpoint"
-          if curl -f -s -o /dev/null -w "%{http_code}" http://localhost:${FLASK_HOST_PORT}${endpoint} | grep -q "200\|404"; then
+          if curl -f -s -o /dev/null -w "%{http_code}" http://localhost:${FASTAPI_HOST_PORT}${endpoint} | grep -q "200\|404"; then
             echo "✅ $endpoint - OK"
           else
             echo "❌ $endpoint - FAILED"
