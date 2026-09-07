@@ -8,9 +8,15 @@ from urllib.parse import urlparse
 import os
 import re
 import pymupdf4llm
+from typing import Union
 
 
 logger = logging.getLogger(__name__)
+
+# Maximum characters per chunk before we split a section further.
+_HEADING_CHUNK_MAX = int(os.getenv("CHUNK_MAX_CHARS", "1200"))
+# Minimum characters for a section to be kept as its own chunk.
+_HEADING_CHUNK_MIN = int(os.getenv("CHUNK_MIN_CHARS", "80"))
 
 
 class ContentProcessor:
@@ -264,6 +270,7 @@ class ContentProcessor:
         return text.strip()
 
     def chunk_text(self, text):
+        """Plain-text chunker (used for web content). Returns list of str."""
         if not text or not text.strip():
             return []
         return self.chunk_by_sections(text)
@@ -277,6 +284,7 @@ class ContentProcessor:
             chunks.append(section_text.strip())
 
     def chunk_by_sections(self, text):
+        """Regex-based section chunker for plain text (web content fallback)."""
         chunks = []
         section_patterns = [
             r"^[A-Z][A-Za-z\s]+:",
@@ -306,10 +314,128 @@ class ContentProcessor:
         )
         return splitter.split_text(text)
 
+    # ------------------------------------------------------------------
+    # Heading-aware Markdown chunker (used for PDF content)
+    # ------------------------------------------------------------------
+
+    _HEADING_RE = re.compile(r"^(#{1,4})\s+(.+)$", re.MULTILINE)
+    _TOC_RE = re.compile(
+        r"(?:table of contents|contents|index)\s*\n", re.IGNORECASE
+    )
+
+    def chunk_by_headings(
+        self, markdown_text: str
+    ) -> list[dict]:
+        """
+        Split Markdown text on heading boundaries (H1–H4) and return a list
+        of structured chunk dicts::
+
+            {
+                "text": str,          # cleaned section body
+                "breadcrumb": str,    # e.g. "Introduction > Background"
+                "section": str,       # innermost heading label
+            }
+
+        Sections smaller than _HEADING_CHUNK_MIN are merged into their
+        predecessor.  Sections larger than _HEADING_CHUNK_MAX are split
+        further via RecursiveCharacterTextSplitter, each sub-chunk inheriting
+        the same breadcrumb.
+        """
+        if not markdown_text or not markdown_text.strip():
+            return []
+
+        # Remove obvious TOC blocks — they are noise, not content.
+        markdown_text = self._TOC_RE.sub("", markdown_text)
+
+        # Split into (heading_level, heading_text, body) triples.
+        positions = [
+            (m.start(), len(m.group(1)), m.group(2).strip())
+            for m in self._HEADING_RE.finditer(markdown_text)
+        ]
+
+        raw_sections: list[tuple[int, str, str]] = []
+        for idx, (start, level, title) in enumerate(positions):
+            end = positions[idx + 1][0] if idx + 1 < len(positions) else len(markdown_text)
+            body = markdown_text[start:end]
+            # Remove the heading line itself from body
+            body = self._HEADING_RE.sub("", body, count=1).strip()
+            raw_sections.append((level, title, body))
+
+        # If no headings found at all, fall back to plain recursive split.
+        if not raw_sections:
+            logger.debug("chunk_by_headings: no headings found, using recursive fallback")
+            return [
+                {"text": t, "breadcrumb": "", "section": ""}
+                for t in self.chunk_text_recursive(markdown_text)
+                if t.strip()
+            ]
+
+        # Build breadcrumb stack: level → title
+        breadcrumb_stack: dict[int, str] = {}
+        chunks: list[dict] = []
+        pending_text = ""
+        pending_meta: dict = {"breadcrumb": "", "section": ""}
+
+        def _emit(text: str, meta: dict):
+            """Flush accumulated text as one or more chunks."""
+            text = text.strip()
+            if not text or len(text) < _HEADING_CHUNK_MIN:
+                return
+            if len(text) <= _HEADING_CHUNK_MAX:
+                chunks.append({"text": text, **meta})
+            else:
+                # Oversized section: split further, inherit breadcrumb.
+                for sub in self.chunk_text_recursive(text):
+                    sub = sub.strip()
+                    if sub:
+                        chunks.append({"text": sub, **meta})
+
+        for level, title, body in raw_sections:
+            # Flush previously accumulated content
+            if pending_text.strip():
+                _emit(pending_text, pending_meta)
+
+            # Evict deeper headings from the stack when we go up a level
+            for k in list(breadcrumb_stack.keys()):
+                if k >= level:
+                    del breadcrumb_stack[k]
+            breadcrumb_stack[level] = title
+
+            breadcrumb = " > ".join(
+                breadcrumb_stack[k] for k in sorted(breadcrumb_stack)
+            )
+            pending_meta = {"breadcrumb": breadcrumb, "section": title}
+            pending_text = body
+
+        # Flush the last section
+        _emit(pending_text, pending_meta)
+
+        logger.debug(
+            f"chunk_by_headings: produced {len(chunks)} chunks from "
+            f"{len(raw_sections)} sections"
+        )
+        return chunks
+
     # Convenience Methods
-    def process_pdf(self, pdf_path):
-        text = self.extract_text_from_pdf(pdf_path)
-        return self.chunk_text(text)
+    def process_pdf(self, pdf_path) -> list[Union[dict, str]]:
+        """
+        Process a PDF file into a list of structured chunk dicts.
+
+        Each chunk is a dict with keys ``text``, ``breadcrumb``, ``section``.
+        Falls back to plain string chunks if heading extraction produces nothing.
+        """
+        # Extract the raw Markdown from the PDF (preserves headings).
+        markdown_text = self.extract_markdown_from_pdf(pdf_path)
+        structured = self.chunk_by_headings(markdown_text)
+        if structured:
+            return structured
+        # Fallback: strip markdown and use the old plain-text chunker.
+        logger.warning(
+            "process_pdf: heading chunker produced no output, "
+            "falling back to plain-text chunker"
+        )
+        plain = self.markdown_to_clean_text(markdown_text)
+        return self.chunk_text(plain)
 
     def process_web_content(self, url):
         result = self.extract_text_from_url(url)

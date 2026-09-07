@@ -97,6 +97,15 @@ class Qdrant:
             return False
 
     def _upsert_content_data(self, collection_name, chunks, metadata):
+        """
+        Upsert content chunks into Qdrant.
+
+        ``chunks`` can be:
+        - A list of **str** (plain text, e.g. from web content).
+        - A list of **dict** with at minimum a ``"text"`` key, plus optional
+          ``"breadcrumb"`` and ``"section"`` keys produced by the heading-aware
+          PDF chunker.  Extra keys are stored as payload fields.
+        """
         if chunks is None or metadata is None:
             raise ValueError("chunks and metadata are required for content data")
 
@@ -105,14 +114,26 @@ class Qdrant:
 
         for i in range(0, len(chunks), self.batch_size):
             batch_chunks = chunks[i : i + self.batch_size]
-            embeddings = self._get_embeddings(batch_chunks)
+
+            # Normalise: extract raw text strings for embedding.
+            texts = [
+                c["text"] if isinstance(c, dict) else c
+                for c in batch_chunks
+            ]
+            embeddings = self._get_embeddings(texts)
 
             points = []
-            for text, emb in zip(batch_chunks, embeddings):
+            for chunk, text, emb in zip(batch_chunks, texts, embeddings):
                 point_id = str(uuid.uuid4())
+                # Merge base metadata, the text, and any extra chunk-level
+                # fields (breadcrumb, section) into a single payload dict.
+                extra = {k: v for k, v in chunk.items() if k != "text"} \
+                    if isinstance(chunk, dict) else {}
                 points.append(
                     models.PointStruct(
-                        id=point_id, vector=emb, payload={**meta, "text": text}
+                        id=point_id,
+                        vector=emb,
+                        payload={**meta, "text": text, **extra},
                     )
                 )
             self.client.upsert(collection_name=collection_name, points=points)
