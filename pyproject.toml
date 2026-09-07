@@ -12,7 +12,7 @@ packages = [
 python = ">=3.10,<3.13"
 fastapi = "^0.115.0"
 uvicorn = {extras = ["standard"], version = "^0.32.0"}
-python-multipart = "^0.0.12"
+python-multipart = ">=0.0.18"
 slowapi = "^0.1.9"
 python-socketio = "^5.11.4"
 python-dotenv = "^1.0.1"
