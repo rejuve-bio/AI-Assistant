@@ -1285,13 +1285,12 @@ class AiAssistance:
         thread_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Main entry point for processing queries with parallel agent execution.
-
-        `thread_id` scopes the checkpointer — defaults to `user_id` (today's
-        behavior: one thread per user) when the caller doesn't pick one, so
-        clients that haven't adopted real per-conversation thread_ids yet keep
-        working unchanged.
         """
-        thread_id = thread_id or user_id
+        if not thread_id:
+            raise ValueError(
+                "thread_id is required — it names the conversation this message "
+                "belongs to. Generate one per conversation on the client."
+            )
         logger.info(
             f"Agent called with message: {message}, user_id: {user_id}, thread_id: {thread_id}, "
             f"content_ids: {content_ids}, graph_id: {graph_id}, urls: {urls}"
@@ -1326,8 +1325,6 @@ class AiAssistance:
                 "agents_completed": [],
             }
 
-            # Run the workflow, scoped to this thread so the checkpointer can
-            # persist/resume this conversation's graph state.
             config = {"configurable": {"thread_id": thread_id}}
             result = self.app.invoke(initial_state, config=config)
 
@@ -1366,9 +1363,6 @@ class AiAssistance:
         """
         state = self.app.get_state(config)
         if state.next:
-            # Paused — the graph never reached the aggregator, so state["response"]
-            # is still the empty placeholder from initial_state. Surface the
-            # confirmation question instead.
             pending_confirmation = state.values.get("pending_confirmation") or {}
             data = pending_confirmation.get("data", {})
             return {
@@ -1441,21 +1435,21 @@ class AiAssistance:
 
             label = (resp.get("text") or "")[:80]
             if isinstance(resource, dict) and resource.get("id"):
-                self.store.record_tool_call(thread_id, resource.get("type", "unknown"), resource["id"], label)
+                self.store.record_tool_call(thread_id, user_id, resource.get("type", "unknown"), resource["id"], label)
             elif graph_id and resp.get("text"):
                 # e.g. content_retrieval_agent summarizing an existing graph — no
                 # new resource was created, but this turn is still a reference to
                 # that graph and belongs in the thread's resource trail.
                 agents = resp.get("agents_completed") or []
                 agent = "content_retrieval" if "content_retrieval_agent" in agents else (agents[0] if agents else "unknown")
-                self.store.record_tool_call(thread_id, agent, graph_id, label)
+                self.store.record_tool_call(thread_id, user_id, agent, graph_id, label)
 
             if thread_doc.get("message_count", 0) >= self._THREAD_COMPACT_THRESHOLD:
-                self._compact_thread(thread_id, thread_doc)
+                self._compact_thread(thread_id, user_id, thread_doc)
         except Exception as e:
             logger.warning(f"Failed to record thread turn for {thread_id}: {e}")
 
-    def _compact_thread(self, thread_id: str, thread_doc: Dict[str, Any]) -> None:
+    def _compact_thread(self, thread_id: str, user_id: str, thread_doc: Dict[str, Any]) -> None:
 
         messages = thread_doc.get("messages", [])
         keep = self._THREAD_KEEP_RECENT
@@ -1479,7 +1473,7 @@ class AiAssistance:
         except Exception as e:
             logger.warning(f"Thread compaction summarization failed for {thread_id}: {e}")
             return
-        self.store.compact_thread(thread_id, new_summary, recent)
+        self.store.compact_thread(thread_id, user_id, new_summary, recent)
 
     def _reset_thread(self, config: dict) -> None:
 
@@ -1676,18 +1670,13 @@ class AiAssistance:
                     return resp
 
             try:
-                thread_doc = self.store.get_thread(thread_id)
+                thread_doc = self.store.get_thread(thread_id, user_id)
                 running_summary = thread_doc.get("running_summary", "")
                 messages = thread_doc.get("messages", [])
                 history = []
                 i = 0
                 while i < len(messages):
                     if messages[i].get("role") == "user":
-                        # Capture the question BEFORE advancing past the paired
-                        # assistant message — reading messages[i] after the skip
-                        # picked up the assistant's own text as the "question",
-                        # feeding the LLM a history where every entry was the
-                        # assistant talking to itself.
                         question = messages[i].get("text", "")
                         answer = ""
                         if i + 1 < len(messages) and messages[i + 1].get("role") == "assistant":
