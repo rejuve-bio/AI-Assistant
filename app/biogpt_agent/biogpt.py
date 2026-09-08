@@ -36,16 +36,11 @@ CRITIC_PROMPT_TEMPLATE = (
 class BioGPTAgent:
     """
     Calls the dedicated BioGPT inference service (TGI, hosted on the GPU box).
-    Falls back to the general-purpose LLM with a biomedical-expert prompt if
-    the BioGPT service is unset, unreachable, or errors out.
     """
 
     def __init__(self, basic_llm=None, advanced_llm=None, model_name="kirubel1738/biogpt-bioqa-lora-merged"):
         self.model_name = model_name
-        # Approve/reject is a cheap judgment call — use the fast basic LLM.
         self.critic_llm = basic_llm
-        # Only invoked when BioGPT is down or its answer is rejected outright —
-        # worth the extra cost/latency of the more capable model.
         self.fallback_llm = advanced_llm
 
     def generate_answer(self, query: str, max_length: int = 50) -> str:
@@ -78,12 +73,7 @@ class BioGPTAgent:
         """
         BioGPT is a small, narrowly fine-tuned model and prone to specific errors (e.g.
         misreading an ID's prefix as an unrelated abbreviation). Have the larger
-        general-purpose LLM approve-and-correct its answer, or reject it outright, before
-        it's returned, rather than relying on a downstream step to notice.
-
-        Returns the approved/corrected answer text, or None if the critic rejected it
-        as unsalvageable (a system/critique-step failure returns the raw answer instead,
-        since that's a different situation from the critic actively judging it wrong).
+        general-purpose LLM approve-and-correct its answer, or reject it outright.
         """
         if not self.critic_llm:
             return raw_answer

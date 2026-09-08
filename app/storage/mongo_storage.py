@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
+from langgraph.checkpoint.mongodb import MongoDBSaver
 import uuid
 import logging
 
@@ -274,6 +275,45 @@ class MongoManager:
             logger.error(f"Error getting context and memory: {e}")
             return []
 
+    def get_content_summaries(self, user_id, content_ids=None):
+        """Summaries for a user's uploaded content (PDF and web), optionally
+        narrowed to specific content_ids."""
+        content_summaries = []
+        all_content = self.get_user_content_files(user_id)
+
+        if content_ids:
+            filtered_content = [
+                content
+                for content in all_content
+                if content.get("content_id") in content_ids
+            ]
+        else:
+            filtered_content = all_content
+
+        for content in filtered_content:
+            if content.get("content_type") == "pdf":
+                content_summaries.append(
+                    {
+                        "content_id": content.get("content_id"),
+                        "content_type": "pdf",
+                        "filename": content.get("filename"),
+                        "summary": content.get("summary") or "",
+                    }
+                )
+            elif content.get("content_type") == "web":
+                content_summaries.append(
+                    {
+                        "content_id": content.get("content_id"),
+                        "content_type": "web",
+                        "url": content.get("url"),
+                        "title": content.get("title"),
+                        "summary": content.get("summary") or "",
+                    }
+                )
+
+        return content_summaries
+
+    
 
     def get_thread(self, thread_id: str, user_id: str = None) -> dict:
         """Returns the thread document, or an empty-shaped dict if it doesn't
@@ -593,3 +633,11 @@ class MongoManager:
 
 # Global instance
 mongo_db_manager = MongoManager()
+
+
+def create_checkpointer(mongo_client):
+
+    db_name = os.getenv("MONGO_CHECKPOINT_DATABASE", "ai_assistant_checkpoints")
+    checkpointer = MongoDBSaver(mongo_client, db_name=db_name)
+    logger.info(f"LangGraph checkpointer initialized (Mongo db={db_name})")
+    return checkpointer
