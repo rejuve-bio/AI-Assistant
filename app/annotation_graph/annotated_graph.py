@@ -1,4 +1,5 @@
 import copy
+import difflib
 import json
 import logging
 import os
@@ -15,7 +16,6 @@ from app.prompts.annotation_prompts import (
     RESULT_SUMMARIZATION_PROMPT,
 )
 from app.socket_manager import emit_to_user
-from app.storage.redis import redis_manager
 from .json_to_cypher import JsonToCypherConverter
 
 
@@ -46,18 +46,7 @@ class Graph:
             username=os.getenv("FLY_NEO4J_USERNAME"),
             password=os.getenv("FLY_NEO4J_PASSWORD"),
         ) if os.getenv("FLY_NEO4J_URI") else None
-        # Pending annotation confirmations — Redis-backed (cross-process), in-memory fallback
-        self._redis = redis_manager
-        self._pending_fallback: dict = {}  # used only when Redis is unavailable
-        self._PENDING_TTL = 600  # 10 minutes
 
-        # Maps node type → the human-readable display property to fall back to when the
-        # JSON `id` field doesn't match the node's real database `id` directly (e.g. a
-        # pathway name/symbol typed in place of its Reactome id). Only include properties
-        # that actually exist in the schema (see schema/human/enhanced_schema.txt) — types
-        # not listed here (snp, tad, promoter, regulatory_region, ...) only have a
-        # coordinate/accession-style `id` and no separate display name, so they're
-        # validated against `id` directly (see _validate_and_update).
         self._node_id_property = {
             "gene": "gene_name",
             "transcript": "transcript_id",
@@ -224,6 +213,8 @@ class Graph:
             )
             json_data = self.llm.generate(prompt)
             logger.info(f"Converted JSON:\n{json.dumps(json_data, indent=2)}")
+            if not isinstance(json_data, dict):
+                raise ValueError(f"Expected a JSON object from the LLM, got {type(json_data).__name__}: {json_data!r}")
             return json_data
         except Exception as e:
             logger.error(f"Failed to convert information to annotation JSON: {e}")
@@ -371,7 +362,7 @@ class Graph:
                         else:
                             pick = llm_picks.get(node_db_id)
                             candidates = similar_values or direct_values
-                            top = candidates[0][0] if candidates else None
+                            top = self._closest_candidate(node_db_id, candidates)
                             suggestion = pick["value"] if pick else top
                             if pick and pick.get("auto_accept"):
                                 # Trivial difference — silently fix the id
@@ -429,10 +420,10 @@ class Graph:
                                 else:
                                     pick = llm_picks.get(item)
                                     if pick is None:
-                                        # LLM says no clear match — still ask with the top Neo4j result
+                                        # LLM says no clear match — still ask with the closest Neo4j result
                                         failed_items.append(item)
                                         if similar_values:
-                                            item_suggestions[item] = similar_values[0][0]
+                                            item_suggestions[item] = self._closest_candidate(item, similar_values)
                                     elif pick.get("auto_accept"):
                                         # Trivial typo/case/punctuation — silently fix
                                         validated_items.append(pick["value"])
@@ -474,12 +465,13 @@ class Graph:
                             else:
                                 pick = llm_picks.get(property_value)
                                 if pick is None:
-                                    # LLM unsure — still ask with the top Neo4j result
+                                    # LLM unsure — still ask with the closest Neo4j result
+                                    best = self._closest_candidate(property_value, similar_values)
                                     node["status"] = False
                                     node["needs_confirmation"] = True
-                                    node["pending_substitutions"] = {property_value: top}
+                                    node["pending_substitutions"] = {property_value: best}
                                     validation_report["failed_nodes"].append(
-                                        {"node_id": node_id, "reason": f"'{property_value}' not found; nearest is '{top}'"}
+                                        {"node_id": node_id, "reason": f"'{property_value}' not found; nearest is '{best}'"}
                                     )
                                 elif pick.get("auto_accept"):
                                     # Trivial difference — silently fix
@@ -557,6 +549,19 @@ class Graph:
                 "candidates": {},
             }
 
+    _LOOKALIKE_CHARS = str.maketrans({"0": "O", "1": "I", "5": "S"})
+
+    def _closest_candidate(self, target: str, candidates: list):
+        if not candidates:
+            return None
+        norm_target = target.upper().translate(self._LOOKALIKE_CHARS)
+        return max(
+            candidates,
+            key=lambda c: difflib.SequenceMatcher(
+                None, norm_target, c[0].upper().translate(self._LOOKALIKE_CHARS)
+            ).ratio(),
+        )[0]
+
     def _select_best_matching_property_value(self, user_input_value, possible_values):
         try:
             prompt = SELECT_PROPERTY_VALUE_PROMPT.format(
@@ -587,110 +592,75 @@ class Graph:
         if isinstance(result, dict):
             out = {}
             for k, v in result.items():
-                if v is None or str(v).lower() == "null":
+                if self._is_no_match(v):
                     out[k] = None
-                elif isinstance(v, dict) and "value" in v:
+                elif isinstance(v, dict) and "value" in v and not self._is_no_match(v["value"]):
+                    # Guard the inner value too, not just the wrapper: the LLM
+                    # sometimes answers "no match" as {"value": "None"} — a dict
+                    # whose value is the literal *string* "None". Taken at face
+                    # value that gets offered to the user as a real substitution
+                    # ("closest match is 'None'"), which is nonsense.
                     out[k] = {"value": v["value"], "auto_accept": bool(v.get("auto_accept", False))}
                 else:
                     out[k] = None
             return out
         return {item: None for item in items_with_candidates}
 
-    # ── Pending state helpers (Redis-backed, in-memory fallback) ─────────────
-
-    def _set_pending(self, user_id: str, data: dict):
-        key = f"annotation_pending:{user_id}"
-        if self._redis.is_available:
-            self._redis.client.set(key, json.dumps(data), ex=self._PENDING_TTL)
-        else:
-            self._pending_fallback[user_id] = data
-
-    def _get_pending(self, user_id: str):
-        key = f"annotation_pending:{user_id}"
-        if self._redis.is_available:
-            raw = self._redis.client.get(key)
-            return json.loads(raw) if raw else None
-        return self._pending_fallback.get(user_id)
-
-    def _clear_pending(self, user_id: str):
-        key = f"annotation_pending:{user_id}"
-        if self._redis.is_available:
-            self._redis.client.delete(key)
-        else:
-            self._pending_fallback.pop(user_id, None)
+    @staticmethod
+    def _is_no_match(value) -> bool:
+        """True for every way the LLM spells "no match" — a real null, or one of
+        the null-ish strings it produces instead."""
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return value.strip().lower() in ("", "none", "null", "n/a", "na")
+        return False
 
     # ── Confirmation flow ─────────────────────────────────────────────────────
+    # The graph-level pause/resume itself lives in AiAssistance's
+    # annotation_confirmation_agent node (app/main.py), via LangGraph's
+    # interrupt()/Command(resume=...) against the checkpointer — this class just
+    # provides the pure helpers that node calls: classifying the user's reply,
+    # applying substitutions, and building the "here are the alternatives" text.
 
-    def has_pending_for(self, user_id: str) -> bool:
-        return self._get_pending(user_id) is not None
+    def _build_alternatives_text(self, pending: dict) -> str:
+        """Show the other Neo4j candidates for each unconfirmed node, so the user
+        can pick a different one instead of the top suggestion."""
+        candidates = pending.get("candidates", {})
+        unconfirmed = pending.get("unconfirmed", [])
+        lines = []
+        for u in unconfirmed:
+            original = u["original"]
+            all_cands = candidates.get(original, [])
+            # Skip the already-suggested top hit; show the rest
+            suggestion = u["suggestion"]
+            others = [(v, s) for v, s in all_cands if v != suggestion]
+            if others:
+                others_str = ", ".join(f"**{v}** ({round(s*100)}% similar)" for v, s in others[:4])
+                lines.append(
+                    f"Other candidates for **'{original}'** in the database: {others_str}.\n"
+                    f"The closest remains **'{suggestion}'**. "
+                    f"Reply with the name you'd like to use, or say **yes** to use '{suggestion}', "
+                    f"or **no** to build without it."
+                )
+            else:
+                lines.append(
+                    f"There are no other similar entries for **'{original}'** in the database. "
+                    f"The only close match is **'{suggestion}'**. "
+                    f"Say **yes** to use it or **no** to build without it."
+                )
+        return "\n\n".join(lines)
 
-    def handle_confirmation_response(self, user_id: str, query: str):
-        """Call from assistant_response when a pending confirmation exists.
-        Returns a ready response dict, or None if query is a new unrelated question.
-        """
-        entry = self._get_pending(user_id)
-        if not entry:
-            return None
-
-        pending_json = entry["json"]
-        candidates  = entry.get("candidates", {})
-        unconfirmed = entry.get("unconfirmed", [])
-        pending_organism = entry.get("organism", "human")
-
-        verdict = self._classify_confirmation(query)
-
-        if verdict == "confirm":
-            resolved = self._apply_pending_substitutions(pending_json, apply=True)
-            self._clear_pending(user_id)
-            return {
-                "text": "Got it! I've built the annotation structure using the confirmed match. The structured data is ready.",
-                "json_format": resolved,
-                "organism": pending_organism,
-                "agents_completed": ["annotation_agent"],
-            }
-
-        if verdict == "reject":
-            resolved = self._apply_pending_substitutions(pending_json, apply=False)
-            self._clear_pending(user_id)
-            return {
-                "text": "Understood! I've built the annotation structure without the unidentified node. The structured data is ready.",
-                "json_format": resolved,
-                "organism": pending_organism,
-                "agents_completed": ["annotation_agent"],
-            }
-
-        if verdict == "show_alternatives":
-            # Show the other Neo4j candidates — keep pending active so user can still confirm/reject
-            lines = []
-            for u in unconfirmed:
-                original  = u["original"]
-                all_cands = candidates.get(original, [])
-                # Skip the already-suggested top hit; show the rest
-                suggestion = u["suggestion"]
-                others = [(v, s) for v, s in all_cands if v != suggestion]
-                if others:
-                    others_str = ", ".join(f"**{v}** ({round(s*100)}% similar)" for v, s in others[:4])
-                    lines.append(
-                        f"Other candidates for **'{original}'** in the database: {others_str}.\n"
-                        f"The closest remains **'{suggestion}'**. "
-                        f"Reply with the name you'd like to use, or say **yes** to use '{suggestion}', "
-                        f"or **no** to build without it."
-                    )
-                else:
-                    lines.append(
-                        f"There are no other similar entries for **'{original}'** in the database. "
-                        f"The only close match is **'{suggestion}'**. "
-                        f"Say **yes** to use it or **no** to build without it."
-                    )
-            return {
-                "text": "\n\n".join(lines),
-                "json_format": None,
-                "agents_completed": ["annotation_agent"],
-            }
-
-        # New unrelated query — clear stale state and proceed normally
-        self._clear_pending(user_id)
-        return None
+    def _alternative_candidate_values(self, pending: dict) -> list:
+        candidates = pending.get("candidates", {})
+        unconfirmed = pending.get("unconfirmed", [])
+        seen = []
+        for u in unconfirmed:
+            all_cands = candidates.get(u["original"], [])
+            for value, _score in all_cands[:4]:
+                if value not in seen:
+                    seen.append(value)
+        return seen
 
     def _classify_confirmation(self, message: str) -> str:
         """Uses the LLM to understand what the user meant — no keyword matching."""
@@ -715,13 +685,15 @@ class Graph:
         except Exception:
             return "new_query"
 
-    def _apply_pending_substitutions(self, pending_json: dict, apply: bool = True) -> dict:
+    def _apply_pending_substitutions(self, pending_json: dict, apply: bool = True, override_value: str = None) -> dict:
         result = copy.deepcopy(pending_json)
         for node in result.get("nodes", []):
             if not (node.get("needs_confirmation") and node.get("pending_substitutions")):
                 continue
             if apply:
                 subs = node["pending_substitutions"]
+                if override_value:
+                    subs = {orig: override_value for orig in subs}
 
                 # Handle id-field substitution: move result to the correct property
                 node_id_val = node.get("id", "")
@@ -755,14 +727,60 @@ class Graph:
                             new_parts.append(sugg)
                             existing_lower.add(sugg.lower())
                     node["properties"][prop_key] = ", ".join(new_parts)
-            node["status"] = True
-            for key in ("needs_confirmation", "pending_substitutions", "all_list_values",
-                        "not_validated", "validation_error"):
-                node.pop(key, None)
+
+            if apply:
+                node["status"] = True
+                for key in ("needs_confirmation", "pending_substitutions", "all_list_values",
+                            "not_validated", "validation_error"):
+                    node.pop(key, None)
+            else:
+                # Rejected: the user declined the suggested match, so the node
+                # still holds a value that doesn't exist in the database. It must
+                # stay invalid — previously this branch marked it status=True and
+                # deleted validation_error, so the response asserted a nonexistent
+                # entity was a valid node (and the describer, seeing no failures,
+                # called it "successfully built"). Only the now-moot pending state
+                # gets cleared here, never the failure itself.
+                originals = ", ".join(f"'{o}'" for o in (node.get("pending_substitutions") or {}))
+                node["status"] = False
+                node["validation_error"] = (
+                    f"{originals} not found in the database; the suggested match was declined."
+                    if originals else "Not found in the database; the suggested match was declined."
+                )
+                for key in ("needs_confirmation", "pending_substitutions", "all_list_values"):
+                    node.pop(key, None)
 
         # Deduplicate nodes that ended up with identical type + properties after substitution
         result["nodes"] = self._deduplicate_nodes(result.get("nodes", []), result.get("predicates", []))
         return result
+
+    def finalize_annotation_json(self, validated_json: dict):
+        if not isinstance(validated_json, dict):
+            return validated_json, []
+
+        cleaned = copy.deepcopy(validated_json)
+        nodes = cleaned.get("nodes", []) or []
+
+        unresolved_ids = {n.get("node_id") for n in nodes if n.get("status") is False}
+        unresolved = [
+            {
+                "node_id": n.get("node_id"),
+                "type": n.get("type"),
+                "value": (n.get("properties") or {}).get(
+                    self._node_id_property.get((n.get("type") or "").lower(), ""), ""
+                ) or n.get("id") or next(iter((n.get("properties") or {}).values()), ""),
+                "reason": n.get("validation_error") or "Not found in the database.",
+            }
+            for n in nodes if n.get("status") is False
+        ]
+
+        if unresolved_ids:
+            cleaned["predicates"] = [
+                p for p in (cleaned.get("predicates", []) or [])
+                if p.get("source") not in unresolved_ids and p.get("target") not in unresolved_ids
+            ]
+
+        return cleaned, unresolved
 
     def _deduplicate_nodes(self, nodes: list, predicates: list) -> list:
         """Remove nodes whose type+properties are exact duplicates of an earlier node.
@@ -802,12 +820,25 @@ class Graph:
 
             node_id_to_label = {}
             node_lines = []
+            failed_nodes = []
             for n in nodes:
                 nid  = n.get("node_id", "")
                 ntype = n.get("type", "unknown")
                 props = n.get("properties", {})
                 prop_str = ", ".join(f"{k}: {v}" for k, v in props.items()) if props else "(no properties)"
-                node_lines.append(f"- {ntype} [{nid}]: {prop_str}")
+                # Surface validation failures to the describer. Without this it
+                # only ever sees type+properties, so a node that failed lookup
+                # reads as perfectly fine and gets described as "successfully
+                # built" — directly contradicting the status:false /
+                # validation_error the caller gets back in the same response.
+                if n.get("status") is False:
+                    reason = n.get("validation_error") or (
+                        f"could not be matched in the database: {n.get('not_validated')}"
+                        if n.get("not_validated") else "not found in the database"
+                    )
+                    failed_nodes.append(f"- {ntype} [{nid}]: {prop_str} — NOT FOUND: {reason}")
+                else:
+                    node_lines.append(f"- {ntype} [{nid}]: {prop_str}")
                 node_id_to_label[nid] = f"{ntype}({prop_str})"
 
             pred_lines = []
@@ -816,10 +847,18 @@ class Graph:
                 tgt = node_id_to_label.get(p.get("target", ""), p.get("target", ""))
                 pred_lines.append(f"- {src} --[{p.get('type', '')}]--> {tgt}")
 
-            structure_summary = "Nodes:\n" + "\n".join(node_lines)
+            structure_summary = "Nodes found in the database:\n" + ("\n".join(node_lines) or "- (none)")
+            if failed_nodes:
+                structure_summary += "\n\nEntities NOT found in the database:\n" + "\n".join(failed_nodes)
             if pred_lines:
                 structure_summary += "\n\nRelationships:\n" + "\n".join(pred_lines)
 
+            failure_instruction = (
+                " IMPORTANT: some requested entities were NOT found in the database (listed above). "
+                "Say so plainly and name them — do NOT describe this as successful or complete, and do "
+                "not imply those entities exist or were annotated."
+                if failed_nodes else ""
+            )
             prompt = (
                 f"A user asked: \"{query}\"\n\n"
                 f"The following annotation structure was built from the database schema:\n\n"
@@ -827,13 +866,24 @@ class Graph:
                 f"Write 1-3 sentences describing what this structure represents biologically "
                 f"and what query it will run. Be specific about the entities and relationships "
                 f"involved. Do NOT invent data, relationships, or biological facts not shown above. "
-                f"Do NOT mention the annotation system or technical details."
+                f"Do NOT mention the annotation system or technical details.{failure_instruction}"
             )
             result = self.llm.generate(prompt)
-            return result.strip() if result else "The annotation structure was built successfully."
+            if result and result.strip():
+                return result.strip()
+            return self._fallback_annotation_text(failed_nodes)
         except Exception as e:
             logger.warning(f"Failed to generate annotation description: {e}")
-            return "The annotation structure was built successfully."
+            return self._fallback_annotation_text(locals().get("failed_nodes") or [])
+
+    @staticmethod
+    def _fallback_annotation_text(failed_nodes: list) -> str:
+        if failed_nodes:
+            return (
+                "Some of the entities you asked about could not be found in the database, "
+                "so the annotation structure is incomplete."
+            )
+        return "The annotation structure was built successfully."
 
     def _build_confirmation_text(self, unconfirmed_nodes: list) -> str:
         if len(unconfirmed_nodes) == 1:
@@ -1172,16 +1222,16 @@ class Graph:
 
                 if unconfirmed_nodes:
                     logger.info(f"Returning needs_confirmation for {len(unconfirmed_nodes)} node(s)")
-                    self._set_pending(user_id, {
-                        "json": validation["updated_json"],
-                        "candidates": validation.get("candidates", {}),
-                        "unconfirmed": unconfirmed_nodes,
-                        "organism": organism,
-                    })
                     return {
                         "success": True,
                         "needs_confirmation": True,
                         "confirmation_text": self._build_confirmation_text(unconfirmed_nodes),
+                        "pending": {
+                            "json": validation["updated_json"],
+                            "candidates": validation.get("candidates", {}),
+                            "unconfirmed": unconfirmed_nodes,
+                            "organism": organism,
+                        },
                         "summary": None,
                         "json_format": None,
                         "validation_report": validation["validation_report"],

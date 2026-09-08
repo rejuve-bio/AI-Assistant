@@ -91,7 +91,7 @@ def _parse_context(data):
     return question, graph_id, resource, url, json_query, content_ids
 
 
-def _dispatch_query(ai_assistant, question, json_query, uploaded_files, upload_results, content_ids, user_id, auth_token, graph_id, resource, url):
+def _dispatch_query(ai_assistant, question, json_query, uploaded_files, upload_results, content_ids, user_id, auth_token, graph_id, resource, url, resume=None, thread_id=None):
     if uploaded_files and not question and not json_query:
         suggested_questions = []
         for r in upload_results:
@@ -107,9 +107,17 @@ def _dispatch_query(ai_assistant, question, json_query, uploaded_files, upload_r
             "suggested_questions": suggested_questions,
         })
 
-    if not uploaded_files and not question and not json_query:
+    if not thread_id:
         return JSONResponse(status_code=400, content={
-            "error": "No input provided. Please upload files or submit a question."
+            "error": "Missing thread_id. Every request must name the conversation it belongs to — "
+                     "generate one per conversation on the client (e.g. a UUID at 'New Chat') and "
+                     "send the same value with every message in that conversation.",
+            "field": "thread_id",
+        })
+
+    if not uploaded_files and not question and not json_query and not resume:
+        return JSONResponse(status_code=400, content={
+            "error": "No input provided. Please upload files, submit a question, or resume a pending confirmation."
         })
 
     response = ai_assistant.assistant_response(
@@ -119,7 +127,9 @@ def _dispatch_query(ai_assistant, question, json_query, uploaded_files, upload_r
         graph_id=graph_id,
         resource=resource,
         content_ids=content_ids,
-        urls=url
+        urls=url,
+        resume=resume,
+        thread_id=thread_id,
     )
     return JSONResponse(content=response)
 
@@ -132,6 +142,8 @@ def process_query(
     query: Optional[str] = Form(None),
     context: str = Form("{}"),
     json_query: Optional[str] = Form(None),
+    resume: Optional[str] = Form(None),
+    thread_id: Optional[str] = Form(None),
     uploaded_files: Optional[List[UploadFile]] = File(None),
 ):
     """
@@ -145,6 +157,19 @@ def process_query(
             - id: For content queries, a list of content IDs; for other resources, a single ID.
             - resource: The type of resource (e.g., 'content', 'annotation', 'hypothesis').
         - graph, json_query: Optional, for advanced queries.
+        - resume: Optional. The exact `value` of a button clicked in response to a
+          `needs_confirmation` reply's `confirmation.options` (e.g. "confirm",
+          "reject", or a specific candidate name) — a deterministic, validated
+          answer to a pending confirmation. Mutually distinct from `question`:
+          free text always goes through `question` and is interpreted as before;
+          `resume` is only ever one of the exact offered option values.
+        - thread_id: REQUIRED. Which conversation this message belongs to — the
+          client picks it (e.g. a new UUID generated at "New Chat") and sends the
+          same value with every message in that conversation. Requests without it
+          are rejected with 400; there is deliberately no implicit fallback, so a
+          client can't silently end up with every conversation sharing one thread.
+          Scopes both the checkpointer (pause/resume state) and the durable
+          conversation thread (messages + tool-call references).
     - For content queries (resource == 'content'), content_ids are extracted from context['id'].
     - If content_ids are provided, answers are retrieved only from those content items; otherwise, answers are retrieved from all collections (user and general).
     - Handles both user-uploaded content question answering and general knowledge queries.
@@ -160,7 +185,7 @@ def process_query(
         if uploaded_files:
             upload_results, content_ids = _handle_uploads(uploaded_files, ai_assistant, user_id, content_ids)
 
-        return _dispatch_query(ai_assistant, question_parsed, json_query_parsed, uploaded_files, upload_results, content_ids, user_id, auth.token, graph_id, resource, url)
+        return _dispatch_query(ai_assistant, question_parsed, json_query_parsed, uploaded_files, upload_results, content_ids, user_id, auth.token, graph_id, resource, url, resume, thread_id)
     except Exception as e:
         logger.error(f"Exception: {e}")
         traceback.print_exc()

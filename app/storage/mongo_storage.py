@@ -2,6 +2,7 @@ import os
 import json
 from datetime import datetime
 from pymongo import MongoClient
+from pymongo.errors import DuplicateKeyError
 import uuid
 import logging
 
@@ -20,6 +21,7 @@ class MongoManager:
         self.content_files_collection = None
         self.faq_collection = None
         self.hypothesis_collection = None
+        self.threads_collection = None
         self._connect()
         self._create_indexes()
 
@@ -35,6 +37,7 @@ class MongoManager:
             self.content_files_collection = self.db["user_content_files"]
             self.faq_collection = self.db["faq_questions"]
             self.hypothesis_collection = self.db["hypothesis_requests"]
+            self.threads_collection = self.db["conversation_threads"]
 
             logger.info(f"MongoDB connection established to {database_name}")
         except Exception as e:
@@ -62,6 +65,10 @@ class MongoManager:
             # Hypothesis indexes
             self.hypothesis_collection.create_index("id", unique=True)
             self.hypothesis_collection.create_index("status")
+
+            # Conversation thread indexes
+            self.threads_collection.create_index("thread_id", unique=True)
+            self.threads_collection.create_index("user_id")
 
             logger.info("MongoDB indexes created successfully")
         except Exception as e:
@@ -266,6 +273,99 @@ class MongoManager:
         except Exception as e:
             logger.error(f"Error getting context and memory: {e}")
             return []
+
+
+    def get_thread(self, thread_id: str, user_id: str = None) -> dict:
+        """Returns the thread document, or an empty-shaped dict if it doesn't
+        exist yet (never returns None — callers can always read its fields).
+        """
+        query = {"thread_id": thread_id}
+        if user_id:
+            query["user_id"] = user_id
+        try:
+            doc = self.threads_collection.find_one(query)
+            if doc:
+                return doc
+        except Exception as e:
+            logger.error(f"Error getting thread {thread_id}: {e}")
+        return {"thread_id": thread_id, "messages": [], "tool_calls": [], "running_summary": "", "message_count": 0}
+
+    def append_message(
+        self,
+        thread_id: str,
+        user_id: str,
+        role: str,
+        text: str,
+        json_format: dict = None,
+        agents: list = None,
+        graph_id: str = None,
+        resource_type: str = None,
+    ) -> dict:
+        try:
+            entry = {"role": role, "text": text, "created_at": datetime.utcnow()}
+            if json_format:
+                entry["json_format"] = json_format
+            if agents:
+                entry["agents"] = agents
+            if graph_id:
+                entry["graph_id"] = graph_id
+                entry["resource_type"] = resource_type or "unknown"
+            doc = self.threads_collection.find_one_and_update(
+                {"thread_id": thread_id, "user_id": user_id},
+                {
+                    "$push": {"messages": entry},
+                    "$inc": {"message_count": 1},
+                    "$set": {"updated_at": datetime.utcnow()},
+                    "$setOnInsert": {
+                        "thread_id": thread_id,
+                        "user_id": user_id,
+                        "tool_calls": [],
+                        "running_summary": "",
+                    },
+                },
+                upsert=True,
+                return_document=True,
+            )
+            return doc or self.get_thread(thread_id, user_id)
+        except DuplicateKeyError:
+            logger.warning(
+                f"Refusing to append to thread {thread_id}: owned by another user"
+            )
+            return self.get_thread(thread_id, user_id)
+        except Exception as e:
+            logger.error(f"Error appending message to thread {thread_id}: {e}")
+            return self.get_thread(thread_id, user_id)
+
+    def record_tool_call(self, thread_id: str, user_id: str, agent: str, resource_id: str, label: str = "") -> None:
+        if not resource_id:
+            return
+        try:
+            entry = {"agent": agent, "id": resource_id, "label": label, "created_at": datetime.utcnow()}
+            result = self.threads_collection.update_one(
+                {"thread_id": thread_id, "user_id": user_id},
+                {"$push": {"tool_calls": entry}, "$set": {"updated_at": datetime.utcnow()}},
+            )
+            if result.matched_count == 0:
+                logger.warning(
+                    f"No thread {thread_id} for this user — tool call not recorded"
+                )
+        except Exception as e:
+            logger.error(f"Error recording tool call for thread {thread_id}: {e}")
+
+    def compact_thread(self, thread_id: str, user_id: str, new_summary: str, remaining_messages: list) -> None:
+        try:
+            self.threads_collection.update_one(
+                {"thread_id": thread_id, "user_id": user_id},
+                {"$set": {
+                    "running_summary": new_summary,
+                    "messages": remaining_messages,
+                    "message_count": len(remaining_messages),
+                    "updated_at": datetime.utcnow(),
+                }},
+            )
+        except Exception as e:
+            logger.error(f"Error compacting thread {thread_id}: {e}")
+
     def add_content_file(
         self,
         user_id: str,
