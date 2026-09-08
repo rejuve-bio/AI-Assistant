@@ -111,7 +111,7 @@ class ContentProcessor:
         logger.info(f"Successfully extracted content from {url}")
         return result
 
-    def extract_text_with_trafilatura(self, url):
+    def extract_text_with_trafilatura(self, url, include_tables=False):
         try:
             logger.info(f"Attempting Trafilatura extraction for {url}")
             downloaded = trafilatura.fetch_url(url)
@@ -122,7 +122,7 @@ class ContentProcessor:
             text = trafilatura.extract(
                 downloaded,
                 include_comments=False,
-                include_tables=False,
+                include_tables=include_tables,
                 favor_precision=True,
             )
 

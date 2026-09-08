@@ -13,10 +13,10 @@ from app.prompts.annotation_prompts import (
     ORGANISM_DETECTION_PROMPT,
     SELECT_PROPERTY_VALUE_PROMPT,
     SELECT_PROPERTY_VALUES_BATCH_PROMPT,
-    RESULT_SUMMARIZATION_PROMPT,
+    CONFIRMATION_CLASSIFICATION_PROMPT,
+    DESCRIBE_ANNOTATION_PROMPT,
 )
 from app.socket_manager import emit_to_user
-from .json_to_cypher import JsonToCypherConverter
 
 
 logging.basicConfig(
@@ -616,13 +616,6 @@ class Graph:
             return value.strip().lower() in ("", "none", "null", "n/a", "na")
         return False
 
-    # ── Confirmation flow ─────────────────────────────────────────────────────
-    # The graph-level pause/resume itself lives in AiAssistance's
-    # annotation_confirmation_agent node (app/main.py), via LangGraph's
-    # interrupt()/Command(resume=...) against the checkpointer — this class just
-    # provides the pure helpers that node calls: classifying the user's reply,
-    # applying substitutions, and building the "here are the alternatives" text.
-
     def _build_alternatives_text(self, pending: dict) -> str:
         """Show the other Neo4j candidates for each unconfirmed node, so the user
         can pick a different one instead of the top suggestion."""
@@ -664,20 +657,7 @@ class Graph:
 
     def _classify_confirmation(self, message: str) -> str:
         """Uses the LLM to understand what the user meant — no keyword matching."""
-        prompt = (
-            f"The assistant asked the user to confirm whether to substitute an unrecognised "
-            f"database entry with a suggested match. The user replied:\n\n"
-            f"\"{message}\"\n\n"
-            f"Classify the user's intent as exactly one of:\n"
-            f"- confirm           — user agrees to use the suggested match "
-            f"(e.g. 'yes', 'sure', 'use it', 'go ahead', 'that works', 'use ZNF697')\n"
-            f"- reject            — user wants to build without the unidentified node "
-            f"(e.g. 'no', 'skip it', 'build without', 'leave it out')\n"
-            f"- show_alternatives — user wants to see other possible matches from the database "
-            f"(e.g. 'find another', 'show me others', 'what else is there', 'forgot the name')\n"
-            f"- new_query         — user is asking something completely unrelated to the confirmation\n\n"
-            f"Reply with only one word: confirm, reject, show_alternatives, or new_query."
-        )
+        prompt = CONFIRMATION_CLASSIFICATION_PROMPT.format(message=message)
         try:
             result = self.llm.generate(prompt)
             verdict = result.strip().lower().split()[0] if result else "new_query"
@@ -734,13 +714,6 @@ class Graph:
                             "not_validated", "validation_error"):
                     node.pop(key, None)
             else:
-                # Rejected: the user declined the suggested match, so the node
-                # still holds a value that doesn't exist in the database. It must
-                # stay invalid — previously this branch marked it status=True and
-                # deleted validation_error, so the response asserted a nonexistent
-                # entity was a valid node (and the describer, seeing no failures,
-                # called it "successfully built"). Only the now-moot pending state
-                # gets cleared here, never the failure itself.
                 originals = ", ".join(f"'{o}'" for o in (node.get("pending_substitutions") or {}))
                 node["status"] = False
                 node["validation_error"] = (
@@ -826,11 +799,6 @@ class Graph:
                 ntype = n.get("type", "unknown")
                 props = n.get("properties", {})
                 prop_str = ", ".join(f"{k}: {v}" for k, v in props.items()) if props else "(no properties)"
-                # Surface validation failures to the describer. Without this it
-                # only ever sees type+properties, so a node that failed lookup
-                # reads as perfectly fine and gets described as "successfully
-                # built" — directly contradicting the status:false /
-                # validation_error the caller gets back in the same response.
                 if n.get("status") is False:
                     reason = n.get("validation_error") or (
                         f"could not be matched in the database: {n.get('not_validated')}"
@@ -859,14 +827,10 @@ class Graph:
                 "not imply those entities exist or were annotated."
                 if failed_nodes else ""
             )
-            prompt = (
-                f"A user asked: \"{query}\"\n\n"
-                f"The following annotation structure was built from the database schema:\n\n"
-                f"{structure_summary}\n\n"
-                f"Write 1-3 sentences describing what this structure represents biologically "
-                f"and what query it will run. Be specific about the entities and relationships "
-                f"involved. Do NOT invent data, relationships, or biological facts not shown above. "
-                f"Do NOT mention the annotation system or technical details.{failure_instruction}"
+            prompt = DESCRIBE_ANNOTATION_PROMPT.format(
+                query=query,
+                structure_summary=structure_summary,
+                failure_instruction=failure_instruction,
             )
             result = self.llm.generate(prompt)
             if result and result.strip():
@@ -913,232 +877,6 @@ class Graph:
         )
         return "\n".join(lines)
 
-    def execute_cypher_query(self, cypher_query):
-        # Execute a Cypher query against the Neo4j database and return structured results
-        try:
-            logger.info(f"Executing Cypher query: {cypher_query}")
-
-            driver = self.neo4j.get_driver()
-            with driver.session() as session:
-                logger.debug("Executing Neo4j query...")
-                result = session.run(cypher_query)
-
-                nodes = []
-                relationships = []
-                node_ids = set()
-                rel_ids = set()
-                data = {}  # Store scalar values for count queries
-
-                # Extract data from the result
-                records = []  # Store all records for multi-record queries
-                for record in result:
-                    record_data = {}
-                    for key, value in record.items():
-                        if hasattr(value, "labels"):  # This is a node
-                            node_data = {
-                                "id": str(value.id),
-                                "labels": list(value.labels),
-                                "properties": dict(value),
-                            }
-                            if str(value.id) not in node_ids:
-                                nodes.append(node_data)
-                                node_ids.add(str(value.id))
-
-                        elif hasattr(value, "type"):  # This is a relationship
-                            rel_data = {
-                                "id": str(value.id),
-                                "type": value.type,
-                                "start_node": str(value.start_node.id),
-                                "end_node": str(value.end_node.id),
-                                "properties": dict(value),
-                            }
-                            if str(value.id) not in rel_ids:
-                                relationships.append(rel_data)
-                                rel_ids.add(str(value.id))
-
-                        else:  # This is a scalar value (count, property, etc.)
-                            data[key] = value
-                            record_data[key] = value
-
-                    if record_data:
-                        records.append(record_data)
-
-                # Count results
-                counts = {
-                    "total_nodes": len(nodes),
-                    "total_relationships": len(relationships),
-                    "result_records": len(list(result.data())),
-                }
-
-                # Check if this was a path query that should have returned relationships
-                is_path_query = any(
-                    rel in cypher_query.lower()
-                    for rel in ["transcribes_to", "part_of", "transcribed_from", "translates_to"]
-                )
-                if is_path_query and counts["total_relationships"] == 0:
-                    # this indicates an invalid query or missing data
-                    logger.warning(
-                        f"Path query returned no relationships: {cypher_query}"
-                    )
-                logger.info(
-                    f"Query executed successfully. Found {counts['total_nodes']} nodes and {counts['total_relationships']} relationships"
-                )
-
-                return {
-                    "success": True,
-                    "data": {
-                        "nodes": nodes,
-                        "relationships": relationships,
-                        "counts": counts,
-                        "records": records,
-                        **data,
-                    },
-                    "error": None,
-                    "cypher_query": cypher_query,
-                }
-
-        except Exception as e:
-            error_msg = f"Error executing Cypher query: {str(e)}"
-            logger.error(error_msg)
-
-            return {
-                "success": False,
-                "data": {
-                    "nodes": [],
-                    "relationships": [],
-                    "counts": {
-                        "total_nodes": 0,
-                        "total_relationships": 0,
-                        "result_records": 0,
-                    },
-                },
-                "error": error_msg,
-                "cypher_query": cypher_query,
-            }
-
-    def summarize_results(self, query, results):
-        # Use LLM to convert database results into user-friendly natural language responses
-        try:
-            logger.info(f"Starting result summarization for query: '{query}'")
-
-            # Check if results are valid
-            if not results.get("success", False):
-                error_msg = results.get("error", "Unknown error occurred")
-                logger.error(f"Cannot summarize failed query results: {error_msg}")
-                return f"I'm sorry, but I encountered an error while searching the database: {error_msg}"
-
-            # Extract data from results
-            data = results.get("data", {})
-            nodes = data.get("nodes", [])
-            relationships = data.get("relationships", [])
-            counts = data.get("counts", {})
-
-            # Handle empty results
-            if counts.get("total_nodes", 0) == 0:
-                return f"I searched for information about '{query}', but I couldn't find any matching data in the database. Please try rephrasing your question or check if the gene/transcript/exon names are correct."
-
-            # Prepare data for LLM summarization
-            summary_data = {
-                "original_query": query,
-                "nodes_found": len(nodes),
-                "relationships_found": len(relationships),
-                "node_types": {},
-                "key_properties": {},
-                "relationships_info": [],
-            }
-
-            # Analyze nodes by type
-            for node in nodes:
-                node_type = (
-                    node.get("labels", ["unknown"])[0]
-                    if node.get("labels")
-                    else "unknown"
-                )
-                if node_type not in summary_data["node_types"]:
-                    summary_data["node_types"][node_type] = []
-
-                # Extract key properties for summarization
-                properties = node.get("properties", {})
-                key_info = {}
-                for prop, value in properties.items():
-                    if prop in [
-                        "gene_name",
-                        "transcript_id",
-                        "exon_id",
-                        "gene_type",
-                        "chr",
-                    ]:
-                        key_info[prop] = value
-
-                if key_info:
-                    summary_data["node_types"][node_type].append(key_info)
-
-            # Analyze relationships
-            for rel in relationships:
-                rel_info = {
-                    "type": rel.get("type", "unknown"),
-                    "start_node": rel.get("start_node", "unknown"),
-                    "end_node": rel.get("end_node", "unknown"),
-                }
-                summary_data["relationships_info"].append(rel_info)
-
-            # Create LLM prompt for summarization
-            summarization_prompt = self._create_summarization_prompt(
-                query, summary_data
-            )
-
-            # Generate summary using LLM
-            logger.info("Generating summary using LLM...")
-            summary = self.llm.generate(summarization_prompt)
-
-            logger.info(f"Successfully generated summary: {summary[:100]}...")
-            return summary
-
-        except Exception as e:
-            error_msg = f"Error during result summarization: {str(e)}"
-            logger.error(error_msg)
-
-            # Fallback to basic summary
-            try:
-                data = results.get("data", {})
-                nodes = data.get("nodes", [])
-                counts = data.get("counts", {})
-
-                if counts.get("total_nodes", 0) > 0:
-                    return f"I found {counts['total_nodes']} items related to your query '{query}'. However, I encountered an issue while generating a detailed summary."
-                else:
-                    return f"I couldn't find any information for '{query}' in the database."
-            except:
-                return f"I'm sorry, but I encountered an error while processing your query '{query}'."
-
-    def _create_summarization_prompt(self, query, summary_data):
-        # Create a prompt for the LLM to generate user-friendly summaries.
-        # Build node summary
-        node_summary = ""
-        for node_type, nodes_list in summary_data["node_types"].items():
-            node_summary += f"\n- {node_type.capitalize()} nodes: {len(nodes_list)}"
-            for node_info in nodes_list[:3]:  # Show first 3 nodes
-                node_summary += f"\n  • {node_type.capitalize()}: "
-                for prop, value in node_info.items():
-                    node_summary += f"{prop}={value}, "
-                node_summary = node_summary.rstrip(", ") + "\n"
-
-        # Build relationship summary
-        relationship_summary = ""
-        if summary_data["relationships_found"] > 0:
-            relationship_summary = f"\n**Relationships Found:**\n"
-            for rel in summary_data["relationships_info"][
-                :5
-            ]:  # Show first 5 relationships
-                relationship_summary += f"- {rel['type']}: connects nodes {rel['start_node']} and {rel['end_node']}\n"
-        else:
-            relationship_summary = "No relationships found."
-
-        return RESULT_SUMMARIZATION_PROMPT.format(
-            query=query,
-            node_summary=node_summary,
-            relationship_summary=relationship_summary,
-        )
 
     def process_annotation_query(
         self, query, user_id, query_type="annotation_biological"
@@ -1149,11 +887,7 @@ class Graph:
                 f"Starting annotation pipeline for query: '{query}', type: {query_type}"
             )
 
-            # Route based on query type
-            if query_type == "annotation_general":
-                return self._handle_general_query(query, user_id)
-            else:
-                return self._handle_biological_query(query, user_id)
+            return self._handle_biological_query(query, user_id)
 
         except Exception as e:
             error_msg = f"Unexpected error in annotation pipeline: {str(e)}"
@@ -1169,92 +903,100 @@ class Graph:
                 },
             }
 
-    def _handle_biological_query(self, query, user_id):
-        try:
-            # Detect organism and select the right schema + Neo4j resources
-            organism = self._detect_organism(query)
-            if organism == "fly" and self.fly_schema_handler:
-                active_schema = self.fly_enhanced_schema
-                active_schema_handler = self.fly_schema_handler
-                active_neo4j = self.fly_neo4j if self.fly_neo4j else self.neo4j
-                logger.info("Organism detected: fly — using fly schema and Neo4j")
-            else:
-                organism = "human"
-                active_schema = self.enhanced_schema
-                active_schema_handler = self.schema_handler
-                active_neo4j = self.neo4j
-                logger.info("Organism detected: human — using human schema and Neo4j")
+    def _organism_context(self, query):
+        """Pick the schema and Neo4j connection matching the query's organism."""
+        if self._detect_organism(query) == "fly" and self.fly_schema_handler:
+            logger.info("Organism detected: fly — using fly schema and Neo4j")
+            return ("fly", self.fly_enhanced_schema, self.fly_schema_handler,
+                    self.fly_neo4j or self.neo4j)
+        logger.info("Organism detected: human — using human schema and Neo4j")
+        return "human", self.enhanced_schema, self.schema_handler, self.neo4j
 
-            # Extract and validate JSON query
-            emit_to_user(
-                user=user_id,
-                message="Extracting relevant information from your query...",
-            )
+    @staticmethod
+    def _collect_unconfirmed_nodes(updated_json):
+        """Nodes whose values were guessed and need the user to confirm them."""
+        unconfirmed = []
+        for node in updated_json.get("nodes", []):
+            if not (node.get("needs_confirmation") and node.get("pending_substitutions")):
+                continue
+            for original, suggestion in node["pending_substitutions"].items():
+                unconfirmed.append({
+                    "node_id": node.get("node_id"),
+                    "node_type": node.get("type"),
+                    "original": original,
+                    "suggestion": suggestion,
+                    "all_list_values": node.get("all_list_values", []),
+                })
+        return unconfirmed
+
+    def _confirmation_needed(self, validation, unconfirmed, organism):
+        """Pause the pipeline and hand the caller everything needed to resume."""
+        logger.info(f"Returning needs_confirmation for {len(unconfirmed)} node(s)")
+        return {
+            "success": True,
+            "needs_confirmation": True,
+            "confirmation_text": self._build_confirmation_text(unconfirmed),
+            "pending": {
+                "json": validation["updated_json"],
+                "candidates": validation.get("candidates", {}),
+                "unconfirmed": unconfirmed,
+                "organism": organism,
+            },
+            "summary": None,
+            "json_format": None,
+            "validation_report": validation["validation_report"],
+            "resource": {"id": None, "type": "annotation"},
+        }
+
+    def _annotation_result(self, query, validation, organism):
+        """A fully validated annotation, described for the user."""
+        result = {
+            "success": True,
+            "summary": self._describe_annotation_result(query, validation["updated_json"]),
+            "json_format": validation["updated_json"],
+            "organism": organism,
+            "validation_report": validation["validation_report"],
+            "resource": {"id": None, "type": "annotation"},
+        }
+        logger.info("JSON query extraction successful")
+        logger.info(f"JSON query structure: {json.dumps(result, indent=2)}")
+        return result
+
+    def _handle_biological_query(self, query, user_id):
+        """Turn a natural-language query into a validated annotation JSON.
+
+        Stops early and asks the user when a value could only be guessed;
+        otherwise returns the finished annotation. This builds the annotation
+        JSON only -- nothing here runs a query against the database.
+        """
+        try:
+            organism, schema, schema_handler, neo4j = self._organism_context(query)
+
+            emit_to_user(user=user_id,
+                         message="Extracting relevant information from your query...")
             try:
-                relevant_information = self._extract_relevant_information(query, enhanced_schema=active_schema)
+                relevant_information = self._extract_relevant_information(
+                    query, enhanced_schema=schema
+                )
                 logger.info("Relevant information extraction successful")
 
-                # Convert to initial JSON
-                emit_to_user(
-                    user=user_id, message="Validating Constructed Json Format..."
-                )
+                emit_to_user(user=user_id, message="Validating Constructed Json Format...")
                 initial_json = self._convert_to_annotation_json(
-                    relevant_information, query, enhanced_schema=active_schema
+                    relevant_information, query, enhanced_schema=schema
                 )
                 logger.info("Initial JSON conversion successful")
 
-                # Validate and update
-                validation = self._validate_and_update(initial_json, neo4j=active_neo4j, schema_handler=active_schema_handler)
+                validation = self._validate_and_update(
+                    initial_json, neo4j=neo4j, schema_handler=schema_handler
+                )
                 logger.info("JSON validation successful")
 
-                # Collect nodes that need user confirmation before the JSON can be finalised
-                unconfirmed_nodes = []
-                for node in validation["updated_json"].get("nodes", []):
-                    if node.get("needs_confirmation") and node.get("pending_substitutions"):
-                        for original, suggestion in node["pending_substitutions"].items():
-                            unconfirmed_nodes.append({
-                                "node_id": node.get("node_id"),
-                                "node_type": node.get("type"),
-                                "original": original,
-                                "suggestion": suggestion,
-                                "all_list_values": node.get("all_list_values", []),
-                            })
+                unconfirmed = self._collect_unconfirmed_nodes(validation["updated_json"])
+                if unconfirmed:
+                    return self._confirmation_needed(validation, unconfirmed, organism)
 
-                if unconfirmed_nodes:
-                    logger.info(f"Returning needs_confirmation for {len(unconfirmed_nodes)} node(s)")
-                    return {
-                        "success": True,
-                        "needs_confirmation": True,
-                        "confirmation_text": self._build_confirmation_text(unconfirmed_nodes),
-                        "pending": {
-                            "json": validation["updated_json"],
-                            "candidates": validation.get("candidates", {}),
-                            "unconfirmed": unconfirmed_nodes,
-                            "organism": organism,
-                        },
-                        "summary": None,
-                        "json_format": None,
-                        "validation_report": validation["validation_report"],
-                        "resource": {"id": None, "type": "annotation"},
-                    }
+                return self._annotation_result(query, validation, organism)
 
-                summary = self._describe_annotation_result(query, validation["updated_json"])
-
-                updated_json = validation["updated_json"]
-                json_query = {
-                    "success": True,
-                    "summary": summary,
-                    "json_format": updated_json,
-                    "organism": organism,
-                    "validation_report": validation["validation_report"],
-                    "resource": {"id": None, "type": "annotation"},
-                }
-
-                logger.info("JSON query extraction successful")
-                logger.info(f"JSON query structure: {json.dumps(json_query, indent=2)}")
-
-                return json_query
-            
             except Exception as e:
                 logger.error(f"Failed to extract JSON query: {str(e)}")
                 return {
@@ -1262,100 +1004,6 @@ class Graph:
                     "error": f"Failed to process query: {str(e)}",
                     "pipeline_status": {"json_extraction": "failed"},
                 }
-
-            # logger.info("JSON query extraction successful")
-            # emit_to_user(
-            #     user=user_id, message="Converting query to database language..."
-            # )
-
-            # # # Convert JSON to Cypher
-            # # try:
-            # #     actual_json = json_query.get("json_format", json_query)
-            # #     if not actual_json:
-            # #         raise ValueError("No valid JSON format found in the response")
-
-            # #     logger.info(
-            # #         f"Extracted JSON for Cypher conversion: {json.dumps(actual_json, indent=2)}"
-            # #     )
-
-            # #     converter = JsonToCypherConverter()
-            # #     cypher_query = converter.convert_to_cypher(actual_json)
-            # #     logger.info("Cypher conversion successful")
-            # # except Exception as e:
-            # #     logger.error(f"Failed to convert JSON to Cypher: {str(e)}")
-            # #     return {
-            # #         "success": False,
-            # #         "error": f"Failed to convert query to database language: {str(e)}",
-            # #         "pipeline_status": {
-            # #             "json_extraction": "success",
-            # #             "cypher_conversion": "failed",
-            # #         },
-            # #         "json_query": json_query,
-            # #     }
-
-            # # emit_to_user(user=user_id, message="Searching the database...")
-
-            # # # Execute Cypher query against database
-            # # try:
-            # #     database_results = self.execute_cypher_query(cypher_query)
-            # #     if not database_results.get("success", False):
-            # #         logger.error(
-            # #             f"Database query failed: {database_results.get('error')}"
-            # #         )
-            # #         return {
-            # #             "success": False,
-            # #             "error": f"Database search failed: {database_results.get('error', 'Unknown error')}",
-            # #             "pipeline_status": {
-            # #                 "json_extraction": "success",
-            # #                 "cypher_conversion": "success",
-            # #                 "database_execution": "failed",
-            # #             },
-            # #             "cypher_query": cypher_query,
-            # #             "json_query": json_query,
-            # #         }
-            # #     logger.info("Database query execution successful")
-            # # except Exception as e:
-            # #     logger.error(f"Failed to execute Cypher query: {str(e)}")
-            # #     return {
-            # #         "success": False,
-            # #         "error": f"Database execution error: {str(e)}",
-            # #         "pipeline_status": {
-            # #             "json_extraction": "success",
-            # #             "cypher_conversion": "success",
-            # #             "database_execution": "failed",
-            # #         },
-            # #         "cypher_query": cypher_query,
-            # #         "json_query": json_query,
-            # #     }
-
-            # # emit_to_user(user=user_id, message="Generating your response...")
-
-            # # # Summarize results using LLM
-            # # try:
-            # #     summary = self.summarize_results(query, database_results)
-            # #     logger.info("Result summarization successful")
-            # # except Exception as e:
-            # #     logger.error(f"Failed to summarize results: {str(e)}")
-            # #     summary = f"I found information related to your query '{query}', but encountered an issue generating a detailed summary. Here are the raw results: {database_results.get('data', {}).get('counts', {}).get('total_nodes', 0)} items found."
-            # #     logger.warning(
-            # #         "Using fallback summary due to LLM summarization failure"
-            # #     )
-
-            # # logger.info("Annotation pipeline completed successfully")
-            # # return {
-            # #     "success": True,
-            # #     "summary": summary,
-            # #     "cypher_query": cypher_query,
-            # #     "database_results": database_results,
-            # #     "json_query": json_query,
-            # #     "error": None,
-            # #     "pipeline_status": {
-            # #         "json_extraction": "success",
-            # #         "cypher_conversion": "success",
-            # #         "database_execution": "success",
-            # #         "summarization": "success",
-            # #     },
-            # # }
 
         except Exception as e:
             error_msg = f"Unexpected error in biological query pipeline: {str(e)}"
@@ -1371,102 +1019,4 @@ class Graph:
                 },
             }
 
-    def _handle_general_query(self, query, user_id):
-        try:
-            logger.info(f"Handling general query: '{query}'")
 
-            emit_to_user(
-                user=user_id,
-                message="Analyzing database information...",
-            )
-
-            # Generate simple database summary
-            database_summary = self._generate_database_summary()
-
-            # Use LLM to answer the query based on the summary
-            summary_prompt = f"""
-            Based on this database summary: {database_summary}
-            
-            Answer this question: {query}
-            
-            Provide a clear, informative response based on the available data.
-            """
-
-            summary = self.llm.generate(summary_prompt)
-            logger.info("General query answered successfully")
-
-            return {
-                "success": True,
-                "summary": summary,
-                "cypher_query": None,
-                "json_query": None,
-                "database_results": {"data": {"summary": database_summary}},
-                "error": None,
-                "pipeline_status": {
-                    "general_query_handling": "success",
-                },
-            }
-
-        except Exception as e:
-            error_msg = f"Error handling general query: {str(e)}"
-            logger.error(error_msg)
-            return {
-                "success": False,
-                "error": error_msg,
-                "pipeline_status": {
-                    "general_query_handling": "failed",
-                },
-            }
-
-    def _generate_database_summary(self):
-        try:
-            stats_queries = {
-                "total_nodes": "MATCH (n) RETURN count(n) as total_nodes",
-                "total_relationships": "MATCH ()-[r]->() RETURN count(r) as total_relationships",
-                "node_types": "MATCH (n) RETURN DISTINCT labels(n)[0] as node_type, count(n) as count ORDER BY count DESC",
-                "relationship_types": "MATCH ()-[r]->() RETURN DISTINCT type(r) as rel_type, count(r) as count ORDER BY count DESC",
-            }
-
-            summary_parts = []
-
-            for key, query in stats_queries.items():
-                try:
-                    result = self.execute_cypher_query(query)
-                    if result.get("success"):
-                        data = result.get("data", {})
-                        value = data.get(key)
-                        records = data.get("records", [])
-
-                        if value is not None:
-                            # Single value (like count queries)
-                            summary_parts.append(f"{key}: {value}")
-                        elif records:
-                            # Multiple records (like node types, relationship types)
-                            if key == "node_types":
-                                node_types = [
-                                    f"{record.get('node_type', 'unknown')} ({record.get('count', 0)})"
-                                    for record in records
-                                ]
-                                summary_parts.append(f"{key}: {', '.join(node_types)}")
-                            elif key == "relationship_types":
-                                rel_types = [
-                                    f"{record.get('rel_type', 'unknown')} ({record.get('count', 0)})"
-                                    for record in records
-                                ]
-                                summary_parts.append(f"{key}: {', '.join(rel_types)}")
-                            else:
-                                summary_parts.append(f"{key}: {records}")
-                        else:
-                            summary_parts.append(f"{key}: No data found")
-                    else:
-                        summary_parts.append(f"{key}: Unable to retrieve")
-
-                except Exception as e:
-                    logger.warning(f"Failed to execute {key} query: {e}")
-                    summary_parts.append(f"{key}: Error retrieving")
-
-            return "Database Summary:\n" + "\n".join(summary_parts)
-
-        except Exception as e:
-            logger.error(f"Failed to generate database summary: {e}")
-            return "Database Summary:\nUnable to retrieve database information due to an error."

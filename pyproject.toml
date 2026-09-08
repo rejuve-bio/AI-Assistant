@@ -42,10 +42,7 @@ trafilatura = "^2.0.0"
 beautifulsoup4 = "^4.13.4"
 urllib3 = "^2.5.0"
 pymongo = "^4.13.2"
-googlesearch-python = "^1.3.0"
 langchain-mcp-adapters = "^0.1.11"
-# langchain-mcp-adapters imports mcp.shared.session but only declares
-# mcp>=1.9.2, so a fresh resolve can install an mcp too old to import.
 mcp = "^1.27.0"
 langchain-google-genai = "^3.1.0"
 langchain = "^1.0.8"
