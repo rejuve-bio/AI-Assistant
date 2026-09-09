@@ -102,6 +102,7 @@ def register_socket_events(sio_instance, fastapi_app):
         user_id = session.get("user_id")
         token = session.get("token")
         query = data.get("question")
+        thread_id = data.get("thread_id")
 
         if not (user_id and query):
             logger.error("Invalid question data received")
@@ -116,7 +117,7 @@ def register_socket_events(sio_instance, fastapi_app):
             if inspect.iscoroutinefunction(getattr(ai_assistant, "assistant", None)):
                 responses = await ai_assistant.assistant(query=query, user_id=user_id, token=token)
             else:
-                responses = await run_in_threadpool(ai_assistant.agent, query, user_id, token)
+                responses = await run_in_threadpool(ai_assistant.agent, query, user_id, token, thread_id=thread_id)
 
             logger.info(f"Responses generated for user {user_id}")
 
