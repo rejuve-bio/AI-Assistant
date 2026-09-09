@@ -19,9 +19,6 @@ EPMC_SCHEDULE_CRON = os.getenv("EPMC_INGESTION_SCHEDULE", "15 2 * * *")
 S2_ENABLED = os.getenv("S2_INGESTION_ENABLED", "true").lower() == "true"
 S2_SCHEDULE_CRON = os.getenv("S2_INGESTION_SCHEDULE", "30 2 * * *")
 
-# Fine-tuning QA generation: runs after all ingestion sources finish.
-FT_GENERATION_ENABLED = os.getenv("FT_GENERATION_ENABLED", "false").lower() == "true"
-FT_SCHEDULE_CRON = os.getenv("FT_GENERATION_SCHEDULE", "45 2 * * *")
 
 
 def _run_ingestion_job(qdrant_client, mongo_db):
@@ -55,17 +52,6 @@ def _run_s2_ingestion_job(qdrant_client, mongo_db):
     except Exception as exc:
         logger.error(f"[scheduler] Semantic Scholar ingestion cycle failed: {exc}")
 
-
-def _run_qa_generation_job(llm, mongo_db):
-    """Generate QA fine-tuning pairs for recently ingested papers."""
-    try:
-        from app.ingestion.qa_generator import QAGenerator
-        logger.info("[scheduler] Starting scheduled QA generation cycle...")
-        generator = QAGenerator(llm, mongo_db)
-        stats = generator.generate_from_index(source="pubmed")
-        logger.info(f"[scheduler] Scheduled QA generation cycle finished: {stats}")
-    except Exception as exc:
-        logger.error(f"[scheduler] Scheduled QA generation cycle failed: {exc}")
 
 
 def start_scheduler(app):
@@ -137,27 +123,6 @@ def start_scheduler(app):
                 replace_existing=True,
             )
             logger.info(f"Started Semantic Scholar ingestion scheduler (cron: {S2_SCHEDULE_CRON})")
-
-        # Optionally schedule QA pair generation after all ingestion sources finish.
-        if FT_GENERATION_ENABLED:
-            ft_parts = FT_SCHEDULE_CRON.split()
-            if len(ft_parts) != 5:
-                ft_parts = ["45", "2", "*", "*", "*"]
-            ft_min, ft_hr, ft_day, ft_mon, ft_dow = ft_parts
-
-            scheduler.add_job(
-                _run_qa_generation_job,
-                "cron",
-                minute=ft_min,
-                hour=ft_hr,
-                day=ft_day,
-                month=ft_mon,
-                day_of_week=ft_dow,
-                args=[app.llm, app.mongo_db],
-                id="ft_qa_generation_job",
-                replace_existing=True,
-            )
-            logger.info(f"Started QA generation scheduler (cron: {FT_SCHEDULE_CRON})")
 
         scheduler.start()
         return scheduler
