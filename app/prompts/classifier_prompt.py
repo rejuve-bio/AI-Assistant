@@ -46,6 +46,7 @@ STYLE:
 - No bullet-point breakdowns unless there are 3+ distinct items that genuinely need listing
 - No headers
 - No summaries at the end
+- If sources explicitly disagree on a factual claim, do NOT silently average them. Acknowledge the disagreement clearly: "Source A reports X while Source B reports Y."
 """
 
 
