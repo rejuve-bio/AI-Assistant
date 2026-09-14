@@ -61,6 +61,8 @@ class AgentState(TypedDict):
     hypothesis_response: Optional[Dict[str, Any]]
     pubmed_response: Optional[Dict[str, Any]]
     clinical_trials_response: Optional[Dict[str, Any]]
+    # Literature consensus analysis result
+    consensus_result: Optional[Dict[str, Any]]
     # Parallel execution control
     agents_to_run: List[str]
     agents_completed: Annotated[List[str], operator.add]
@@ -113,6 +115,10 @@ class AiAssistance:
         self.galaxy_handler = GalaxyHandler(advanced_llm, qdrant_client, embedding_model)
         self.embedding_model = embedding_model
         self.biogpt = BioGPTAgent(basic_llm=basic_llm, advanced_llm=advanced_llm)
+
+        # Analyzes retrieved papers for agreement/disagreement with a claim
+        from app.rag.literature_consensus import LiteratureConsensusAnalyzer
+        self.consensus_analyzer = LiteratureConsensusAnalyzer(advanced_llm)
 
         logger.info(
             f"AiAssistance initialized with advanced_llm: {type(self.advanced_llm).__name__}"
@@ -477,11 +483,29 @@ class AiAssistance:
                     "source": ANNOTATION_DB
                 }
 
-                return {
+                state_update = {
                     "annotation_response": response_dict,
                     "agents_completed": ["annotation_agent"],
                     "messages": [AIMessage(content="Annotation processing completed")]
                 }
+
+                # Biological annotations produce falsifiable claims (e.g.
+                # "TP53 interacts_with MDM2").  Inject pubmed_agent so that
+                # the consensus analyzer can ground them against live
+                # literature — same pattern the hypothesis agent uses.
+                if query_type == "annotation_biological" and json_format:
+                    predicates = json_format.get("predicates", [])
+                    if predicates:
+                        current_agents = state.get("agents_to_run", [])
+                        if "pubmed_agent" not in current_agents:
+                            logger.info(
+                                "Biological annotation produced %d predicate(s) "
+                                "— injecting pubmed_agent for consensus analysis",
+                                len(predicates),
+                            )
+                            state_update["agents_to_run"] = current_agents + ["pubmed_agent"]
+
+                return state_update
 
             else:
                 error_msg = pipeline_response.get("error", "Unknown error")
@@ -882,8 +906,37 @@ class AiAssistance:
                         f"  URL: {p.get('url', '')}"
                     )
                 text = "\n".join(lines)
+
+            # Classify each paper's stance (support/oppose/inconclusive) against the claim
+            # and detect contradictions across retrieved papers.
+            # Priority for the claim: hypothesis text > annotation claim > user query
+            consensus_result = None
+            if papers:
+                claim = ""
+                hypothesis = state.get("hypothesis_response") or {}
+                annotation = state.get("annotation_response") or {}
+                if hypothesis.get("text"):
+                    claim = hypothesis["text"]
+                elif annotation:
+                    from app.rag.literature_consensus import LiteratureConsensusAnalyzer
+                    claim = LiteratureConsensusAnalyzer.extract_claim_from_annotation(annotation) or ""
+                if not claim:
+                    claim = state["user_query"]
+
+                try:
+                    emit_to_user(user=user_id, message="Analyzing literature consensus...")
+                    consensus_result = self.consensus_analyzer.analyze_consensus(claim, papers)
+                    logger.info(
+                        f"Consensus analysis: {consensus_result.get('consensus_label')} "
+                        f"(support={consensus_result.get('support_count')}, "
+                        f"oppose={consensus_result.get('oppose_count')}, "
+                        f"inconclusive={consensus_result.get('inconclusive_count')})")
+                except Exception as ce:
+                    logger.error(f"Consensus analysis failed (non-fatal): {ce}", exc_info=True)
+
             return {
                 "pubmed_response": {"text": text, "source": "PubMed", "items": papers},
+                "consensus_result": consensus_result,
                 "agents_completed": ["pubmed_agent"],
                 "messages": [AIMessage(content="PubMed search completed")],
             }
@@ -961,6 +1014,34 @@ class AiAssistance:
         if failed:
             text += self._format_annotation_section(failed)
         return text
+
+    def _build_consensus_block(self, state: dict) -> str:
+        """Build a literature consensus badge and optional contradiction warning."""
+        consensus = state.get("consensus_result")
+        if not consensus or not consensus.get("consensus_label"):
+            return ""
+
+        label = consensus["consensus_label"]
+        support = consensus.get("support_count", 0)
+        oppose = consensus.get("oppose_count", 0)
+        inconclusive = consensus.get("inconclusive_count", 0)
+        summary = consensus.get("summary", "")
+
+        parts = []
+        parts.append(
+            f"📚 **Literature consensus: {label.replace('_', ' ').title()}** "
+            f"({support} supporting, {oppose} opposing, {inconclusive} inconclusive)"
+        )
+        if summary:
+            parts.append(f"   {summary}")
+
+        # Append contradiction warning if papers disagree
+        warning = consensus.get("warning_text")
+        if warning:
+            parts.append("")
+            parts.append(warning)
+
+        return "\n".join(parts)
 
     def _build_sources_footer(self, state: dict) -> str:
         """Build a markdown Sources section with clickable links from PubMed and ClinicalTrials."""
@@ -1071,10 +1152,13 @@ class AiAssistance:
         if hyp_resp:
             hyp_succeeded = isinstance(hyp_resp.get("resource"), dict) and hyp_resp["resource"].get("type") == "hypothesis"
             if hyp_succeeded:
-                # Success: return hypothesis text + supporting literature links
+                # Success: return hypothesis text + consensus + literature links
                 hyp_text = hyp_resp.get("text", "")
+                consensus_block = self._build_consensus_block(state)
                 sources_footer = self._build_sources_footer(state)
                 final_text = hyp_text.rstrip()
+                if consensus_block:
+                    final_text += "\n\n" + consensus_block
                 if sources_footer:
                     final_text += "\n\n" + sources_footer
                 return {
@@ -1116,9 +1200,19 @@ class AiAssistance:
             logger.info(f"[note-check] node statuses: { {n.get('node_id'): n.get('status') for n in nodes} }")
             failed = [n for n in nodes if n.get("status") is False]
             logger.info(f"[note-check] failed nodes: {[n.get('node_id') for n in failed]}")
+            annotation_text = self._build_annotation_text(json_format)
+
+            # Append literature consensus when available (annotation → pubmed path)
+            consensus_block = self._build_consensus_block(state)
+            if consensus_block:
+                annotation_text = annotation_text.rstrip() + "\n\n" + consensus_block
+            sources_footer = self._build_sources_footer(state)
+            if sources_footer:
+                annotation_text = annotation_text.rstrip() + "\n\n" + sources_footer
+
             return {
                 "response": {
-                    "text": self._build_annotation_text(json_format),
+                    "text": annotation_text,
                     "json_format": json_format,
                     "organism": organism
                 }
@@ -1179,6 +1273,10 @@ class AiAssistance:
 
             aggregated_text = self.advanced_llm.generate(prompt)
             logger.info(f"Successfully aggregated response: {aggregated_text[:100]}...")
+
+            consensus_block = self._build_consensus_block(state)
+            if consensus_block:
+                aggregated_text = aggregated_text.rstrip() + "\n\n" + consensus_block
 
             sources_footer = self._build_sources_footer(state)
             if sources_footer:
@@ -1288,6 +1386,7 @@ class AiAssistance:
                 "stop_pipeline": False,
                 "agents_to_run": [],
                 "agents_completed": [],
+                "consensus_result": None,
                 "conversation_history": conversation_history,
             }
 
