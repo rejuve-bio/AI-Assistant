@@ -149,13 +149,28 @@ class LiteratureConsensusAnalyzer:
             # Look up titles from papers list by pmid
             pmid_to_title = {str(p.get("pmid", "")): p.get("title", "Unknown") for p in papers}
 
-            support_titles = [pmid_to_title.get(str(ps.get("pmid", "")), ps.get("pmid", "?")) for ps in supporting]
-            oppose_titles = [pmid_to_title.get(str(ps.get("pmid", "")), ps.get("pmid", "?")) for ps in opposing]
+            support_lines = []
+            for ps in supporting:
+                title = pmid_to_title.get(str(ps.get("pmid", "")), ps.get("pmid", "?"))
+                rationale = ps.get("rationale", "")
+                line = f"  - {title}"
+                if rationale:
+                    line += f" — {rationale}"
+                support_lines.append(line)
+
+            oppose_lines = []
+            for ps in opposing:
+                title = pmid_to_title.get(str(ps.get("pmid", "")), ps.get("pmid", "?"))
+                rationale = ps.get("rationale", "")
+                line = f"  - {title}"
+                if rationale:
+                    line += f" — {rationale}"
+                oppose_lines.append(line)
 
             warning_text = (
                 "⚠️ **Contradiction detected in retrieved literature:**\n"
-                f"  Papers supporting: {', '.join(support_titles)}\n"
-                f"  Papers opposing: {', '.join(oppose_titles)}\n"
+                f"  Papers supporting:\n" + "\n".join(support_lines) + "\n"
+                f"  Papers opposing:\n" + "\n".join(oppose_lines) + "\n"
                 "  Interpret results with caution."
             )
 
@@ -169,6 +184,59 @@ class LiteratureConsensusAnalyzer:
             "warning_text": warning_text,
             "summary": summary,
         }
+
+    @staticmethod
+    def extract_claim_from_annotation(annotation_response: dict) -> str | None:
+        """Convert annotation structured output into a natural-language claim.
+
+        Extracts the most concrete, falsifiable statement from the annotation's
+        ``json_format`` (nodes + predicates).  Falls back to the annotation's
+        ``text`` summary when predicates are absent.
+
+        Returns
+        -------
+        str | None
+            A concise claim such as "TP53 interacts with MDM2", or ``None`` if
+            no meaningful claim can be derived.
+        """
+        if not annotation_response:
+            return None
+
+        json_format = annotation_response.get("json_format")
+        if not json_format:
+            return annotation_response.get("text") or None
+
+        predicates = json_format.get("predicates", [])
+        nodes = json_format.get("nodes", [])
+
+        if not predicates:
+            # No relationships — only node lookups; not a falsifiable claim.
+            return annotation_response.get("text") or None
+
+        # Build a node_id → human-readable label map
+        node_labels: dict[str, str] = {}
+        for n in nodes:
+            nid = n.get("node_id", "")
+            props = n.get("properties", {})
+            # Prefer 'name', then 'id', then first prop value, then node_id
+            label = (
+                props.get("name")
+                or props.get("id")
+                or next(iter(props.values()), None)
+                or nid
+            )
+            node_labels[nid] = str(label)
+
+        # Convert the first few predicates into "source relationship target"
+        claims = []
+        for pred in predicates[:3]:  # cap at 3 to keep the claim concise
+            src = node_labels.get(pred.get("source", ""), pred.get("source", ""))
+            tgt = node_labels.get(pred.get("target", ""), pred.get("target", ""))
+            rel = pred.get("type", "relates to").replace("_", " ")
+            if src and tgt:
+                claims.append(f"{src} {rel} {tgt}")
+
+        return "; ".join(claims) if claims else (annotation_response.get("text") or None)
 
     @staticmethod
     def _empty_result() -> dict:

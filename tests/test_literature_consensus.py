@@ -267,3 +267,148 @@ class TestEdgeCases:
         result = analyzer.analyze_consensus("Claim.", FAKE_PAPERS)
         assert result["consensus_label"] == "INCONCLUSIVE"
         assert result["has_contradiction"] is False
+
+
+# ---------------------------------------------------------------------------
+# Enriched warning text — rationale included
+# ---------------------------------------------------------------------------
+
+class TestEnrichedWarning:
+    """Verify that contradiction warnings include per-paper rationale."""
+
+    def test_warning_includes_rationale(self, analyzer, mock_llm):
+        """Each paper's rationale should appear in the warning text."""
+        mock_llm.generate.return_value = {
+            "paper_stances": [
+                {"pmid": "111", "stance": "SUPPORT", "rationale": "Large cohort study confirms."},
+                {"pmid": "333", "stance": "OPPOSE", "rationale": "No causal link found."},
+            ],
+            "consensus": {
+                "label": "CONTESTED",
+                "support_count": 1,
+                "oppose_count": 1,
+                "inconclusive_count": 0,
+                "summary": "Evidence is divided.",
+            },
+        }
+
+        result = analyzer.analyze_consensus("Claim Z.", FAKE_PAPERS)
+
+        assert result["has_contradiction"] is True
+        assert "Large cohort study confirms." in result["warning_text"]
+        assert "No causal link found." in result["warning_text"]
+
+    def test_warning_omits_empty_rationale(self, analyzer, mock_llm):
+        """Papers without rationale should not have a trailing dash."""
+        mock_llm.generate.return_value = {
+            "paper_stances": [
+                {"pmid": "111", "stance": "SUPPORT", "rationale": ""},
+                {"pmid": "333", "stance": "OPPOSE", "rationale": "Disagrees."},
+            ],
+            "consensus": {
+                "label": "CONTESTED",
+                "support_count": 1,
+                "oppose_count": 1,
+                "inconclusive_count": 0,
+                "summary": "Mixed.",
+            },
+        }
+
+        result = analyzer.analyze_consensus("Claim.", FAKE_PAPERS)
+
+        assert result["has_contradiction"] is True
+        # Paper A has no rationale — line should just be the title
+        assert "Paper A\n" in result["warning_text"] or "Paper A —" not in result["warning_text"].split("Paper A")[1].split("\n")[0]
+
+
+# ---------------------------------------------------------------------------
+# extract_claim_from_annotation
+# ---------------------------------------------------------------------------
+
+class TestExtractClaimFromAnnotation:
+    """Verify claim extraction from annotation structured output."""
+
+    def test_claim_from_predicates(self):
+        """Should convert predicates into a natural-language claim."""
+        annotation = {
+            "text": "Some summary",
+            "json_format": {
+                "nodes": [
+                    {"node_id": "n1", "type": "Gene", "properties": {"name": "TP53"}},
+                    {"node_id": "n2", "type": "Gene", "properties": {"name": "MDM2"}},
+                ],
+                "predicates": [
+                    {"source": "n1", "target": "n2", "type": "interacts_with"},
+                ],
+            },
+        }
+
+        claim = LiteratureConsensusAnalyzer.extract_claim_from_annotation(annotation)
+
+        assert claim is not None
+        assert "TP53" in claim
+        assert "MDM2" in claim
+        assert "interacts with" in claim  # underscores replaced
+
+    def test_multiple_predicates_capped_at_three(self):
+        """Should not produce an excessively long claim."""
+        annotation = {
+            "json_format": {
+                "nodes": [
+                    {"node_id": f"n{i}", "type": "Gene", "properties": {"name": f"G{i}"}}
+                    for i in range(6)
+                ],
+                "predicates": [
+                    {"source": f"n{i}", "target": f"n{i+1}", "type": "regulates"}
+                    for i in range(5)
+                ],
+            },
+        }
+
+        claim = LiteratureConsensusAnalyzer.extract_claim_from_annotation(annotation)
+
+        # Should contain exactly 3 claim fragments separated by "; "
+        assert claim.count("; ") == 2
+
+    def test_no_predicates_falls_back_to_text(self):
+        """When no predicates, use the text summary as the claim."""
+        annotation = {
+            "text": "Looked up TP53 information.",
+            "json_format": {
+                "nodes": [{"node_id": "n1", "type": "Gene", "properties": {"name": "TP53"}}],
+                "predicates": [],
+            },
+        }
+
+        claim = LiteratureConsensusAnalyzer.extract_claim_from_annotation(annotation)
+        assert claim == "Looked up TP53 information."
+
+    def test_no_json_format_falls_back_to_text(self):
+        """When json_format is missing, return text."""
+        annotation = {"text": "Some annotation result."}
+        claim = LiteratureConsensusAnalyzer.extract_claim_from_annotation(annotation)
+        assert claim == "Some annotation result."
+
+    def test_empty_annotation_returns_none(self):
+        assert LiteratureConsensusAnalyzer.extract_claim_from_annotation({}) is None
+        assert LiteratureConsensusAnalyzer.extract_claim_from_annotation(None) is None
+
+    def test_node_label_priority(self):
+        """Should prefer name > id > first prop value > node_id."""
+        annotation = {
+            "json_format": {
+                "nodes": [
+                    {"node_id": "n1", "type": "Gene", "properties": {"id": "ENSG00001", "name": "BRCA1"}},
+                    {"node_id": "n2", "type": "Disease", "properties": {"id": "MONDO:001"}},
+                ],
+                "predicates": [
+                    {"source": "n1", "target": "n2", "type": "associated_with"},
+                ],
+            },
+        }
+
+        claim = LiteratureConsensusAnalyzer.extract_claim_from_annotation(annotation)
+
+        assert "BRCA1" in claim  # preferred 'name' over 'id'
+        assert "MONDO:001" in claim  # fell back to 'id'
+        assert "associated with" in claim

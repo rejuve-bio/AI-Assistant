@@ -483,11 +483,29 @@ class AiAssistance:
                     "source": ANNOTATION_DB
                 }
 
-                return {
+                state_update = {
                     "annotation_response": response_dict,
                     "agents_completed": ["annotation_agent"],
                     "messages": [AIMessage(content="Annotation processing completed")]
                 }
+
+                # Biological annotations produce falsifiable claims (e.g.
+                # "TP53 interacts_with MDM2").  Inject pubmed_agent so that
+                # the consensus analyzer can ground them against live
+                # literature — same pattern the hypothesis agent uses.
+                if query_type == "annotation_biological" and json_format:
+                    predicates = json_format.get("predicates", [])
+                    if predicates:
+                        current_agents = state.get("agents_to_run", [])
+                        if "pubmed_agent" not in current_agents:
+                            logger.info(
+                                "Biological annotation produced %d predicate(s) "
+                                "— injecting pubmed_agent for consensus analysis",
+                                len(predicates),
+                            )
+                            state_update["agents_to_run"] = current_agents + ["pubmed_agent"]
+
+                return state_update
 
             else:
                 error_msg = pipeline_response.get("error", "Unknown error")
@@ -891,10 +909,20 @@ class AiAssistance:
 
             # Classify each paper's stance (support/oppose/inconclusive) against the claim
             # and detect contradictions across retrieved papers.
-            # Priority for the claim: hypothesis text > user query
+            # Priority for the claim: hypothesis text > annotation claim > user query
             consensus_result = None
             if papers:
-                claim = context if context else state["user_query"]
+                claim = ""
+                hypothesis = state.get("hypothesis_response") or {}
+                annotation = state.get("annotation_response") or {}
+                if hypothesis.get("text"):
+                    claim = hypothesis["text"]
+                elif annotation:
+                    from app.rag.literature_consensus import LiteratureConsensusAnalyzer
+                    claim = LiteratureConsensusAnalyzer.extract_claim_from_annotation(annotation) or ""
+                if not claim:
+                    claim = state["user_query"]
+
                 try:
                     emit_to_user(user=user_id, message="Analyzing literature consensus...")
                     consensus_result = self.consensus_analyzer.analyze_consensus(claim, papers)
@@ -1172,9 +1200,19 @@ class AiAssistance:
             logger.info(f"[note-check] node statuses: { {n.get('node_id'): n.get('status') for n in nodes} }")
             failed = [n for n in nodes if n.get("status") is False]
             logger.info(f"[note-check] failed nodes: {[n.get('node_id') for n in failed]}")
+            annotation_text = self._build_annotation_text(json_format)
+
+            # Append literature consensus when available (annotation → pubmed path)
+            consensus_block = self._build_consensus_block(state)
+            if consensus_block:
+                annotation_text = annotation_text.rstrip() + "\n\n" + consensus_block
+            sources_footer = self._build_sources_footer(state)
+            if sources_footer:
+                annotation_text = annotation_text.rstrip() + "\n\n" + sources_footer
+
             return {
                 "response": {
-                    "text": self._build_annotation_text(json_format),
+                    "text": annotation_text,
                     "json_format": json_format,
                     "organism": organism
                 }
