@@ -344,7 +344,7 @@ jobs:
               - static:/static
               - ${HF_CACHE_DIR}:/root/.cache/huggingface
             ports:
-              - "${FASTAPI_HOST_PORT}:${FASTAPI_INTERNAL_PORT}"
+              - "127.0.0.1:${FASTAPI_HOST_PORT}:${FASTAPI_INTERNAL_PORT}"
             command: >
               sh -c "
               uvicorn run:asgi_app --host 0.0.0.0 --port ${FASTAPI_INTERNAL_PORT} --workers 4 --log-level debug
@@ -379,20 +379,20 @@ jobs:
           qdrant:
             image: qdrant/qdrant:latest
             ports:
-              - "${QDRANT_HOST_PORT}:${QDRANT_INTERNAL_PORT}"
-              - "${QDRANT_GRPC_HOST_PORT}:${QDRANT_GRPC_INTERNAL_PORT}"
+              - "127.0.0.1:${QDRANT_HOST_PORT}:${QDRANT_INTERNAL_PORT}"
+              - "127.0.0.1:${QDRANT_GRPC_HOST_PORT}:${QDRANT_GRPC_INTERNAL_PORT}"
             volumes:
               - vectordata:/qdrant/storage
           redis:
             image: redis:6-alpine
             restart: always
             ports:
-              - "${REDIS_HOST_PORT}:${REDIS_INTERNAL_PORT}"
+              - "127.0.0.1:${REDIS_HOST_PORT}:${REDIS_INTERNAL_PORT}"
           mongodb:
             image: mongo:6.0
             restart: always
             ports:
-              - "${MONGODB_HOST_PORT}:${MONGODB_INTERNAL_PORT}"
+              - "127.0.0.1:${MONGODB_HOST_PORT}:${MONGODB_INTERNAL_PORT}"
             environment:
               MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME}
               MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}

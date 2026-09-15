@@ -114,10 +114,6 @@ def register_socket_events(sio_instance, fastapi_app):
             await sio_instance.emit("error", {"error": str(e)}, room=user_id)
 
 
-def get_socketio():
-    return sio
-
-
 def emit_to_user(user, message, status="update"):
     """Helper method to emit updates to a user, safe to call from any thread.
 

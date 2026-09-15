@@ -7,7 +7,7 @@ services:
       - static:/static
       - hf_cache:/root/.cache/huggingface
     ports:
-      - "${FASTAPI_PORT}:${FASTAPI_PORT}"
+      - "127.0.0.1:${FASTAPI_PORT}:${FASTAPI_PORT}"
     command: uvicorn run:asgi_app --host 0.0.0.0 --port $FASTAPI_PORT --workers 4 --log-level debug
     restart: always
     depends_on:
@@ -20,8 +20,8 @@ services:
   qdrant:
     image: qdrant/qdrant
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
     volumes:
       - vectordata:/qdrant/storage
 
@@ -29,13 +29,13 @@ services:
     image: redis:6-alpine
     restart: always
     ports:
-      - "6378:6379"
+      - "127.0.0.1:6378:6379"
 
   mongodb:
     image: mongo:6.0
     restart: always
     ports:
-      - "27017:27017"
+      - "127.0.0.1:27017:27017"
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}

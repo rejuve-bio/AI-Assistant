@@ -125,11 +125,7 @@ You are a query classifier for a multi-agent system. Analyze the user's query an
    - Exploring relationships between biological entities
    - Examples: "find gene BRCA1", "show transcripts for TP53", "what exons does IGF1 have"
 
-2. **annotation_general**: Queries about database statistics and metadata
-   - Aggregate counts, database size, data types available
-   - Examples: "how many genes in the database", "what types of variants are stored"
-
-3. **galaxy**: Queries about Galaxy bioinformatics platform
+2. **galaxy**: Queries about Galaxy bioinformatics platform
    - Galaxy tools, workflows, pipeline recommendations
    - Examples: "What Galaxy tools for RNA-seq?", "create a variant calling workflow"
 
@@ -200,9 +196,6 @@ Response: galaxy
 
 Query: "Show me genes related to diabetes from my uploaded PDF"
 Response: rag
-
-Query: "How many genes are in the database?"
-Response: annotation_general
 
 Query: "What is the mechanism of action of ibuprofen?","Explain CRISPR gene editing"
 Response: rag, biogpt

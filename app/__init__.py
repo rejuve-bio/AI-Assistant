@@ -20,8 +20,7 @@ from app.main import AiAssistance
 from app.rag.rag import RAG
 from app.socket_manager import create_socket_app, set_event_loop
 from app.storage.qdrant import Qdrant
-from app.storage.mongo_storage import MongoManager
-from app.storage.checkpointer import create_checkpointer
+from app.storage.mongo_storage import MongoManager, create_checkpointer
 from app.annotation_graph.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import (
     get_llm_model,

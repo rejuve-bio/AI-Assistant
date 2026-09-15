@@ -96,6 +96,41 @@ class Qdrant:
             )
             return False
 
+    def content_exists(self, collection_name, content_id):
+        """Exact check for whether any point carries this content_id.
+
+        Deliberately not a similarity search: whether content was already
+        ingested must not depend on how well the user's current query happens
+        to match it.
+        """
+        try:
+            self.client.get_collection(collection_name)
+        except Exception:
+            logger.info(f"Collection '{collection_name}' does not exist yet")
+            return False
+
+        try:
+            points, _ = self.client.scroll(
+                collection_name=collection_name,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="content_id",
+                            match=models.MatchValue(value=content_id),
+                        )
+                    ]
+                ),
+                limit=1,
+                with_payload=False,
+                with_vectors=False,
+            )
+            return bool(points)
+        except Exception as e:
+            logger.warning(
+                f"Error checking content_id {content_id} in {collection_name}: {e}"
+            )
+            return False
+
     def _upsert_content_data(self, collection_name, chunks, metadata):
         if chunks is None or metadata is None:
             raise ValueError("chunks and metadata are required for content data")
