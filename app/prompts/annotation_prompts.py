@@ -256,3 +256,25 @@ Items to evaluate (JSON):
 Respond with ONLY a valid JSON object. No explanation, no markdown fences.
 Example: {{"BRAC1": {{"value": "BRCA1", "auto_accept": true}}, "hgf6d7": {{"value": "ZNF697", "auto_accept": false}}, "xyz999": null}}
 """
+
+
+CONFIRMATION_CLASSIFICATION_PROMPT = """The assistant asked the user to confirm whether to substitute an unrecognised database entry with a suggested match. The user replied:
+
+"{message}"
+
+Classify the user's intent as exactly one of:
+- confirm           — user agrees to use the suggested match (e.g. 'yes', 'sure', 'use it', 'go ahead', 'that works', 'use ZNF697')
+- reject            — user wants to build without the unidentified node (e.g. 'no', 'skip it', 'build without', 'leave it out')
+- show_alternatives — user wants to see other possible matches from the database (e.g. 'find another', 'show me others', 'what else is there', 'forgot the name')
+- new_query         — user is asking something completely unrelated to the confirmation
+
+Reply with only one word: confirm, reject, show_alternatives, or new_query."""
+
+
+DESCRIBE_ANNOTATION_PROMPT = """A user asked: "{query}"
+
+The following annotation structure was built from the database schema:
+
+{structure_summary}
+
+Write 1-3 sentences describing what this structure represents biologically and what query it will run. Be specific about the entities and relationships involved. Do NOT invent data, relationships, or biological facts not shown above. Do NOT mention the annotation system or technical details.{failure_instruction}"""

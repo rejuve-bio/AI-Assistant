@@ -1,4 +1,4 @@
-from app.prompts.rag_prompts import RETRIEVE_PROMPT
+from app.prompts.rag_prompts import RETRIEVE_PROMPT, URL_CONTENT_PROMPT
 from app.storage.memory_layer import MemoryManager
 import traceback
 import os
@@ -9,7 +9,7 @@ import pymupdf
 from app.rag.utils.content_processor import ContentProcessor
 from app.rag.utils.content_analyzer import ContentAnalyzer
 from app.storage.mongo_storage import mongo_db_manager
-from app.rag.utils.web_search import SimpleWebSearch
+from app.rag.utils.galaxy_content import summarize_chunk
 
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,126 @@ class RAG:
         self.content_analyzer = ContentAnalyzer(self.llm)
         logger.info(
             "RAG initialized with LLM and shared Qdrant client/embedding model."
+        )
+
+    def save_url_content(
+        self,
+        urls,
+        collection_name,
+        cleaner=None,
+        summarize=False,
+        include_tables=False,
+    ):
+        """Scrape, clean, chunk and store URLs into `collection_name`.
+
+        Shared by the plain web-content path and the Galaxy path; the two differ
+        only in which collection they write to, how aggressively the text is
+        cleaned, and whether each chunk gets an LLM summary.
+
+        :param cleaner: optional callable applied to the extracted text
+        :param summarize: summarize each chunk, threading the previous summary
+        :returns: {url: status string}
+        """
+        if isinstance(urls, str):
+            urls = [urls]
+
+        results = {}
+        for url in urls:
+            try:
+                if self.client.content_exists(collection_name, url):
+                    logger.info(f"Already stored, skipping: {url}")
+                    results[url] = "Already stored"
+                    continue
+
+                extracted = self.content_processor.extract_text_with_trafilatura(
+                    url, include_tables=include_tables
+                )
+                if not extracted or not extracted.get("text"):
+                    logger.warning(f"Failed to extract content from {url}")
+                    results[url] = "Failed to extract content"
+                    continue
+
+                text = extracted["text"]
+                text = cleaner(text) if cleaner else self.content_processor.clean_text_content(text)
+
+                chunks = self.content_processor.chunk_text_recursive(text)
+                if not chunks:
+                    logger.warning(f"No chunks produced for {url}")
+                    results[url] = "No content to process"
+                    continue
+
+                self.client.ensure_collection_exists(collection_name)
+                logger.info(f"Storing {len(chunks)} chunks for {url}")
+
+                previous_summary = None
+                for index, chunk in enumerate(chunks):
+                    summary = None
+                    if summarize:
+                        summary = summarize_chunk(self.llm, chunk, previous_summary)
+                        previous_summary = summary
+
+                    self._chunk_and_store(
+                        collection_name,
+                        [{"text": chunk, "summary": summary}],
+                        {
+                            "content_id": url,
+                            "chunk_index": index,
+                            "summary": summary,
+                            "text": chunk,
+                        },
+                    )
+
+                results[url] = f"Successfully processed {len(chunks)} chunks"
+                logger.info(f"Completed processing {url}")
+
+            except Exception as e:
+                logger.error(f"Error processing URL {url}: {e}")
+                results[url] = f"Error: {e}"
+
+        return results
+
+    def query_url_content(self, query, urls, collection_name):
+        """Answer `query` from previously stored URL content.
+
+        Chunks are grouped by source URL so the model can attribute an answer
+        to the document it came from.
+        """
+        if isinstance(urls, str):
+            urls = [urls]
+
+        try:
+            results = self.client.retrieve_similar_content(
+                collection_name=collection_name,
+                query=query,
+                content_ids=urls,
+                top_k=10,
+            )
+        except Exception as e:
+            logger.error(f"Error retrieving content for {urls}: {e}")
+            return f"Error retrieving content: {e}"
+
+        if not results:
+            logger.warning(f"No relevant chunks found in {collection_name}")
+            return (
+                f"I could not find any relevant information in the provided "
+                f"{len(urls)} document(s) to answer your query."
+            )
+
+        logger.info(f"Found {len(results)} relevant chunks")
+        by_url = {}
+        for chunk in results:
+            by_url.setdefault(chunk.get("content_id", "Unknown"), []).append(chunk)
+
+        context_text = "\n\n".join(
+            f"\n--- From {url} ---\n"
+            + "\n\n".join(str(chunk.get("text", "")) for chunk in chunks)
+            for url, chunks in by_url.items()
+        )
+
+        return self.llm.generate(
+            URL_CONTENT_PROMPT.format(
+                document_count=len(urls), context=context_text, query=query
+            )
         )
 
     def _chunk_and_store(self, collection_name, chunks, metadata):
