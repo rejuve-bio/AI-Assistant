@@ -1,0 +1,16 @@
+.git
+.github
+.pytest_cache
+__pycache__
+venv
+.env
+node_modules
+package.json
+package-lock.json
+tests
+logfiles
+coverage.xml
+htmlcov
+pylint-report.json
+.hf_cache
+*.pyc

@@ -7,8 +7,8 @@ services:
       - static:/static
       - hf_cache:/root/.cache/huggingface
     ports:
-      - "127.0.0.1:${FASTAPI_PORT}:${FASTAPI_PORT}"
-    command: uvicorn run:asgi_app --host 0.0.0.0 --port $FASTAPI_PORT --workers 4 --log-level debug
+      - "127.0.0.1:${FLASK_PORT}:${FLASK_PORT}"
+    command: gunicorn -w 4 --preload --bind 0.0.0.0:$FLASK_PORT --timeout 600 --log-level debug run:app
     restart: always
     depends_on:
       - qdrant
@@ -20,7 +20,7 @@ services:
   qdrant:
     image: qdrant/qdrant
     ports:
-      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6335:6333"
       - "127.0.0.1:6334:6334"
     volumes:
       - vectordata:/qdrant/storage
@@ -48,3 +48,9 @@ volumes:
   static:
   mongodb_data:
   hf_cache:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.200.0.0/24

@@ -294,16 +294,18 @@ jobs:
       run: |
         echo "=== Creating .env file from GitHub Secrets ==="
 
-        echo "FASTAPI_HOST_PORT=${{ secrets.FASTAPI_HOST_PORT }}" >> .env
-        echo "FASTAPI_INTERNAL_PORT=${{ secrets.FASTAPI_INTERNAL_PORT }}" >> .env
-        echo "REDIS_HOST_PORT=${{ secrets.REDIS_HOST_PORT }}" >> .env
-        echo "REDIS_INTERNAL_PORT=${{ secrets.REDIS_INTERNAL_PORT }}" >> .env
-        echo "MONGODB_HOST_PORT=${{ secrets.MONGODB_HOST_PORT }}" >> .env
-        echo "MONGODB_INTERNAL_PORT=${{ secrets.MONGODB_INTERNAL_PORT }}" >> .env
-        echo "QDRANT_HOST_PORT=${{ secrets.QDRANT_HOST_PORT }}" >> .env
-        echo "QDRANT_INTERNAL_PORT=${{ secrets.QDRANT_INTERNAL_PORT }}" >> .env
-        echo "QDRANT_GRPC_HOST_PORT=${{ secrets.QDRANT_GRPC_HOST_PORT }}" >> .env
-        echo "QDRANT_GRPC_INTERNAL_PORT=${{ secrets.QDRANT_GRPC_INTERNAL_PORT }}" >> .env
+        # Use bash fallbacks so Docker Compose never gets an empty port value
+        # even when optional secrets are not configured in the repository.
+        echo "FASTAPI_HOST_PORT=${{ secrets.FASTAPI_HOST_PORT || '5000' }}" >> .env
+        echo "FASTAPI_INTERNAL_PORT=${{ secrets.FASTAPI_INTERNAL_PORT || '5000' }}" >> .env
+        echo "REDIS_HOST_PORT=${{ secrets.REDIS_HOST_PORT || '6379' }}" >> .env
+        echo "REDIS_INTERNAL_PORT=${{ secrets.REDIS_INTERNAL_PORT || '6379' }}" >> .env
+        echo "MONGODB_HOST_PORT=${{ secrets.MONGODB_HOST_PORT || '27017' }}" >> .env
+        echo "MONGODB_INTERNAL_PORT=${{ secrets.MONGODB_INTERNAL_PORT || '27017' }}" >> .env
+        echo "QDRANT_HOST_PORT=${{ secrets.QDRANT_HOST_PORT || '6333' }}" >> .env
+        echo "QDRANT_INTERNAL_PORT=${{ secrets.QDRANT_INTERNAL_PORT || '6333' }}" >> .env
+        echo "QDRANT_GRPC_HOST_PORT=${{ secrets.QDRANT_GRPC_HOST_PORT || '6334' }}" >> .env
+        echo "QDRANT_GRPC_INTERNAL_PORT=${{ secrets.QDRANT_GRPC_INTERNAL_PORT || '6334' }}" >> .env
 
         echo "BASIC_LLM_PROVIDER=${{ secrets.BASIC_LLM_PROVIDER || 'gemini' }}" >> .env
         echo "BASIC_LLM_VERSION=${{ secrets.BASIC_LLM_VERSION || 'gemini-1.5-flash' }}" >> .env
@@ -740,7 +742,7 @@ jobs:
         username: ${{ secrets.EMAIL_USERNAME }}
         password: ${{ secrets.EMAIL_PASSWORD }}
         subject: ❌ CI Pipeline FAILED - AI-Assistant
-        to: abdum14@gmail.com
+        to: ${{ secrets.RECIEVER_EMAIL }}
         from: GitHub Actions <${{ secrets.EMAIL_USERNAME }}>
         body: |
           CI Pipeline Failed! ❌
