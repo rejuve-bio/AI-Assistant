@@ -43,33 +43,50 @@ class Neo4jConnection:
 
         logger.info(f"Batch searching {len(search_values)} values in '{label}.{property_key}'.")
 
-        query = f"""
-        MATCH (n:{label})
-        WITH DISTINCT n.{property_key} AS value
-        WHERE value IS NOT NULL
-        WITH collect(value) AS all_values
-        UNWIND $search_values AS search_value
-        UNWIND all_values AS value
-        WITH search_value, value,
-             // Jaro-Winkler, not Levenshtein: Levenshtein scores a transposition
-             // as two edits, so "BRAC1" ranks BRCA1 below PRAC1, RAC1 and BRAT1
-             // and it never reaches the candidate list at all.
-             // Note this is a DISTANCE -- 0 is identical.
-             1 - apoc.text.jaroWinklerDistance(LOWER(value), LOWER(search_value)) AS similarity
-        WHERE similarity > $threshold
-        ORDER BY search_value, similarity DESC
-        WITH search_value, collect({{value: value, similarity: similarity}})[..{top_k}] AS top_matches
-        RETURN search_value, top_matches
-        """
-
         try:
             driver = self.get_driver()
             with driver.session() as session:
-                result = session.run(query, search_values=search_values, threshold=threshold)
                 batch = {}
-                for record in result:
+                exact_query = f"""
+                UNWIND $search_values AS search_value
+                MATCH (n:{label})
+                WHERE toLower(n.{property_key}) = toLower(search_value)
+                RETURN search_value, n.{property_key} AS real_value
+                LIMIT {len(search_values) * 5}
+                """
+                exact_result = session.run(exact_query, search_values=search_values)
+                for record in exact_result:
                     sv = record["search_value"]
-                    batch[sv] = [(m["value"], round(m["similarity"], 2)) for m in record["top_matches"]]
+                    batch.setdefault(sv, [])
+                    real = record["real_value"]
+                    if (real, 1.0) not in batch[sv]:
+                        batch[sv].append((real, 1.0))
+
+                remaining = [sv for sv in search_values if sv not in batch]
+                if remaining:
+                    logger.info(f"{len(remaining)} of {len(search_values)} value(s) need fuzzy resolution: {remaining}")
+                    query = f"""
+                    MATCH (n:{label})
+                    WITH DISTINCT n.{property_key} AS value
+                    WHERE value IS NOT NULL
+                    WITH collect(value) AS all_values
+                    UNWIND $search_values AS search_value
+                    UNWIND all_values AS value
+                    WITH search_value, value,
+                         // Jaro-Winkler, not Levenshtein: Levenshtein scores a transposition
+                         // as two edits, so "BRAC1" ranks BRCA1 below PRAC1, RAC1 and BRAT1
+                         // and it never reaches the candidate list at all.
+                         // Note this is a DISTANCE -- 0 is identical.
+                         1 - apoc.text.jaroWinklerDistance(LOWER(value), LOWER(search_value)) AS similarity
+                    WHERE similarity > $threshold
+                    ORDER BY search_value, similarity DESC
+                    WITH search_value, collect({{value: value, similarity: similarity}})[..{top_k}] AS top_matches
+                    RETURN search_value, top_matches
+                    """
+                    result = session.run(query, search_values=remaining, threshold=threshold)
+                    for record in result:
+                        sv = record["search_value"]
+                        batch[sv] = [(m["value"], round(m["similarity"], 2)) for m in record["top_matches"]]
                 for sv in search_values:
                     if sv not in batch:
                         batch[sv] = []

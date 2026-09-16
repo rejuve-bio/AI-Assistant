@@ -28,8 +28,9 @@ class LiteratureState(TypedDict, total=False):
     user_query: str
     user_id: str
     content_ids: Optional[List[str]]
-    sources: List[str]           
-    search_context: str          
+    sources: List[str]
+    search_context: str
+    min_year: Optional[int]
     rag_response: Optional[Dict[str, Any]]
     pubmed_response: Optional[Dict[str, Any]]
     clinical_trials_response: Optional[Dict[str, Any]]
@@ -72,10 +73,11 @@ def build_literature_subgraph(rag, extract_search_term):
 
         user_id = state["user_id"]
         term = extract_search_term(state["user_query"], context=state.get("search_context", ""))
-        logger.info(f"PubMed searching for: {term}")
+        min_year = state.get("min_year")
+        logger.info(f"PubMed searching for: {term} (min_year={min_year})")
         emit_to_user(user=user_id, message="Searching PubMed literature...")
         try:
-            papers = search_pubmed(term, max_results=8).get("papers", [])
+            papers = search_pubmed(term, max_results=8, min_year=min_year).get("papers", [])
             text = _format_papers(papers)
         except Exception as e:
             logger.error(f"PubMed error: {e}", exc_info=True)

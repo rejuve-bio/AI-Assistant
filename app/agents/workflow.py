@@ -8,13 +8,12 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.graph import StateGraph, END
 from langgraph.types import Send
 
-from app.agents.state import AgentState
+from app.agents.state import AgentState, UNRESOLVED_MARKER
 from app.agents.tools import TOOL_RUNNERS, grounding_violation, openai_tool_defs
 
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 10
-UNRESOLVED_MARKER = "[not run] "
 URL_IN_TEXT_RE = re.compile(r"https?://\S+")
 
 ONE_ROUND_CHECK_PROMPT = """A user sent this message to a biology research

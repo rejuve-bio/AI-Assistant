@@ -361,10 +361,9 @@ class Graph:
                                     {"node_id": node_id, "reason": f"'{node_db_id}' not found in database"}
                                 )
                             else:
-                                # Nothing even remotely similar exists — say so plainly instead
-                                # of echoing the user's own input back as a fake "suggestion"
                                 node["status"] = False
-                                node["needs_confirmation"] = False
+                                node["needs_confirmation"] = True
+                                node["pending_substitutions"] = {node_db_id: None}
                                 node["validation_error"] = f"'{node_db_id}' not found in the database, and no similar value exists."
                                 validation_report["failed_nodes"].append(
                                     {"node_id": node_id, "reason": node["validation_error"]}
@@ -656,10 +655,13 @@ class Graph:
                 node_id_val = node.get("id", "")
                 if node_id_val and node_id_val in subs:
                     suggested = subs[node_id_val]
-                    id_prop = self._node_id_property.get(node.get("type", "").lower())
-                    if id_prop:
-                        node.setdefault("properties", {})[id_prop] = suggested
-                    node["id"] = ""
+                    if suggested is None:
+                        apply = False
+                    else:
+                        id_prop = self._node_id_property.get(node.get("type", "").lower())
+                        if id_prop:
+                            node.setdefault("properties", {})[id_prop] = suggested
+                        node["id"] = ""
 
                 # Handle property-value substitutions
                 for prop_key, prop_val in node.get("properties", {}).items():
@@ -733,14 +735,11 @@ class Graph:
         return cleaned, unresolved
 
     def _deduplicate_nodes(self, nodes: list, predicates: list) -> list:
-        """Remove nodes whose type+properties are exact duplicates of an earlier node.
-        Predicates that reference a removed duplicate are remapped to the surviving node.
-        """
-        seen = {}       # (type, frozenset(properties.items())) -> surviving node_id
-        removed = {}    # removed node_id -> surviving node_id
+        seen = {}       
+        removed = {}    
         kept = []
         for node in nodes:
-            key = (node.get("type", ""), frozenset(
+            key = (node.get("type", ""), node.get("id", ""), frozenset(
                 (k, v) for k, v in node.get("properties", {}).items()
             ))
             if key in seen:
@@ -832,6 +831,14 @@ class Graph:
             all_vals = u.get("all_list_values") or []
             known_vals = [v for v in all_vals if v != u["original"]]
 
+            if u.get("suggestion") is None:
+                base = f"I couldn't find **'{u['original']}'** in the database, and nothing similar exists either."
+                if known_vals:
+                    base += f" Would you like me to build the annotation without it, using only {known_vals}? Or would you like to provide a different identifier?"
+                else:
+                    base += " Would you like to provide a different identifier, or skip it?"
+                return base
+
             base = (
                 f"I couldn't find **'{u['original']}'** in the database. "
                 f"The closest match I found is **'{u['suggestion']}'**.\n\n"
@@ -845,8 +852,9 @@ class Graph:
 
         lines = ["I couldn't find some of the nodes you mentioned in the database:"]
         for u in unconfirmed_nodes:
+            suggestion_text = f"closest match is **'{u['suggestion']}'**" if u.get("suggestion") is not None else "nothing similar exists"
             lines.append(
-                f"  - **'{u['original']}'** — closest match is **'{u['suggestion']}'**"
+                f"  - **'{u['original']}'** — {suggestion_text}"
             )
         lines.append(
             "\nShould I go ahead with these substitutions? "
@@ -856,15 +864,19 @@ class Graph:
 
 
     def process_annotation_query(
-        self, query, user_id, query_type="annotation_biological"
+        self, query, user_id, query_type="annotation_biological",
+        organism_override=None, organism_hint_text=None,
     ):
         # orchestrate the entire annotation pipeline from user query to final response
         try:
             logger.info(
-                f"Starting annotation pipeline for query: '{query}', type: {query_type}"
+                f"Starting annotation pipeline for query: '{query}', type: {query_type}, "
+                f"organism_override: {organism_override}"
             )
 
-            return self._handle_biological_query(query, user_id)
+            return self._handle_biological_query(
+                query, user_id, organism_override=organism_override, organism_hint_text=organism_hint_text
+            )
 
         except Exception as e:
             error_msg = f"Unexpected error in annotation pipeline: {str(e)}"
@@ -880,9 +892,18 @@ class Graph:
                 },
             }
 
-    def _organism_context(self, query):
-        """Pick the schema and Neo4j connection matching the query's organism."""
-        if self._detect_organism(query) == "fly" and self.fly_schema_handler:
+    def _organism_context(self, query, organism_override=None, organism_hint_text=None):
+        if organism_override:
+            normalized = organism_override if organism_override in ("human", "fly") else self._detect_organism(organism_override)
+            if normalized == "fly" and self.fly_schema_handler:
+                logger.info(f"Organism explicitly requested ('{organism_override}' -> fly) — using fly schema and Neo4j")
+                return ("fly", self.fly_enhanced_schema, self.fly_schema_handler,
+                        self.fly_neo4j or self.neo4j)
+            if normalized == "human":
+                logger.info(f"Organism explicitly requested ('{organism_override}' -> human) — using human schema and Neo4j")
+                return "human", self.enhanced_schema, self.schema_handler, self.neo4j
+
+        if self._detect_organism(organism_hint_text or query) == "fly" and self.fly_schema_handler:
             logger.info("Organism detected: fly — using fly schema and Neo4j")
             return ("fly", self.fly_enhanced_schema, self.fly_schema_handler,
                     self.fly_neo4j or self.neo4j)
@@ -939,7 +960,7 @@ class Graph:
         logger.info(f"JSON query structure: {json.dumps(result, indent=2)}")
         return result
 
-    def _handle_biological_query(self, query, user_id):
+    def _handle_biological_query(self, query, user_id, organism_override=None, organism_hint_text=None):
         """Turn a natural-language query into a validated annotation JSON.
 
         Stops early and asks the user when a value could only be guessed;
@@ -947,7 +968,9 @@ class Graph:
         JSON only -- nothing here runs a query against the database.
         """
         try:
-            organism, schema, schema_handler, neo4j = self._organism_context(query)
+            organism, schema, schema_handler, neo4j = self._organism_context(
+                query, organism_override, organism_hint_text
+            )
 
             emit_to_user(user=user_id,
                          message="Extracting relevant information from your query...")

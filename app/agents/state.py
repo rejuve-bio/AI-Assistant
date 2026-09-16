@@ -3,6 +3,8 @@ from typing import Annotated, Any, Dict, List, Optional, TypedDict
 
 from langchain_core.messages import BaseMessage
 
+UNRESOLVED_MARKER = "[not run] "
+
 
 def merge_errors(existing, new):
     if not new:
