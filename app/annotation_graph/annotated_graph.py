@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from dotenv import load_dotenv
-from app.annotation_graph.neo4j_handler import Neo4jConnection
+from app.annotation_graph.neo4j_handler import Neo4jConnection, SimilarityLookupError
 from app.annotation_graph.schema_handler import SchemaHandler
 from app.llm_handle.llm_models import LLMInterface
 from app.prompts.annotation_prompts import (
@@ -237,20 +237,14 @@ class Graph:
             # Create a deep copy to track changes
             updated_json = copy.deepcopy(initial_json)
 
-            # Validate node properties
             if "nodes" not in updated_json:
                 raise ValueError("The input JSON must contain a 'nodes' key.")
 
-            # Pre-pass: collect all values that need Neo4j lookup grouped by (node_type, property_key)
             lookup_needed = {}  # (node_type, property_key) -> set of string values
             for node in updated_json.get("nodes"):
                 node_type = node.get("type")
                 properties = node.get("properties", {})
 
-                # Also validate the `id` field. Always check it against the real database
-                # `id` property first (Cypher MATCH always keys on `id` — see json_to_cypher.py),
-                # and additionally against the display property (if this type has one) in case
-                # the caller typed a name/symbol instead of the raw id.
                 node_db_id = node.get("id", "")
                 if node_db_id:
                     lookup_needed.setdefault((node_type, "id"), set()).add(node_db_id)
@@ -271,21 +265,16 @@ class Graph:
                     elif isinstance(property_value, str):
                         lookup_needed.setdefault((node_type, property_key), set()).add(property_value)
 
-            # Run one batch Neo4j query per (node_type, property_key)
             similarity_cache = {}  # (node_type, property_key, value) -> [(similar_value, score), ...]
             for (node_type, property_key), values in lookup_needed.items():
                 batch = _neo4j.get_similar_property_values_batch(node_type, property_key, list(values))
                 for value, matches in batch.items():
                     similarity_cache[(node_type, property_key, value)] = matches
 
-            # Pre-pass: collect non-exact items for a single batched LLM call
             batch_for_llm = {}  # item -> [(candidate, score), ...]
             for node in updated_json.get("nodes"):
                 node_type = node.get("type")
                 properties = node.get("properties", {})
-
-                # Check id field — skip straight to LLM disambiguation only if neither the
-                # real `id` property nor the display property gave an exact match.
                 node_db_id = node.get("id", "")
                 if node_db_id:
                     direct = similarity_cache.get((node_type, "id", node_db_id), [])
@@ -329,7 +318,6 @@ class Graph:
                         else:
                             batch_for_llm[property_value] = []
 
-            # One LLM call for all ambiguous items → {item: {"value": ..., "auto_accept": bool} | None}
             llm_picks = self._select_best_matching_values_batch(batch_for_llm)
 
             for node in updated_json.get("nodes"):
@@ -340,11 +328,6 @@ class Graph:
                 if not node.get("is_list"):
                     node["status"] = True
 
-                # Validate `id` field if set. Always prefer a match against the real database
-                # `id` property — that's what the Cypher MATCH clause keys on (json_to_cypher.py).
-                # Only fall back to the display property (gene_name, pathway_name, ...) when the
-                # input isn't already a raw id, and flag it for id-resolution below so the
-                # display value gets swapped for the node's actual `id` before querying.
                 node_db_id = node.get("id", "")
                 if node_db_id:
                     id_prop = self._node_id_property.get(node_type.lower())
@@ -387,7 +370,6 @@ class Graph:
                                     {"node_id": node_id, "reason": node["validation_error"]}
                                 )
 
-                # Track removed properties
                 for property_key in list(properties.keys()):
                     property_value = properties[property_key]
 
@@ -595,11 +577,6 @@ class Graph:
                 if self._is_no_match(v):
                     out[k] = None
                 elif isinstance(v, dict) and "value" in v and not self._is_no_match(v["value"]):
-                    # Guard the inner value too, not just the wrapper: the LLM
-                    # sometimes answers "no match" as {"value": "None"} — a dict
-                    # whose value is the literal *string* "None". Taken at face
-                    # value that gets offered to the user as a real substitution
-                    # ("closest match is 'None'"), which is nonsense.
                     out[k] = {"value": v["value"], "auto_accept": bool(v.get("auto_accept", False))}
                 else:
                     out[k] = None
@@ -996,6 +973,15 @@ class Graph:
                     return self._confirmation_needed(validation, unconfirmed, organism)
 
                 return self._annotation_result(query, validation, organism)
+
+            except SimilarityLookupError as e:
+                logger.error(f"Similarity lookup unavailable: {e}")
+                return {
+                    "success": False,
+                    "error": "I couldn't reach the annotation database to look that up. "
+                             "Please try again in a moment.",
+                    "pipeline_status": {"json_extraction": "unavailable"},
+                }
 
             except Exception as e:
                 logger.error(f"Failed to extract JSON query: {str(e)}")

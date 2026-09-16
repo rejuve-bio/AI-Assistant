@@ -4,40 +4,43 @@ from neo4j import GraphDatabase
 
 logger = logging.getLogger(__name__)
 
+
+class SimilarityLookupError(RuntimeError):
+    """The similarity search could not run.
+
+    Distinct from "no similar values": returning empties for a failed lookup
+    makes an outage indistinguishable from a gene that genuinely isn't there,
+    and the user gets told it doesn't exist.
+    """
+
 class Neo4jConnection:
-    """Singleton class to manage Neo4j connection"""
-    _instance = None
-    _driver = None
+    _drivers = {}  # uri -> driver
 
-    def __new__(cls, uri: str = None, username: str = None, password: str = None):
-        if cls._instance is None:
-            cls._instance = super(Neo4jConnection, cls).__new__(cls)
-            if uri and username and password:
-                cls._driver = GraphDatabase.driver(uri, auth=(username, password))
-        return cls._instance
+    def __init__(self, uri: str = None, username: str = None, password: str = None):
+        self.uri = uri
+        if uri and username and password and uri not in Neo4jConnection._drivers:
+            Neo4jConnection._drivers[uri] = GraphDatabase.driver(uri, auth=(username, password))
+            logger.info(f"Neo4j driver created for {uri}")
 
-    @classmethod
-    def get_driver(cls):
-        if cls._driver is None:
-            raise ConnectionError("Neo4j connection not initialized. Call with credentials first.")
-        return cls._driver
+    def get_driver(self):
+        driver = Neo4jConnection._drivers.get(self.uri)
+        if driver is None:
+            raise ConnectionError(
+                f"Neo4j connection not initialized for {self.uri!r}. Construct with credentials first."
+            )
+        return driver
 
     def close(self):
-        if self._driver:
-            self._driver.close()
-            self._driver = None
+        driver = Neo4jConnection._drivers.pop(self.uri, None)
+        if driver:
+            driver.close()
 
     def get_similar_property_values_batch(self, label: str,
                                           property_key: str,
                                           search_values: List[str],
                                           top_k: int = 10,
-                                          threshold: float = 0.3) -> dict:
-        """
-        Get similar property values for multiple search values in a single Neo4j query.
+                                          threshold: float = 0.7) -> dict:
 
-        Returns:
-            dict mapping each search_value -> list of (value, similarity) tuples
-        """
         logger.info(f"Batch searching {len(search_values)} values in '{label}.{property_key}'.")
 
         query = f"""
@@ -48,7 +51,11 @@ class Neo4jConnection:
         UNWIND $search_values AS search_value
         UNWIND all_values AS value
         WITH search_value, value,
-             apoc.text.levenshteinSimilarity(LOWER(value), LOWER(search_value)) AS similarity
+             // Jaro-Winkler, not Levenshtein: Levenshtein scores a transposition
+             // as two edits, so "BRAC1" ranks BRCA1 below PRAC1, RAC1 and BRAT1
+             // and it never reaches the candidate list at all.
+             // Note this is a DISTANCE -- 0 is identical.
+             1 - apoc.text.jaroWinklerDistance(LOWER(value), LOWER(search_value)) AS similarity
         WHERE similarity > $threshold
         ORDER BY search_value, similarity DESC
         WITH search_value, collect({{value: value, similarity: similarity}})[..{top_k}] AS top_matches
@@ -71,34 +78,35 @@ class Neo4jConnection:
 
         except Exception as e:
             logger.error(f"Error in batch Neo4j query: {str(e)}")
-            return {sv: [] for sv in search_values}
+            raise SimilarityLookupError(str(e)) from e
 
     def get_ids_for_property_values_batch(self, label: str,
                                           property_key: str,
                                           values: List[str]) -> dict:
-        """
-        Resolve already-confirmed display-property values (e.g. gene_name "FTO",
-        pathway_name "Signaling by Insulin receptor") back to the node's real `id`
-        property, since Cypher MATCH clauses always key on `id`, not on the
-        display property.
-
-        Returns:
-            dict mapping each display value -> its node's `id` value (or None if not found)
-        """
         logger.info(f"Resolving database id for {len(values)} value(s) in '{label}.{property_key}'.")
 
         query = f"""
         MATCH (n:{label})
         WHERE n.{property_key} IN $values
-        WITH n.{property_key} AS value, head(collect(n.id)) AS db_id
-        RETURN value, db_id
+        WITH n.{property_key} AS value, n.id AS id
+        ORDER BY id
+        WITH value, collect(id) AS ids
+        RETURN value, ids[0] AS db_id, size(ids) AS candidate_count
         """
 
         try:
             driver = self.get_driver()
             with driver.session() as session:
                 result = session.run(query, values=values)
-                resolved = {record["value"]: record["db_id"] for record in result}
+                resolved = {}
+                for record in result:
+                    if record["candidate_count"] > 1:
+                        logger.warning(
+                            f"'{record['value']}' matches {record['candidate_count']} "
+                            f"distinct '{label}.id' values in '{label}.{property_key}' — "
+                            f"using {record['db_id']!r} (lowest id) deterministically."
+                        )
+                    resolved[record["value"]] = record["db_id"]
                 for v in values:
                     resolved.setdefault(v, None)
                 return resolved
@@ -112,18 +120,7 @@ class Neo4jConnection:
                                     search_value: str,
                                     top_k: int = 10,
                                     threshold: float = 0.3):
-        """
-        Get distinct top k similar property values from Neo4j using Levenshtein similarity.
-        
-        Args:
-            label (str): Node label to search (e.g., "gene")
-            property_key (str): Property key to search (e.g., "gene_name")
-            search_value (str): Value to search for
-            threshold (float): Similarity threshold (0 to 1)
-        
-        Returns:
-            List[Tuple[str, float]]: List of tuples containing distinct similar property values and their similarity scores
-        """
+ 
         logger.info(f"Searching for similar values for '{search_value}' in label '{label}' with property key '{property_key}'.")
 
         query = f"""

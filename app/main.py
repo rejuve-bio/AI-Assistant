@@ -7,13 +7,14 @@ from .socket_manager import emit_to_user
 from .Galaxy_integration.galaxy import GalaxyHandler
 from .biogpt_agent.biogpt import BioGPTAgent
 from .agents import (
-    AgentNodesMixin,
+    ToolsMixin,
     AggregationMixin,
     ConfirmationMixin,
     ThreadMemoryMixin,
     WorkflowMixin,
 )
 from .agents.state import ANALYZING_MSG
+from .storage.redis import redis_manager
 from typing import List, Any, Dict, Optional
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
@@ -29,7 +30,7 @@ load_dotenv()
 
 class AiAssistance(
     WorkflowMixin,
-    AgentNodesMixin,
+    ToolsMixin,
     ConfirmationMixin,
     AggregationMixin,
     ThreadMemoryMixin,
@@ -90,23 +91,18 @@ class AiAssistance(
             f"content_ids: {content_ids}, graph_id: {graph_id}, urls: {urls}"
         )
         try:
-            # Create initial state
             initial_state = {
-                "messages": [HumanMessage(content=message)],
+                "messages": [],
                 "user_query": message,
                 "user_id": user_id,
                 "token": token,
-                "query_types": [],
                 "response": {"text": "", "json_format": None},
                 "error": "",
                 "content_ids": content_ids,
                 "graph_id": graph_id,
                 "urls": urls,
                 "resource": resource,
-                "pipeline_details": {},
                 "annotation_response": None,
-                "pending_confirmation": None,
-                "confirmation_outcome": None,
                 "rag_response": None,
                 "galaxy_response": None,
                 "biogpt_response": None,
@@ -114,9 +110,10 @@ class AiAssistance(
                 "hypothesis_response": None,
                 "pubmed_response": None,
                 "clinical_trials_response": None,
-                "stop_pipeline": False,
-                "agents_to_run": [],
                 "agents_completed": [],
+                "loop_iterations": 0,
+                "one_round_only": None,
+                "current_tool_call": None,
             }
 
             config = {"configurable": {"thread_id": thread_id}}
@@ -136,21 +133,32 @@ class AiAssistance(
             emit_to_user(user=user_id, message=error_response, status="error")
             return error_response
 
+    @staticmethod
+    def _pending_question(state) -> Dict[str, Any]:
+        """The question a paused graph is waiting on, from its interrupt payload."""
+        for task in getattr(state, "tasks", ()) or ():
+            for pending in getattr(task, "interrupts", ()) or ():
+                if isinstance(pending.value, dict):
+                    return pending.value
+                if pending.value:
+                    return {"confirmation_text": str(pending.value)}
+        return {}
+
+
     def _extract_response_or_interrupt(self, result: Dict[str, Any], config: dict) -> Dict[str, Any]:
         """Build the response dict from an invoke() result, whether the graph
         finished normally or paused on any agent's confirmation interrupt().
         """
         state = self.app.get_state(config)
         if state.next:
-            pending_confirmation = state.values.get("pending_confirmation") or {}
-            data = pending_confirmation.get("data", {})
+            question = self._pending_question(state)
             return {
-                "text": pending_confirmation.get("confirmation_text", ""),
+                "text": question.get("confirmation_text", ""),
                 "json_format": None,
                 "needs_confirmation": True,
                 "confirmation": {
-                    "options": self._confirmation_options(data),
-                    "allow_free_text": True,
+                    "options": question.get("options", []),
+                    "allow_free_text": question.get("allow_free_text", True),
                 },
                 "agents_completed": result.get("agents_completed", []),
             }
@@ -248,8 +256,34 @@ class AiAssistance(
         resume: Optional[str] = None,
         thread_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        
         thread_id = thread_id or user_id
+        if not redis_manager.acquire_thread_lock(thread_id):
+            logger.info(f"Thread {thread_id} is already processing a request — rejecting the concurrent one")
+            return {
+                "text": "I'm still working on your previous message in this conversation — "
+                        "please wait for it to finish before sending another.",
+                "json_format": None,
+                "status": "busy",
+            }
+        try:
+            return self._assistant_response_locked(
+                query, user_id, token, graph_id, urls, content_ids, resource, resume, thread_id,
+            )
+        finally:
+            redis_manager.release_thread_lock(thread_id)
+
+    def _assistant_response_locked(
+        self,
+        query: str,
+        user_id: str,
+        token: str,
+        graph_id: Optional[str],
+        urls: Optional[List[str]],
+        content_ids: Optional[List[str]],
+        resource: Optional[Any],
+        resume: Optional[str],
+        thread_id: str,
+    ) -> Dict[str, Any]:
         try:
             logger.info(
                 f"Assistant response called with query={query}, user_id={user_id}, thread_id={thread_id}, "

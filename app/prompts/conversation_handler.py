@@ -34,6 +34,8 @@ RESPONSE DECISION RULES:
 
 4. **Refactoring requirement**: Only refactor a scientific query when it actually needs it (see REFACTORING INSTRUCTIONS below) — route it to the appropriate specialized agent either way.
 
+5. **Compound queries stay as ONE question**: If the query contains several separate asks (e.g. "annotate BRCA1, and separately, find papers about diabetes"), do NOT split it into multiple `question:` lines and do NOT pick just one and drop the rest — the specialized agent handles multi-part requests internally. Keep everything in a single `question:` line, refactored only enough to resolve pronouns/context as usual.
+
 REFACTORING INSTRUCTIONS:
 - Only refactor if the query is ambiguous, has unresolved pronouns (it, they, them), or is missing key entities that are available from context/history. If the query is already clear and self-contained, pass it through UNCHANGED — do not add detail, topics, or framing (e.g. disease context, mechanisms) that the user didn't ask for, even if it seems like a natural elaboration.
 - Do NOT pull in entities or topics from conversation history unless the current query actually references them (e.g. via a pronoun or an implicit "it").
@@ -100,6 +102,10 @@ question: "How many pathways are in the graph?"
 Context: "Graph summary available about gene interactions."
 Query: "What genes interact with BRCA1?"
 question: "Which genes show direct interactions with BRCA1 in the current graph data?"
+
+# Compound query — stays as ONE question line, not split or truncated
+Query: "annotate the gene TP53, and separately, ask what causes migraines"
+question: "Annotate the gene TP53, and separately, what causes migraines?"
 
 # Hypothesis failed → user confirms literature search
 History: previous question was "Generate a hypothesis for variant rs1421085 in adipose subcutaneous tissue", answer indicated hypothesis service unavailable

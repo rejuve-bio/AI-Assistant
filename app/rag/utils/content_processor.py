@@ -66,8 +66,8 @@ class ContentProcessor:
             r"^\s*>\s+", r"", markdown_text, flags=re.MULTILINE
         )  # Remove blockquotes
         markdown_text = re.sub(
-            r"```[\s\S]*?```", "", markdown_text
-        )  # Remove code blocks
+            r"```(?:\w*\n)?([\s\S]*?)```", r"\1", markdown_text
+        )  
         markdown_text = re.sub(r"`([^`]+)`", r"\1", markdown_text)  # Remove inline code
         markdown_text = re.sub(
             r"^[-*_]{3,}$", "", markdown_text, flags=re.MULTILINE
