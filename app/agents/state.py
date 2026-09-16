@@ -3,36 +3,44 @@ from typing import Annotated, Any, Dict, List, Optional, TypedDict
 
 from langchain_core.messages import BaseMessage
 
+UNRESOLVED_MARKER = "[not run] "
+
+
+def merge_errors(existing, new):
+    if not new:
+        return ""
+    if existing and existing != new:
+        return f"{existing}; {new}"
+    return new
+
+
+def keep_latest(existing, new):
+    return new if new is not None else existing
+
 
 class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], operator.add]
     user_query: str
     user_id: str
     token: str
-    query_types: List[str]
     response: Dict[str, Any]
-    error: str
+    error: Annotated[str, merge_errors]
     content_ids: Optional[List[str]]
     graph_id: Optional[str]
     urls: Optional[List[str]]
     resource: Optional[Any]
-    pipeline_details: Dict[str, Any]
-    # Agent-specific responses with source attribution
-    annotation_response: Optional[Dict[str, Any]]
-    # Generic pause/resume payload for ANY agent's human-in-the-loop confirmation,
-    pending_confirmation: Optional[Dict[str, Any]]
-    confirmation_outcome: Optional[str]
-    rag_response: Optional[Dict[str, Any]]
-    galaxy_response: Optional[Dict[str, Any]]
-    content_retrieval_response: Optional[Dict[str, Any]]
-    biogpt_response:Optional[Dict[str, Any]]
-    hypothesis_response: Optional[Dict[str, Any]]
-    pubmed_response: Optional[Dict[str, Any]]
-    clinical_trials_response: Optional[Dict[str, Any]]
-    # Parallel execution control
-    agents_to_run: List[str]
+    annotation_response: Annotated[Optional[Dict[str, Any]], keep_latest]
+    rag_response: Annotated[Optional[Dict[str, Any]], keep_latest]
+    galaxy_response: Annotated[Optional[Dict[str, Any]], keep_latest]
+    content_retrieval_response: Annotated[Optional[Dict[str, Any]], keep_latest]
+    biogpt_response: Annotated[Optional[Dict[str, Any]], keep_latest]
+    hypothesis_response: Annotated[Optional[Dict[str, Any]], keep_latest]
+    pubmed_response: Annotated[Optional[Dict[str, Any]], keep_latest]
+    clinical_trials_response: Annotated[Optional[Dict[str, Any]], keep_latest]
     agents_completed: Annotated[List[str], operator.add]
-    stop_pipeline: Optional[bool]
+    loop_iterations: int
+    one_round_only: Optional[bool]
+    current_tool_call: Optional[Dict[str, Any]]
 
 
 ANNOTATION_DB = "annotation database"

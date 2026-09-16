@@ -15,6 +15,9 @@ if not JWT_SECRET:
     print("Error: JWT_SECRET not found in .env")
     sys.exit(1)
 
+SERVER_PORT = os.getenv("FASTAPI_PORT", "8000")
+SERVER_URL = f"http://localhost:{SERVER_PORT}"
+
 # Get username from command line argument, default to user1
 username = sys.argv[1] if len(sys.argv) > 1 else "user1"
 
@@ -59,8 +62,7 @@ def input_thread():
 if __name__ == '__main__':
     print(f"Starting client for {username}...")
     try:
-        # Note: socket.io-client passes custom headers this way
-        sio.connect("http://localhost:8000", headers={"Authorization": f"Bearer {token}"})
+        sio.connect(SERVER_URL, headers={"Authorization": f"Bearer {token}"})
         
         # Start a thread to read user input so it doesn't block the socketio event loop
         t = threading.Thread(target=input_thread)
@@ -70,4 +72,4 @@ if __name__ == '__main__':
         sio.wait()
     except socketio.exceptions.ConnectionError as e:
         print(f"Connection failed: {e}")
-        print("Make sure your FastAPI server is running on http://localhost:8000")
+        print(f"Make sure your FastAPI server is running on {SERVER_URL}")

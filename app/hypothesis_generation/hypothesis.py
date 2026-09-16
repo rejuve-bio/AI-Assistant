@@ -443,8 +443,7 @@ class HypothesisGeneration:
         # Fallback (should not reach here)
         return {"text": f"No hypothesis is generated: I couldn't find a project containing both **{variant}** and **{tissue}**."}
 
-    def _run_enrichment_pipeline(self, token: str, params: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-        """Run enrichment steps 1–4 and return the final hypothesis result or an error dict."""
+    def _start_enrichment(self, token: str, params: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         # Step 1: Start Enrichment
         emit_to_user(user=user_id, message=f"Starting enrichment for {params.get('variant')}...")
         step1_res = self._step_1_enrich(token, params)
@@ -470,33 +469,28 @@ class HypothesisGeneration:
             logger.error(step3_res["error"])
             return {"text": f"Analysis completed, but failed to retrieve results: {step3_res['error']}"}
 
-        # Select best GO term (Logic: Top Rank / Lowest P-value)
         go_terms = step3_res.get("GO_terms", [])
         if not go_terms:
             return {"text": "Analysis completed, but no significant GO terms were found."}
 
-        best_go = go_terms[0]
-        best_go_id = best_go["id"]
-        best_go_name = best_go["name"]
+        return {"hypothesis_id": hypothesis_id, "enrich_id": enrich_id, "go_terms": go_terms}
 
-        emit_to_user(user=user_id, message=f"Identified top mechanism: {best_go_name}")
-
-        # Step 4: Final Generation
+    def _finish_enrichment(self, token: str, hypothesis_id: str, enrich_id: str,
+                           go_id: str, user_id: str) -> Dict[str, Any]:
+        """Step 4: generate the final hypothesis for whichever GO term was
+        chosen (by the user, via confirmation)."""
         emit_to_user(user=user_id, message="Generating final hypothesis...")
-        step4_res = self._step_4_generate(token, enrich_id, best_go_id)
+        step4_res = self._step_4_generate(token, enrich_id, go_id)
         if "error" in step4_res:
             logger.error(step4_res["error"])
             return {"text": f"Failed to generate final hypothesis summary: {step4_res['error']}"}
 
-        summary = step4_res["summary"]
-        graph = step4_res["graph"]
-
         return {
-            "text": summary,
+            "text": step4_res["summary"],
             "resource": {
                 "id": hypothesis_id,
                 "type": "hypothesis",
-                "graph": graph # pass graph data if needed by frontend
+                "graph": step4_res["graph"],
             }
         }
 
@@ -536,4 +530,4 @@ class HypothesisGeneration:
              logger.warning(f"Project validation failed for {params['variant']} in {params['tissue_name']}")
              return self._format_validation_error(error_details)
 
-        return self._run_enrichment_pipeline(token, params, user_id)
+        return self._start_enrichment(token, params, user_id)
