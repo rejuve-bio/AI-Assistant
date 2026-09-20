@@ -87,13 +87,15 @@ def register_socket_events(sio_instance, fastapi_app):
 
     @sio_instance.event
     async def join_room(sid, data):
-        """Handle client joining a specific room (usually user-specific)."""
         session = await sio_instance.get_session(sid)
         user_id = session.get("user_id")
-        if user_id:
-            await sio_instance.enter_room(sid, user_id)
-            logger.info(f"User {user_id} joined room")
-            await sio_instance.emit("response", {"response": f"user {user_id} joined room"}, room=user_id)
+        if not user_id:
+            return
+        thread_id = (data or {}).get("thread_id")
+        room = _room_for(user_id, thread_id)
+        await sio_instance.enter_room(sid, room)
+        logger.info(f"User {user_id} joined room {room}")
+        await sio_instance.emit("response", {"response": f"user {user_id} joined room"}, room=room)
 
     @sio_instance.event
     async def question(sid, data):
@@ -109,7 +111,28 @@ def register_socket_events(sio_instance, fastapi_app):
             await sio_instance.emit("error", {"error": "Invalid question data"}, room=sid)
             return
 
-        logger.info(f"Received question from {user_id}: {query}")
+        room = _room_for(user_id, thread_id)
+        await sio_instance.enter_room(sid, room)
+
+        logger.info(f"Received question from {user_id} (thread={thread_id}): {query}")
+
+        lock_key = thread_id or user_id
+        if not redis_manager.acquire_thread_lock(lock_key):
+            logger.info(f"Thread {lock_key} is already processing a request — ignoring the concurrent one")
+            await sio_instance.emit(
+                "response",
+                {
+                    "status": "completed",
+                    "response": {
+                        "text": "I'm still working on your previous message in this conversation — "
+                                "please wait for it to finish before sending another.",
+                        "json_format": None,
+                        "status": "busy",
+                    },
+                },
+                room=room,
+            )
+            return
 
         try:
             ai_assistant = fastapi_app.state.ai_assistant
@@ -128,14 +151,20 @@ def register_socket_events(sio_instance, fastapi_app):
             await sio_instance.emit(
                 "response",
                 {"status": "completed", "response": responses},
-                room=user_id,
+                room=room,
             )
         except Exception as e:
             logger.error(f"Error processing question: {e}", exc_info=True)
-            await sio_instance.emit("error", {"error": str(e)}, room=user_id)
+            await sio_instance.emit("error", {"error": str(e)}, room=room)
+        finally:
+            redis_manager.release_thread_lock(lock_key)
 
 
-def emit_to_user(user, message, status="update"):
+def _room_for(user, thread_id=None):
+    return f"{user}:{thread_id}" if thread_id else user
+
+
+def emit_to_user(user, message, status="update", thread_id=None):
     """Helper method to emit updates to a user, safe to call from any thread.
 
     Called synchronously from deep inside business logic (main.py,
@@ -148,7 +177,7 @@ def emit_to_user(user, message, status="update"):
             logger.warning("Socket.IO not ready yet, dropping emit")
             return
         asyncio.run_coroutine_threadsafe(
-            sio.emit("update", {"status": status, "response": message}, room=user),
+            sio.emit("update", {"status": status, "response": message}, room=_room_for(user, thread_id)),
             _main_loop,
         )
     except Exception as e:

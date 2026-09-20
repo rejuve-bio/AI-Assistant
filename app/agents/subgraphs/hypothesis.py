@@ -19,6 +19,7 @@ UNAVAILABLE_TEXT = (
 class HypothesisState(TypedDict, total=False):
     user_query: str
     user_id: str
+    thread_id: Optional[str]
     token: str
     pending: Optional[Dict[str, Any]]
     confirmation_text: str
@@ -76,6 +77,7 @@ def build_hypothesis_subgraph(hypothesis_generation):
                 token=state.get("token"),
                 user_query=state["user_query"],
                 user_id=state["user_id"],
+                thread_id=state.get("thread_id"),
             )
         except Exception as e:
             logger.error("Error in hypothesis agent", exc_info=True)
@@ -141,6 +143,7 @@ def build_hypothesis_subgraph(hypothesis_generation):
             enrich_id=pending.get("enrich_id"),
             go_id=go_id,
             user_id=state["user_id"],
+            thread_id=state.get("thread_id"),
         )
         succeeded = isinstance(response.get("resource"), dict) and response["resource"].get("type") == "hypothesis"
         return {

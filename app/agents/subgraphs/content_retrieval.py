@@ -22,6 +22,7 @@ class ContentRetrievalState(TypedDict, total=False):
     urls: Optional[List[str]]
     content_ids: Optional[List[str]]
     resource: Optional[Any]
+    thread_id: Optional[str]
     content_parts: Annotated[List[Dict[str, Any]], operator.add]
     sources: Annotated[List[str], operator.add]
     graph_covers_query: bool
@@ -39,6 +40,7 @@ def build_content_retrieval_subgraph(rag, answer_from_graph_summaries, store):
             graph_id=graph_id,
             token=state.get("token"),
             resource=state.get("resource"),
+            thread_id=state.get("thread_id"),
         )
         if not summary:
             return {}

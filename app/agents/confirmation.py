@@ -54,7 +54,7 @@ class ConfirmationMixin:
                 "json_format": None,
                 "agents_completed": [],
             }
-            emit_to_user(user=user_id, message=error_response, status="error")
+            emit_to_user(user=user_id, message=error_response, status="error", thread_id=thread_id)
             return error_response
 
 
@@ -71,7 +71,7 @@ class ConfirmationMixin:
                 "json_format": None,
                 "agents_completed": [],
             }
-            emit_to_user(user=user_id, message=error_response, status="error")
+            emit_to_user(user=user_id, message=error_response, status="error", thread_id=thread_id)
             return error_response
 
 
