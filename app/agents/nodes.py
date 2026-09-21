@@ -61,11 +61,28 @@ class AgentNodesMixin:
                     "source": ANNOTATION_DB
                 }
 
-                return {
+                state_update = {
                     "annotation_response": response_dict,
                     "agents_completed": ["annotation_agent"],
                     "messages": [AIMessage(content="Annotation processing completed")]
                 }
+
+                # Biological annotations produce falsifiable claims (e.g.
+                # "TP53 interacts_with MDM2").  Inject pubmed_agent so the
+                # consensus analyzer can ground them against live literature.
+                if query_type == "annotation_biological" and json_format:
+                    predicates = json_format.get("predicates", [])
+                    if predicates:
+                        current_agents = state.get("agents_to_run", [])
+                        if "pubmed_agent" not in current_agents:
+                            logger.info(
+                                "Biological annotation produced %d predicate(s) "
+                                "— injecting pubmed_agent for consensus analysis",
+                                len(predicates),
+                            )
+                            state_update["agents_to_run"] = current_agents + ["pubmed_agent"]
+
+                return state_update
 
             else:
                 error_msg = pipeline_response.get("error", "Unknown error")
@@ -462,6 +479,8 @@ class AgentNodesMixin:
 
     def _pubmed_agent(self, state: AgentState) -> Dict[str, Any]:
         from app.rag.literature import search_pubmed
+        from app.rag.literature_consensus import LiteratureConsensusAnalyzer
+
         user_id = state["user_id"]
         hypothesis = state.get("hypothesis_response") or {}
         context = hypothesis.get("text", "")
@@ -483,8 +502,36 @@ class AgentNodesMixin:
                         f"  URL: {p.get('url', '')}"
                     )
                 text = "\n".join(lines)
+
+            # Classify each paper's stance and detect contradictions.
+            # Claim priority: hypothesis text > annotation predicates > user query.
+            consensus_result = None
+            if papers:
+                claim = ""
+                annotation = state.get("annotation_response") or {}
+                if hypothesis.get("text"):
+                    claim = hypothesis["text"]
+                elif annotation:
+                    claim = LiteratureConsensusAnalyzer.extract_claim_from_annotation(annotation) or ""
+                if not claim:
+                    claim = state["user_query"]
+
+                try:
+                    emit_to_user(user=user_id, message="Analyzing literature consensus...")
+                    consensus_result = self.consensus_analyzer.analyze_consensus(claim, papers)
+                    logger.info(
+                        "Consensus analysis: %s (support=%d, oppose=%d, inconclusive=%d)",
+                        consensus_result.get("consensus_label"),
+                        consensus_result.get("support_count", 0),
+                        consensus_result.get("oppose_count", 0),
+                        consensus_result.get("inconclusive_count", 0),
+                    )
+                except Exception as ce:
+                    logger.error("Consensus analysis failed (non-fatal): %s", ce, exc_info=True)
+
             return {
                 "pubmed_response": {"text": text, "source": "PubMed", "items": papers},
+                "consensus_result": consensus_result,
                 "agents_completed": ["pubmed_agent"],
                 "messages": [AIMessage(content="PubMed search completed")],
             }

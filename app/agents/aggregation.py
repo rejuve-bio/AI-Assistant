@@ -65,6 +65,33 @@ class AggregationMixin:
         return "\n\n".join(sections)
 
 
+    def _build_consensus_block(self, state: dict) -> str:
+        """Build a literature consensus badge and optional contradiction warning."""
+        consensus = state.get("consensus_result")
+        if not consensus or not consensus.get("consensus_label"):
+            return ""
+
+        label = consensus["consensus_label"]
+        support = consensus.get("support_count", 0)
+        oppose = consensus.get("oppose_count", 0)
+        inconclusive = consensus.get("inconclusive_count", 0)
+        summary = consensus.get("summary", "")
+
+        parts = [
+            f"📚 **Literature consensus: {label.replace('_', ' ').title()}** "
+            f"({support} supporting, {oppose} opposing, {inconclusive} inconclusive)"
+        ]
+        if summary:
+            parts.append(f"   {summary}")
+
+        warning = consensus.get("warning_text")
+        if warning:
+            parts.append("")
+            parts.append(warning)
+
+        return "\n".join(parts)
+
+
     def _aggregate_annotation_response(self, annotation_resp: dict, agent_outputs: list) -> tuple:
         if annotation_resp.get("needs_confirmation"):
             return None, None, True
@@ -155,9 +182,18 @@ class AggregationMixin:
 
         if json_format and not agent_outputs:
             # An annotation was built but no agent produced prose to merge.
+            annotation_text = self._build_annotation_text(json_format)
+
+            consensus_block = self._build_consensus_block(state)
+            if consensus_block:
+                annotation_text = annotation_text.rstrip() + "\n\n" + consensus_block
+            sources_footer = self._build_sources_footer(state)
+            if sources_footer:
+                annotation_text = annotation_text.rstrip() + "\n\n" + sources_footer
+
             return {
                 "response": {
-                    "text": self._build_annotation_text(json_format),
+                    "text": annotation_text,
                     "json_format": json_format,
                     "organism": organism,
                 }
@@ -207,6 +243,9 @@ class AggregationMixin:
         succeeded = isinstance(resource, dict) and resource.get("type") == "hypothesis"
         if succeeded:
             text = resp.get("text", "").rstrip()
+            consensus_block = self._build_consensus_block(state)
+            if consensus_block:
+                text += "\n\n" + consensus_block
             footer = self._build_sources_footer(state)
             if footer:
                 text += "\n\n" + footer
@@ -299,6 +338,10 @@ class AggregationMixin:
 
             aggregated_text = self.advanced_llm.generate(prompt)
             logger.info(f"Successfully aggregated response: {aggregated_text[:100]}...")
+
+            consensus_block = self._build_consensus_block(state)
+            if consensus_block:
+                aggregated_text = aggregated_text.rstrip() + "\n\n" + consensus_block
 
             footer = self._build_sources_footer(state)
             if footer:

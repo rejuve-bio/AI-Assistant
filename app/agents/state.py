@@ -28,6 +28,7 @@ class AgentState(TypedDict):
     biogpt_response:Optional[Dict[str, Any]]
     hypothesis_response: Optional[Dict[str, Any]]
     pubmed_response: Optional[Dict[str, Any]]
+    consensus_result: Optional[Dict[str, Any]]
     clinical_trials_response: Optional[Dict[str, Any]]
     # Parallel execution control
     agents_to_run: List[str]

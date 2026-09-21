@@ -46,11 +46,14 @@ def mock_external_services():
     mock_model_instance.encode.return_value = [0.0] * 384  # fake embedding
 
     # Patch the original SentenceTransformer class from the library
+    from langgraph.checkpoint.memory import InMemorySaver
+
     with patch('pymongo.MongoClient', return_value=mongo_client_mock), \
          patch('redis.Redis', return_value=redis_mock), \
          patch('qdrant_client.QdrantClient', return_value=qdrant_mock), \
          patch('logging.handlers.TimedRotatingFileHandler', return_value=log_mock), \
-         patch('sentence_transformers.SentenceTransformer', return_value=mock_model_instance):
+         patch('sentence_transformers.SentenceTransformer', return_value=mock_model_instance), \
+         patch('app.create_checkpointer', return_value=InMemorySaver()):
         yield
 
 @pytest.fixture
