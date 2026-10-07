@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-staging
+  namespace: ai-assistant-staging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-staging
+  template:
+    metadata:
+      labels:
+        app: redis-staging
+    spec:
+      containers:
+        - name: redis-staging
+          image: redis:6-alpine
+          resources:
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+          ports:
+            - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: ai-assistant-staging
+spec:
+  selector:
+    app: redis-staging
+  ports:
+    - port: 6379
+      targetPort: 6379

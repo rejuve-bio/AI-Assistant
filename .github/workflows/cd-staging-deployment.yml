@@ -1,141 +1,176 @@
-name: CD - Deploy AI Assistant (Staging Only)
+name: CD - Deploy AI Assistant to Kubernetes (Staging Only)
 
 on:
   repository_dispatch:
     types: [deploy-staging]
 
+env:
+  DOCKER_HUB_ORG: rejuvebio
+
 jobs:
-  deploy:
-    runs-on: self-hosted
+  deploy-dev:
+    runs-on: [self-hosted, dev-runner]
     steps:
       - name: Debug workflow info
         run: |
           echo "Event Type: ${{ github.event.action }}"
           echo "Image Tag: ${{ github.event.client_payload.image_tag }}"
           echo "Triggered by: ${{ github.actor }}"
-          echo "Current user: $(whoami)"
-          echo "Home directory: $HOME"
-          echo "Working directory: $(pwd)"
-          echo "User ID: $(id -u)"
-          echo "Group ID: $(id -g)"
 
       - name: Checkout current repository
         uses: actions/checkout@v4
 
-      - name: Checkout Ansible repository
-        uses: actions/checkout@v4
+      - name: Setup kubectl
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_STAGING }}" > ~/.kube/config
+          chmod 600 ~/.kube/config
+          echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
+
+      - name: Deploy to Kubernetes
+        run: |
+          set -euo pipefail
+
+          NAMESPACE="ai-assistant-staging"
+          IMAGE="${{ github.event.client_payload.image_tag }}"
+
+          if [ -z "$IMAGE" ]; then
+            IMAGE="${{ env.DOCKER_HUB_ORG }}/ai-assistant:staging"
+          fi
+
+          echo "Using image: $IMAGE"
+
+          kubectl set image deployment/assistant-staging \
+            assistant-staging=${IMAGE} \
+            -n "$NAMESPACE"
+
+          kubectl rollout restart deployment/assistant-staging -n "$NAMESPACE"
+
+      - name: Wait for rollout
+        run: |
+          set -euo pipefail
+          kubectl rollout status deployment/assistant-staging -n ai-assistant-staging --timeout=180s
+
+      - name: Verify pods
+        run: |
+          kubectl get pods -n ai-assistant-staging
+
+      - name: Send success email
+        if: success()
+        uses: dawidd6/action-send-mail@v3
         with:
-          repository: rejuve-bio/ansible-deploy
-          path: ansible-deploy
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "CD SUCCESS - AI Assistant Deployed to Dev"
+          to: ${{ secrets.RECIEVER_EMAIL }}
+          from: GitHub Actions <${{ secrets.EMAIL_USERNAME }}>
+          body: |
+            AI Assistant deployed to the dev server successfully!
+            Repository: ${{ github.repository }}
+            Triggered by: ${{ github.actor }}
+            Image: ${{ env.DOCKER_HUB_ORG }}/ai-assistant:staging
+            Pods running in ai-assistant-staging namespace.
+            Approve the deploy-staging job in this run to promote.
 
-      - name: Create .env file for AI-Assistant
+      - name: Send failure email
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "CD FAILED - AI Assistant Dev Deploy"
+          to: ${{ secrets.RECIEVER_EMAIL }}
+          from: GitHub Actions <${{ secrets.EMAIL_USERNAME }}>
+          body: |
+            AI Assistant dev deployment failed!
+            Repository: ${{ github.repository }}
+            Triggered by: ${{ github.actor }}
+            Check logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  deploy-staging:
+    needs: deploy-dev
+    environment: production
+    runs-on: [self-hosted, prod-runner]
+    steps:
+      - name: Debug workflow info
         run: |
-          mkdir -p $HOME/services/AI-Assistant
-          cat > $HOME/services/AI-Assistant/.env << EOF
-          # === Port Configuration ===
-          FLASK_HOST_PORT=${{ secrets.FLASK_HOST_PORT }}
-          FLASK_INTERNAL_PORT=${{ secrets.FLASK_INTERNAL_PORT }}
-          REDIS_HOST_PORT=${{ secrets.REDIS_HOST_PORT }}
-          REDIS_INTERNAL_PORT=${{ secrets.REDIS_INTERNAL_PORT }}
-          MONGODB_HOST_PORT=${{ secrets.MONGODB_HOST_PORT }}
-          MONGODB_INTERNAL_PORT=${{ secrets.MONGODB_INTERNAL_PORT }}
-          QDRANT_HOST_PORT=${{ secrets.QDRANT_HOST_PORT }}
-          QDRANT_INTERNAL_PORT=${{ secrets.QDRANT_INTERNAL_PORT }}
-          QDRANT_GRPC_HOST_PORT=${{ secrets.QDRANT_GRPC_HOST_PORT }}
-          QDRANT_GRPC_INTERNAL_PORT=${{ secrets.QDRANT_GRPC_INTERNAL_PORT }}
+          echo "Event Type: ${{ github.event.action }}"
+          echo "Image Tag: ${{ github.event.client_payload.image_tag }}"
+          echo "Triggered by: ${{ github.actor }}"
 
-          # === LLM Configuration ===
-          BASIC_LLM_PROVIDER=${{ secrets.BASIC_LLM_PROVIDER }}
-          BASIC_LLM_VERSION=${{ secrets.BASIC_LLM_VERSION }}
-          ADVANCED_LLM_PROVIDER=${{ secrets.ADVANCED_LLM_PROVIDER }}
-          ADVANCED_LLM_VERSION=${{ secrets.ADVANCED_LLM_VERSION }}
+      - name: Checkout current repository
+        uses: actions/checkout@v4
 
-          # === API Keys ===
-          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
-          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
-
-          # === Application Configuration ===
-          JWT_SECRET=${{ secrets.JWT_SECRET }}
-          MODEL_PATH=${{ secrets.MODEL_PATH }}
-          VECTOR_COLLECTION=${{ secrets.VECTOR_COLLECTION }}
-
-          # === Database Configuration ===
-          MONGO_USERNAME=${{ secrets.MONGO_USERNAME }}
-          MONGO_PASSWORD=${{ secrets.MONGO_PASSWORD }}
-          MONGO_DATABASE=${{ secrets.MONGO_DATABASE }}
-          MONGO_URL=mongodb://${{ secrets.MONGO_USERNAME }}:${{ secrets.MONGO_PASSWORD }}@mongodb:${{ secrets.MONGODB_INTERNAL_PORT }}/
-
-          # === Neo4j Configuration ===
-          NEO4J_URI=${{ secrets.NEO4J_URI }}
-          NEO4J_USERNAME=${{ secrets.NEO4J_USERNAME }}
-          NEO4J_PASSWORD=${{ secrets.NEO4J_PASSWORD }}
-
-          # === Local Model Configuration ===
-          LOCAL_MODEL_HOST=${{ secrets.LOCAL_MODEL_HOST }}
-          LOCAL_MODEL_API_KEY=${{ secrets.LOCAL_MODEL_API_KEY }}
-
-          # === Docker Images ===
-          ai_assistant_staging=rejuvebio/ai-assistant:staging
-          EOF
-
-      - name: Create dynamic inventory
+      - name: Setup kubectl
         run: |
-          cd ansible-deploy
-          mkdir -p inventory
-          CURRENT_USER=$(whoami)
-          USER_HOME=$HOME
-          cat > inventory/hosts.ini <<EOL
-          [AI_Assistant_Remote]
-          localhost ansible_connection=local ansible_user=$CURRENT_USER ansible_become=false ansible_user_dir=$USER_HOME
-          EOL
-          echo "Inventory created for user: $CURRENT_USER"
-          cat inventory/hosts.ini
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_STAGING }}" > ~/.kube/config
+          chmod 600 ~/.kube/config
+          echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
 
-      - name: Create dynamic playbook
+      - name: Deploy to Kubernetes
         run: |
-          cd ansible-deploy
-          mkdir -p playbooks
-          cat > playbooks/deploy_ai_assistant.yml <<EOL
-          ---
-          # deploy_AI_Assistant
-          - name: Deploy AI Assistant Service
-            hosts: AI_Assistant_Remote
-            tags: AI_Assistant_Remote
-            become: no
-            tasks:
-              - include_role:
-                  name: AI_Assistant
-                  tasks_from: staging-production-deploy.yml
-          EOL
-          echo "Playbook created:"
-          cat playbooks/deploy_ai_assistant.yml
+          set -euo pipefail
 
-      - name: Ansible configuration
-        run: |
-          cd ansible-deploy
-          cat > ansible.cfg <<EOL
-          [defaults]
-          interpreter_python = /usr/bin/python3
-          host_key_checking = False
-          inventory = inventory/hosts.ini
-          become = false
-          remote_user = $(whoami)
-          [privilege_escalation]
-          become = false
-          become_method = sudo
-          become_user = root
-          become_ask_pass = false
-          EOL
+          NAMESPACE="ai-assistant-staging"
+          IMAGE="${{ github.event.client_payload.image_tag }}"
 
-      - name: Deploy with Ansible
+          if [ -z "$IMAGE" ]; then
+            IMAGE="${{ env.DOCKER_HUB_ORG }}/ai-assistant:staging"
+          fi
+
+          echo "Using image: $IMAGE"
+
+          kubectl set image deployment/assistant-staging \
+            assistant-staging=${IMAGE} \
+            -n "$NAMESPACE"
+
+          kubectl rollout restart deployment/assistant-staging -n "$NAMESPACE"
+
+      - name: Wait for rollout
         run: |
-          cd ansible-deploy
-          echo "Running as user: $(whoami)"
-          echo "Home directory: $HOME"
-          ansible-playbook -i inventory/hosts.ini playbooks/deploy_ai_assistant.yml \
-            --tags "AI_Assistant_Remote" \
-            --tags "local_network" \
-            -e "install_dir=$HOME/services/AI-Assistant" \
-            -e "ansible_user_id=$(whoami)" \
-            -e "ansible_user_dir=$HOME" \
-            -v
+          set -euo pipefail
+          kubectl rollout status deployment/assistant-staging -n ai-assistant-staging --timeout=180s
+
+      - name: Verify pods
+        run: |
+          kubectl get pods -n ai-assistant-staging
+
+      - name: Send success email
+        if: success()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "CD SUCCESS - AI Assistant Deployed to Production"
+          to: ${{ secrets.RECIEVER_EMAIL }}
+          from: GitHub Actions <${{ secrets.EMAIL_USERNAME }}>
+          body: |
+            AI Assistant deployed to production successfully!
+            Repository: ${{ github.repository }}
+            Triggered by: ${{ github.actor }}
+            Image: ${{ env.DOCKER_HUB_ORG }}/ai-assistant:staging
+            Pods running in ai-assistant-staging namespace.
+
+      - name: Send failure email
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "CD FAILED - AI Assistant Production Deploy"
+          to: ${{ secrets.RECIEVER_EMAIL }}
+          from: GitHub Actions <${{ secrets.EMAIL_USERNAME }}>
+          body: |
+            AI Assistant production deployment failed!
+            Repository: ${{ github.repository }}
+            Triggered by: ${{ github.actor }}
+            Check logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
