@@ -169,21 +169,33 @@ class AiAssistance:
             and invocations—including their usage, current state, 
             and any related queries—handling all information requests about Galaxy entities.
             """
+            try:
+                prompt_galaxy=f"""
+                **Role**:
+                You are a senior bioinformatics specialist and automation expert in Galaxy tools, workflows, and datasets.
+                Classify the inputed query into one of the following catagories: 'dataset', 'tool', 'workflow'.
+                Classification should be based on the content and the intent of the query and not on the specific words used.
+                Respond with the classification only and nothiing else.
+                **input**: {message}
+                """
+                response= self.advanced_llm.generate(prompt=prompt_galaxy)
+                print(f"response from galaxy {response}")
+                response = response.strip().lower()
 
-            prompt_galaxy=f"""
-            **Role**:
-            You are a senior bioinformatics specialist and automation expert in Galaxy tools, workflows, and datasets.
-            Classify the inputed query into one of the following catagories: 'dataset', 'tool', 'workflow'.
-            Classification should be based on the content and the intent of the query and not on the specific words used.
-            Respond with the classification only and nothiing else.
-            **input**: {message}
-            """
-            response= self.advanced_llm.generate(prompt=prompt_galaxy)
-            print(f"response from galaxy {response}")
-            response = response.strip().lower()
-            informer= GalaxyInformer(entity_type=response)
-            galaxy_response=informer.get_entity_info(search_query = message, user_id = user_id)
-            return galaxy_response['response']
+                if response not in ('tool', 'workflow', 'dataset'):
+                    logger.warning(f"Unexpected Galaxy entity classification: {response!r}")
+                    return f"I couldn't determine the Galaxy entity type from your query. Please specify if you're asking about a tool, workflow, or dataset."
+
+                informer= GalaxyInformer(entity_type=response)
+                galaxy_response=informer.get_entity_info(search_query = message, user_id = user_id)
+                return galaxy_response['response']
+
+            except ConnectionError:
+                logger.error("Galaxy EU is unreachable", exc_info=True)
+                return "Galaxy EU is currently unreachable. Please check your connection or try again later."
+            except Exception as e:
+                logger.error(f"Galaxy query failed: {e}", exc_info=True)
+                return f"I encountered an error while querying Galaxy: {e}"
         
         # Initialize the classifier agent
         # classify the users question
