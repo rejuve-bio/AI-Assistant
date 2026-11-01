@@ -7,13 +7,14 @@ from .socket_manager import emit_to_user
 from .Galaxy_integration.galaxy import GalaxyHandler
 from .biogpt_agent.biogpt import BioGPTAgent
 from .agents import (
-    AgentNodesMixin,
+    ToolsMixin,
     AggregationMixin,
     ConfirmationMixin,
     ThreadMemoryMixin,
     WorkflowMixin,
 )
 from .agents.state import ANALYZING_MSG
+from .storage.redis import redis_manager
 from typing import List, Any, Dict, Optional
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
@@ -25,11 +26,9 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 
-
-
 class AiAssistance(
     WorkflowMixin,
-    AgentNodesMixin,
+    ToolsMixin,
     ConfirmationMixin,
     AggregationMixin,
     ThreadMemoryMixin,
@@ -90,23 +89,18 @@ class AiAssistance(
             f"content_ids: {content_ids}, graph_id: {graph_id}, urls: {urls}"
         )
         try:
-            # Create initial state
             initial_state = {
-                "messages": [HumanMessage(content=message)],
+                "messages": [],
                 "user_query": message,
                 "user_id": user_id,
                 "token": token,
-                "query_types": [],
                 "response": {"text": "", "json_format": None},
                 "error": "",
                 "content_ids": content_ids,
                 "graph_id": graph_id,
                 "urls": urls,
                 "resource": resource,
-                "pipeline_details": {},
                 "annotation_response": None,
-                "pending_confirmation": None,
-                "confirmation_outcome": None,
                 "rag_response": None,
                 "galaxy_response": None,
                 "biogpt_response": None,
@@ -114,9 +108,10 @@ class AiAssistance(
                 "hypothesis_response": None,
                 "pubmed_response": None,
                 "clinical_trials_response": None,
-                "stop_pipeline": False,
-                "agents_to_run": [],
                 "agents_completed": [],
+                "loop_iterations": 0,
+                "one_round_only": None,
+                "current_tool_call": None,
             }
 
             config = {"configurable": {"thread_id": thread_id}}
@@ -136,21 +131,32 @@ class AiAssistance(
             emit_to_user(user=user_id, message=error_response, status="error")
             return error_response
 
+    @staticmethod
+    def _pending_question(state) -> Dict[str, Any]:
+        """The question a paused graph is waiting on, from its interrupt payload."""
+        for task in getattr(state, "tasks", ()) or ():
+            for pending in getattr(task, "interrupts", ()) or ():
+                if isinstance(pending.value, dict):
+                    return pending.value
+                if pending.value:
+                    return {"confirmation_text": str(pending.value)}
+        return {}
+
+
     def _extract_response_or_interrupt(self, result: Dict[str, Any], config: dict) -> Dict[str, Any]:
         """Build the response dict from an invoke() result, whether the graph
         finished normally or paused on any agent's confirmation interrupt().
         """
         state = self.app.get_state(config)
         if state.next:
-            pending_confirmation = state.values.get("pending_confirmation") or {}
-            data = pending_confirmation.get("data", {})
+            question = self._pending_question(state)
             return {
-                "text": pending_confirmation.get("confirmation_text", ""),
+                "text": question.get("confirmation_text", ""),
                 "json_format": None,
                 "needs_confirmation": True,
                 "confirmation": {
-                    "options": self._confirmation_options(data),
-                    "allow_free_text": True,
+                    "options": question.get("options", []),
+                    "allow_free_text": question.get("allow_free_text", True),
                 },
                 "agents_completed": result.get("agents_completed", []),
             }
