@@ -864,7 +864,7 @@ class Graph:
 
     def process_annotation_query(
         self, query, user_id, query_type="annotation_biological",
-        organism_override=None, organism_hint_text=None,
+        organism_override=None, organism_hint_text=None, thread_id=None,
     ):
         # orchestrate the entire annotation pipeline from user query to final response
         try:
@@ -874,7 +874,8 @@ class Graph:
             )
 
             return self._handle_biological_query(
-                query, user_id, organism_override=organism_override, organism_hint_text=organism_hint_text
+                query, user_id, organism_override=organism_override, organism_hint_text=organism_hint_text,
+                thread_id=thread_id,
             )
 
         except Exception as e:
@@ -959,27 +960,22 @@ class Graph:
         logger.info(f"JSON query structure: {json.dumps(result, indent=2)}")
         return result
 
-    def _handle_biological_query(self, query, user_id, organism_override=None, organism_hint_text=None):
-        """Turn a natural-language query into a validated annotation JSON.
+    def _handle_biological_query(self, query, user_id, organism_override=None, organism_hint_text=None, thread_id=None):
 
-        Stops early and asks the user when a value could only be guessed;
-        otherwise returns the finished annotation. This builds the annotation
-        JSON only -- nothing here runs a query against the database.
-        """
         try:
             organism, schema, schema_handler, neo4j = self._organism_context(
                 query, organism_override, organism_hint_text
             )
 
             emit_to_user(user=user_id,
-                         message="Extracting relevant information from your query...")
+                         message="Extracting relevant information from your query...", thread_id=thread_id)
             try:
                 relevant_information = self._extract_relevant_information(
                     query, enhanced_schema=schema
                 )
                 logger.info("Relevant information extraction successful")
 
-                emit_to_user(user=user_id, message="Validating Constructed Json Format...")
+                emit_to_user(user=user_id, message="Validating Constructed Json Format...", thread_id=thread_id)
                 initial_json = self._convert_to_annotation_json(
                     relevant_information, query, enhanced_schema=schema
                 )

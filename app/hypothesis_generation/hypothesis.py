@@ -148,13 +148,13 @@ class HypothesisGeneration:
         return response
 
 
-    def get_by_hypothesis_id(self, token: str, hypothesis_id: str, user_id, query=None) -> Dict[str, Any]:
+    def get_by_hypothesis_id(self, token: str, hypothesis_id: str, user_id, query=None, thread_id=None) -> Dict[str, Any]:
         """
         Retrieve hypothesis information by ID.
         """
         logger.info(f"Retrieving hypothesis by ID: {hypothesis_id}")
         logger.info(f"Token: {token}")
-        emit_to_user(user=user_id, message=f"Retrieving hypothesis by ID: {hypothesis_id}")
+        emit_to_user(user=user_id, message=f"Retrieving hypothesis by ID: {hypothesis_id}", thread_id=thread_id)
 
         try:
             headers = {"Authorization": f"Bearer {token}"}
@@ -214,10 +214,10 @@ class HypothesisGeneration:
             }
         except Exception as e:
             logger.error(f"Failed to retrieve hypothesis by ID {hypothesis_id}: {e}")
-            emit_to_user(user=user_id, message="Error retrieving hypothesis")
+            emit_to_user(user=user_id, message="Error retrieving hypothesis", thread_id=thread_id)
             return {"text": "NO summaries provided"}
 
-    def format_user_query(self, query: str, user_id) -> Dict[str, Any]:
+    def format_user_query(self, query: str, user_id, thread_id=None) -> Dict[str, Any]:
         """
         Format user query using the LLM to extract relevant parameters.
         """
@@ -229,13 +229,13 @@ class HypothesisGeneration:
 
             if not response:
                 logger.warning("LLM returned empty response for query formatting")
-                emit_to_user(user=user_id, message="Warning: Empty response from query formatting")
+                emit_to_user(user=user_id, message="Warning: Empty response from query formatting", thread_id=thread_id)
                 return {}
 
             # Guard: ensure the LLM returned a dict, not a raw string
             if isinstance(response, str):
                 logger.warning(f"LLM returned a string instead of a dict: {response}")
-                emit_to_user(user=user_id, message="Warning: Could not parse extraction response")
+                emit_to_user(user=user_id, message="Warning: Could not parse extraction response", thread_id=thread_id)
                 return {}
 
             logger.info(f"Successfully formatted query with {len(response)} parameters")
@@ -254,7 +254,7 @@ class HypothesisGeneration:
                         f"'{llm_variant}'. Overriding."
                     )
                     response["variant"] = user_variant
-                    emit_to_user(user=user_id, message=f"Corrected variant extraction to {user_variant}")
+                    emit_to_user(user=user_id, message=f"Corrected variant extraction to {user_variant}", thread_id=thread_id)
                 elif not llm_variant:
                     logger.warning(f"LLM missed variant. Found '{user_variant}' via regex.")
                     response["variant"] = user_variant
@@ -263,7 +263,7 @@ class HypothesisGeneration:
 
         except Exception as e:
             logger.error(f"Error formatting user query: {str(e)}")
-            emit_to_user(user=user_id, message="Error formatting query")
+            emit_to_user(user=user_id, message="Error formatting query", thread_id=thread_id)
             return {}
 
     def get_user_projects(self, token: str) -> List[Dict[str, Any]]:
@@ -443,9 +443,9 @@ class HypothesisGeneration:
         # Fallback (should not reach here)
         return {"text": f"No hypothesis is generated: I couldn't find a project containing both **{variant}** and **{tissue}**."}
 
-    def _start_enrichment(self, token: str, params: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+    def _start_enrichment(self, token: str, params: Dict[str, Any], user_id: str, thread_id=None) -> Dict[str, Any]:
         # Step 1: Start Enrichment
-        emit_to_user(user=user_id, message=f"Starting enrichment for {params.get('variant')}...")
+        emit_to_user(user=user_id, message=f"Starting enrichment for {params.get('variant')}...", thread_id=thread_id)
         step1_res = self._step_1_enrich(token, params)
         if "error" in step1_res:
             logger.error(step1_res["error"])
@@ -454,7 +454,7 @@ class HypothesisGeneration:
         hypothesis_id = step1_res["hypothesis_id"]
 
         # Step 2: Polling
-        emit_to_user(user=user_id, message="Waiting for analysis to complete...")
+        emit_to_user(user=user_id, message="Waiting for analysis to complete...", thread_id=thread_id)
         step2_res = self._step_2_poll(token, hypothesis_id)
         if "error" in step2_res:
             logger.error(step2_res["error"])
@@ -463,7 +463,7 @@ class HypothesisGeneration:
         enrich_id = step2_res["enrich_id"]
 
         # Step 3: Get Results
-        emit_to_user(user=user_id, message="Fetching enrichment results...")
+        emit_to_user(user=user_id, message="Fetching enrichment results...", thread_id=thread_id)
         step3_res = self._step_3_get_results(token, enrich_id)
         if "error" in step3_res:
             logger.error(step3_res["error"])
@@ -476,10 +476,10 @@ class HypothesisGeneration:
         return {"hypothesis_id": hypothesis_id, "enrich_id": enrich_id, "go_terms": go_terms}
 
     def _finish_enrichment(self, token: str, hypothesis_id: str, enrich_id: str,
-                           go_id: str, user_id: str) -> Dict[str, Any]:
+                           go_id: str, user_id: str, thread_id=None) -> Dict[str, Any]:
         """Step 4: generate the final hypothesis for whichever GO term was
         chosen (by the user, via confirmation)."""
-        emit_to_user(user=user_id, message="Generating final hypothesis...")
+        emit_to_user(user=user_id, message="Generating final hypothesis...", thread_id=thread_id)
         step4_res = self._step_4_generate(token, enrich_id, go_id)
         if "error" in step4_res:
             logger.error(step4_res["error"])
@@ -494,15 +494,15 @@ class HypothesisGeneration:
             }
         }
 
-    def generate_hypothesis(self, token: str, user_query: str, user_id: str) -> Dict[str, Any]:
+    def generate_hypothesis(self, token: str, user_query: str, user_id: str, thread_id=None) -> Dict[str, Any]:
         """
         Orchestrates the NLP-driven hypothesis generation workflow.
         """
         logger.info(f"Starting NLP-driven hypothesis generation for: {user_query}")
-        emit_to_user(user=user_id, message="Analyzing your query...")
+        emit_to_user(user=user_id, message="Analyzing your query...", thread_id=thread_id)
 
         # 1. NLP Extraction
-        params = self.format_user_query(user_query, user_id)
+        params = self.format_user_query(user_query, user_id, thread_id=thread_id)
         if not params:
             return {"text": "Could not understand the biological parameters in your query."}
 
@@ -524,10 +524,10 @@ class HypothesisGeneration:
              params["project_id"] = validated_project_id
              logger.info(f"Project context valid ation successful. Using project ID: {validated_project_id}")
              # Add project info to user message
-             emit_to_user(user=user_id, message=f"Found related project: {validated_project_id}")
+             emit_to_user(user=user_id, message=f"Found related project: {validated_project_id}", thread_id=thread_id)
         else:
              # Validation failed - format specific error message based on error type
              logger.warning(f"Project validation failed for {params['variant']} in {params['tissue_name']}")
              return self._format_validation_error(error_details)
 
-        return self._start_enrichment(token, params, user_id)
+        return self._start_enrichment(token, params, user_id, thread_id=thread_id)

@@ -74,5 +74,5 @@ class AggregationMixin:
             response.setdefault("status", "error")
 
         logger.info(f"Finalizing response for user: {user_id}")
-        emit_to_user(user=user_id, message=response, status="completed")
+        emit_to_user(user=user_id, message=response, status="completed", thread_id=state.get("thread_id"))
         return {"response": response}

@@ -26,6 +26,7 @@ _NO_RESULT_PHRASES = (
 class LiteratureState(TypedDict, total=False):
     user_query: str
     user_id: str
+    thread_id: Optional[str]
     content_ids: Optional[List[str]]
     sources: List[str]
     search_context: str
@@ -48,7 +49,7 @@ def build_literature_subgraph(rag, extract_search_term):
 
     def rag_node(state: LiteratureState) -> Dict[str, Any]:
         user_id = state["user_id"]
-        emit_to_user(user=user_id, message="Retrieving information...")
+        emit_to_user(user=user_id, message="Retrieving information...", thread_id=state.get("thread_id"))
         try:
             result = rag.get_result_from_rag(
                 state["user_query"], user_id, content_ids=state.get("content_ids")
@@ -74,7 +75,7 @@ def build_literature_subgraph(rag, extract_search_term):
         term = extract_search_term(state["user_query"], context=state.get("search_context", ""))
         min_year = state.get("min_year")
         logger.info(f"PubMed searching for: {term} (min_year={min_year})")
-        emit_to_user(user=user_id, message="Searching PubMed literature...")
+        emit_to_user(user=user_id, message="Searching PubMed literature...", thread_id=state.get("thread_id"))
         try:
             papers = search_pubmed(term, max_results=8, min_year=min_year).get("papers", [])
             text = _format_papers(papers)
@@ -94,7 +95,7 @@ def build_literature_subgraph(rag, extract_search_term):
         user_id = state["user_id"]
         term = extract_search_term(state["user_query"], context=state.get("search_context", ""))
         logger.info(f"ClinicalTrials searching for: {term}")
-        emit_to_user(user=user_id, message="Searching ClinicalTrials.gov...")
+        emit_to_user(user=user_id, message="Searching ClinicalTrials.gov...", thread_id=state.get("thread_id"))
         try:
             trials = search_clinical_trials(term, status="RECRUITING", max_results=5).get("trials", [])
             if not trials:
@@ -133,6 +134,7 @@ def build_literature_subgraph(rag, extract_search_term):
             emit_to_user(
                 user=state["user_id"],
                 message="Nothing found in knowledge base, searching PubMed...",
+                thread_id=state.get("thread_id"),
             )
             return PUBMED
         return END
