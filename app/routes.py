@@ -694,6 +694,47 @@ def get_thread(
         return JSONResponse(status_code=502, content={"text": f"Error getting thread: {e}"})
 
 
+_VALID_SOURCES_DIR = {
+    "human": "app/annotation_graph/schema/human/data_source_schemas",
+    "fly": "app/annotation_graph/schema/fly/data_source_schemas",
+}
+
+
+def _valid_sources_for_species(species: str) -> Optional[set]:
+    """The real, recognized data sources for a species, read from the
+    actual annotation-query-backend schema files (not invented) --
+    used to validate context.sources instead of accepting anything.
+    Returns None if the species isn't recognized at all."""
+    directory = _VALID_SOURCES_DIR.get((species or "").lower())
+    if not directory or not os.path.isdir(directory):
+        return None
+    return {os.path.splitext(f)[0] for f in os.listdir(directory) if f.endswith(".yaml")}
+
+
+_DEFAULT_SOURCES = {
+    "human": ["GENCODE", "UniProt", "GTEx"],
+    "fly": ["FLYBASE"],
+}
+
+_DEFAULT_SPECIES = "human"
+
+
+def _resolve_sources(species: str, sources) -> tuple:
+    """Returns (resolved_sources, error_message). If sources is empty,
+    fills in the species' default. If sources is given, validates every
+    entry against the real schema files -- 400 if anything's unrecognized."""
+    if not sources:
+        return _DEFAULT_SOURCES.get((species or "").lower(), []), None
+
+    valid = _valid_sources_for_species(species)
+    if valid is None:
+        return sources, None
+    unknown = [s for s in sources if s not in valid]
+    if unknown:
+        return None, f"Unknown source(s) for {species}: {unknown}. Valid sources: {sorted(valid)}"
+    return sources, None
+
+
 def _build_proposal_title(data: dict, kind: Optional[str] = None) -> str:
     """A short structural label like the doc's own example, "APOE →
     transcripts → proteins" -- not a slice of the prose summary (which
@@ -806,6 +847,46 @@ def get_thread_messages(
     except Exception as e:
         logger.error(f"Error getting messages for thread {thread_id}: {e}")
         return JSONResponse(status_code=502, content={"text": f"Error getting messages: {e}"})
+
+
+@main_router.put("/v1/threads/{thread_id}/context")
+async def put_thread_context(
+    thread_id: str,
+    request: Request,
+    auth: AuthContext = Depends(token_required),
+):
+    """Sets a thread's species/sources. 201 with a divider message if it
+    actually changed, 204 if the new value matches what's already set --
+    matching the Threads API v1 proposal exactly."""
+    try:
+        if mongo_db_manager.thread_owner_conflict(thread_id, auth.user_id):
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+
+        body = await request.json()
+        species = body.get("species")
+        sources_in = body.get("sources")
+        if not species:
+            return JSONResponse(status_code=400, content={"text": "species is required."})
+        if sources_in is not None and not isinstance(sources_in, list):
+            return JSONResponse(status_code=400, content={"text": "sources must be a list."})
+
+        sources, err = _resolve_sources(species, sources_in)
+        if err:
+            return JSONResponse(status_code=400, content={"text": err})
+
+        result = mongo_db_manager.set_thread_context(thread_id, auth.user_id, species, sources)
+        if not result["changed"]:
+            return Response(status_code=204)
+
+        thread_doc = mongo_db_manager.append_message(
+            thread_id, auth.user_id, "system", "",
+            context_part=result["context"],
+        )
+        idx = thread_doc.get("message_count", 1) - 1
+        return JSONResponse(status_code=201, content=_format_v1_message(thread_id, thread_doc["messages"][-1], idx))
+    except Exception as e:
+        logger.error(f"Error setting context for thread {thread_id}: {e}")
+        return JSONResponse(status_code=502, content={"text": f"Error setting context: {e}"})
 
 
 @main_router.patch("/v1/threads/{thread_id}")
