@@ -2,7 +2,7 @@
 import logging
 from typing import Any, Dict
 
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agents.state import AgentState
 from app.socket_manager import emit_to_user
@@ -47,13 +47,15 @@ class AggregationMixin:
         else:
             recent = []
             for m in reversed(messages):
+                if isinstance(m, HumanMessage):
+                    break
                 if isinstance(m, ToolMessage):
                     recent.append(m.content)
-                elif recent:
-                    break
             text = "\n\n".join(reversed(recent)) if recent else "I don't have a response for that."
 
         response = {"text": text, "json_format": None}
+        baseline = state.get("proposals_baseline") or 0
+        response["proposals"] = (state.get("proposals") or [])[baseline:]
 
         annotation_resp = state.get("annotation_response")
         if annotation_resp and annotation_resp.get("json_format"):
@@ -61,6 +63,8 @@ class AggregationMixin:
             response["organism"] = annotation_resp.get("organism")
 
         hypothesis_resp = state.get("hypothesis_response") or {}
+        if hypothesis_resp.get("json_format") and not response["json_format"]:
+            response["json_format"] = hypothesis_resp["json_format"]
         if isinstance(hypothesis_resp.get("resource"), dict):
             response["resource"] = hypothesis_resp["resource"]
         elif state.get("resource"):
