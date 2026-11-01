@@ -11,7 +11,6 @@ logging.getLogger("pymongo").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-
 class MongoManager:
     """Unified MongoDB manager for user information, content files, and history."""
     
@@ -329,7 +328,33 @@ class MongoManager:
                 return doc
         except Exception as e:
             logger.error(f"Error getting thread {thread_id}: {e}")
-        return {"thread_id": thread_id, "messages": [], "tool_calls": [], "running_summary": "", "message_count": 0}
+        return {"thread_id": thread_id, "messages": [], "tool_calls": [], "content_ids": [], "running_summary": "", "message_count": 0}
+
+    def add_thread_content_ids(self, thread_id: str, user_id: str, content_ids: list) -> None:
+
+        if not content_ids:
+            return
+        try:
+            self.threads_collection.update_one(
+                {"thread_id": thread_id, "user_id": user_id},
+                {
+                    "$addToSet": {"content_ids": {"$each": content_ids}},
+                    "$set": {"updated_at": datetime.utcnow()},
+                    "$setOnInsert": {
+                        "thread_id": thread_id,
+                        "user_id": user_id,
+                        "messages": [],
+                        "tool_calls": [],
+                        "running_summary": "",
+                    },
+                },
+                upsert=True,
+            )
+        except Exception as e:
+            logger.error(f"Error recording content_ids for thread {thread_id}: {e}")
+
+    def get_thread_content_ids(self, thread_id: str, user_id: str) -> list:
+        return self.get_thread(thread_id, user_id).get("content_ids", [])
 
     def append_message(
         self,

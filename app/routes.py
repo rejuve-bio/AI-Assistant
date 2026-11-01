@@ -164,7 +164,8 @@ def process_query(
           Scopes both the checkpointer (pause/resume state) and the durable
           conversation thread (messages + tool-call references).
     - For content queries (resource == 'content'), content_ids are extracted from context['id'].
-    - If content_ids are provided, answers are retrieved only from those content items; otherwise, answers are retrieved from all collections (user and general).
+    - If content_ids are provided, answers are retrieved only from those content items. If omitted, any content_ids this thread has already
+      uploaded or referenced are recalled automatically; only a thread with no such history falls back to the general collection.
     - Handles both user-uploaded content question answering and general knowledge queries.
     """
     try:
@@ -177,6 +178,13 @@ def process_query(
         upload_results = []
         if uploaded_files:
             upload_results, content_ids = _handle_uploads(uploaded_files, ai_assistant, user_id, content_ids)
+
+        if content_ids and thread_id:
+            mongo_db_manager.add_thread_content_ids(thread_id, user_id, content_ids)
+        elif thread_id:
+            remembered = mongo_db_manager.get_thread_content_ids(thread_id, user_id)
+            if remembered:
+                content_ids = remembered
 
         return _dispatch_query(ai_assistant, question_parsed, json_query_parsed, uploaded_files, upload_results, content_ids, user_id, auth.token, graph_id, resource, url, resume, thread_id)
     except Exception as e:
