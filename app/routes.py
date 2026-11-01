@@ -658,6 +658,42 @@ def get_faq_answer(
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@main_router.get("/v1/threads")
+def list_threads(
+    auth: AuthContext = Depends(token_required),
+):
+    """Thread summaries for the authenticated user, latest activity first.
+    Read-only -- exposes the existing conversation_threads data, no new
+    storage introduced. See the Threads API v1 proposal."""
+    try:
+        threads = mongo_db_manager.list_threads(auth.user_id)
+        return JSONResponse(status_code=200, content={
+            "items": threads,
+            "next_cursor": None,
+        })
+    except Exception as e:
+        logger.error(f"Error listing threads: {e}")
+        return JSONResponse(status_code=502, content={"text": f"Error listing threads: {e}"})
+
+
+@main_router.get("/v1/threads/{thread_id}")
+def get_thread(
+    thread_id: str,
+    auth: AuthContext = Depends(token_required),
+):
+    """A single thread's summary. 404 if it doesn't belong to this user --
+    another user's thread_id counts as missing, same as the v1 proposal's
+    error convention."""
+    try:
+        summary = mongo_db_manager.get_thread_summary(thread_id, auth.user_id)
+        if not summary:
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+        return JSONResponse(status_code=200, content=summary)
+    except Exception as e:
+        logger.error(f"Error getting thread {thread_id}: {e}")
+        return JSONResponse(status_code=502, content={"text": f"Error getting thread: {e}"})
+
+
 @main_router.get("/")
 def health_check():
     return "This is health check"
