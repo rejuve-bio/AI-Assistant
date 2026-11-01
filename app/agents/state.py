@@ -14,7 +14,12 @@ def merge_errors(existing, new):
     return new
 
 
+RESET = "__agent_state_reset__"
+
+
 def keep_latest(existing, new):
+    if new == RESET:
+        return None
     return new if new is not None else existing
 
 
@@ -38,6 +43,8 @@ class AgentState(TypedDict):
     hypothesis_response: Annotated[Optional[Dict[str, Any]], keep_latest]
     pubmed_response: Annotated[Optional[Dict[str, Any]], keep_latest]
     clinical_trials_response: Annotated[Optional[Dict[str, Any]], keep_latest]
+    proposals: Annotated[List[Dict[str, Any]], operator.add]
+    proposals_baseline: Optional[int]
     agents_completed: Annotated[List[str], operator.add]
     loop_iterations: int
     one_round_only: Optional[bool]

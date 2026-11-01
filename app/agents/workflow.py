@@ -8,8 +8,9 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.graph import StateGraph, END
 from langgraph.types import Send
 
-from app.agents.state import AgentState, UNRESOLVED_MARKER
+from app.agents.state import AgentState, UNRESOLVED_MARKER, RESET
 from app.agents.tools import TOOL_RUNNERS, grounding_violation, openai_tool_defs
+from app.agents.proposal_requirements import FILE_FORMAT_REQUIREMENTS
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,15 @@ class WorkflowMixin:
             "messages": [HumanMessage(content=seed_content)],
             "loop_iterations": 0,
             "one_round_only": "ONE_ROUND" in verdict,
+            "proposals_baseline": len(state.get("proposals") or []),
+            "annotation_response": RESET,
+            "hypothesis_response": RESET,
+            "galaxy_response": RESET,
+            "rag_response": RESET,
+            "content_retrieval_response": RESET,
+            "biogpt_response": RESET,
+            "pubmed_response": RESET,
+            "clinical_trials_response": RESET,
         }
 
     def _is_blocking_question(self, content: str) -> bool:
