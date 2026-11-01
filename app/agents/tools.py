@@ -137,6 +137,25 @@ def _looks_like_placeholder(value: str) -> bool:
     return bool(_TEMPLATE_TOKEN.match(v) and "_" in v)
 
 
+_GROUNDING_STOPWORDS = {
+    "the", "a", "an", "and", "or", "its", "it", "to", "of", "with", "in",
+    "on", "for", "is", "are", "that", "which", "what", "this", "then",
+    "gene", "genes", "protein", "proteins", "group", "groups", "belongs",
+    "belong", "model", "models", "modeled", "disease", "diseases", "human",
+    "humans", "association", "associated", "associations", "late",
+    "onset", "related", "relationship", "relationships", "involved",
+    "role", "roles", "map", "mapping", "annotate", "annotation",
+}
+_ENTITY_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)*")
+
+
+def _entity_tokens(query: str) -> list:
+    return [
+        w for w in _ENTITY_TOKEN_RE.findall(query)
+        if len(w) >= 3 and w.lower() not in _GROUNDING_STOPWORDS
+    ]
+
+
 def grounding_violation(tool_name: str, arguments: Dict[str, Any], state: AgentState) -> Optional[str]:
     """None if the call is fine; otherwise a human-readable reason it was
     rejected, to hand back to the orchestrator as a corrective ToolMessage."""
@@ -156,7 +175,18 @@ def grounding_violation(tool_name: str, arguments: Dict[str, Any], state: AgentS
         (m.content if isinstance(getattr(m, "content", None), str) else str(getattr(m, "content", "")))
         for m in state.get("messages", [])
     )
-    if query.lower() not in haystack.lower():
+    haystack_lower = haystack.lower()
+    tokens = _entity_tokens(query)
+    if tokens:
+        ungrounded = [t for t in tokens if t.lower() not in haystack_lower]
+        if ungrounded:
+            return (
+                f"{', '.join(repr(t) for t in ungrounded)} hasn't actually been "
+                f"established anywhere in this conversation yet -- {tool_name} "
+                "needs a value that's either named by the user or came back "
+                "from a prior tool's real result."
+            )
+    elif query.lower() not in haystack_lower:
         return (
             f"'{query}' hasn't actually been established anywhere in this "
             f"conversation yet -- {tool_name} needs a value that's either "
