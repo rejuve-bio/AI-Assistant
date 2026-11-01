@@ -863,15 +863,19 @@ class Graph:
 
 
     def process_annotation_query(
-        self, query, user_id, query_type="annotation_biological"
+        self, query, user_id, query_type="annotation_biological",
+        organism_override=None, organism_hint_text=None,
     ):
         # orchestrate the entire annotation pipeline from user query to final response
         try:
             logger.info(
-                f"Starting annotation pipeline for query: '{query}', type: {query_type}"
+                f"Starting annotation pipeline for query: '{query}', type: {query_type}, "
+                f"organism_override: {organism_override}"
             )
 
-            return self._handle_biological_query(query, user_id)
+            return self._handle_biological_query(
+                query, user_id, organism_override=organism_override, organism_hint_text=organism_hint_text
+            )
 
         except Exception as e:
             error_msg = f"Unexpected error in annotation pipeline: {str(e)}"
@@ -887,9 +891,18 @@ class Graph:
                 },
             }
 
-    def _organism_context(self, query):
-        """Pick the schema and Neo4j connection matching the query's organism."""
-        if self._detect_organism(query) == "fly" and self.fly_schema_handler:
+    def _organism_context(self, query, organism_override=None, organism_hint_text=None):
+        if organism_override:
+            normalized = organism_override if organism_override in ("human", "fly") else self._detect_organism(organism_override)
+            if normalized == "fly" and self.fly_schema_handler:
+                logger.info(f"Organism explicitly requested ('{organism_override}' -> fly) — using fly schema and Neo4j")
+                return ("fly", self.fly_enhanced_schema, self.fly_schema_handler,
+                        self.fly_neo4j or self.neo4j)
+            if normalized == "human":
+                logger.info(f"Organism explicitly requested ('{organism_override}' -> human) — using human schema and Neo4j")
+                return "human", self.enhanced_schema, self.schema_handler, self.neo4j
+
+        if self._detect_organism(organism_hint_text or query) == "fly" and self.fly_schema_handler:
             logger.info("Organism detected: fly — using fly schema and Neo4j")
             return ("fly", self.fly_enhanced_schema, self.fly_schema_handler,
                     self.fly_neo4j or self.neo4j)
@@ -946,7 +959,7 @@ class Graph:
         logger.info(f"JSON query structure: {json.dumps(result, indent=2)}")
         return result
 
-    def _handle_biological_query(self, query, user_id):
+    def _handle_biological_query(self, query, user_id, organism_override=None, organism_hint_text=None):
         """Turn a natural-language query into a validated annotation JSON.
 
         Stops early and asks the user when a value could only be guessed;
@@ -954,7 +967,9 @@ class Graph:
         JSON only -- nothing here runs a query against the database.
         """
         try:
-            organism, schema, schema_handler, neo4j = self._organism_context(query)
+            organism, schema, schema_handler, neo4j = self._organism_context(
+                query, organism_override, organism_hint_text
+            )
 
             emit_to_user(user=user_id,
                          message="Extracting relevant information from your query...")
