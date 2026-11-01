@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 from langgraph.errors import GraphBubbleUp
 from langgraph.types import interrupt
 
-from app.agents.state import AgentState, ANALYZING_MSG
+from app.agents.state import AgentState, ANALYZING_MSG, UNRESOLVED_MARKER
 from app.agents.subgraphs.annotation import ABANDONED, build_annotation_subgraph
 from app.agents.subgraphs.biogpt import build_biogpt_subgraph
 from app.agents.subgraphs.content_retrieval import build_content_retrieval_subgraph
@@ -174,7 +174,7 @@ class ToolsMixin:
         if result.get("outcome") == ABANDONED:
             logger.info("Annotation confirmation abandoned — the user said something else")
             new_text = result.get("handoff_query") or "(no reply captured)"
-            return {"content": f"The pending confirmation wasn't answered — the user said instead: {new_text!r}"}
+            return {"content": f"{UNRESOLVED_MARKER}The pending confirmation wasn't answered — the user said instead: {new_text!r}"}
 
         response = result.get("annotation_response") or {}
         return {
@@ -230,7 +230,7 @@ class ToolsMixin:
 
         if result.get("outcome") == HYPOTHESIS_ABANDONED:
             new_text = result.get("handoff_query") or "(no reply captured)"
-            return {"content": f"The pending GO-term confirmation wasn't answered — the user said instead: {new_text!r}"}
+            return {"content": f"{UNRESOLVED_MARKER}The pending GO-term confirmation wasn't answered — the user said instead: {new_text!r}"}
 
         response = result.get("hypothesis_response") or {}
         if result.get("failed"):
