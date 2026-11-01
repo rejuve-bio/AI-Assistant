@@ -107,6 +107,89 @@ TOOL_SPECS = [
         }, "required": ["query"]},
     },
     {
+        "name": "galaxy_search",
+        "description": (
+            "Search Galaxy's installed, runnable tools and workflows by "
+            "keyword. Call this ONLY when the user wants to run something "
+            "in Galaxy but hasn't named an exact tool or workflow (e.g. "
+            "'trim my reads', 'what can align sequencing reads for me'). "
+            "Returns real candidate targets (id, version, name) to use "
+            "with galaxy_describe next. Do NOT call this once a specific "
+            "tool or workflow is already named or known -- call "
+            "galaxy_describe directly instead. This never reads a target's "
+            "inputs, checks files, or validates anything."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "the keyword or topic to search for, in the user's own words (e.g. 'trim reads', 'variant calling')"},
+            "kind": {"type": "string", "enum": ["tool", "workflow"], "description": "ONLY set this if the user explicitly said which kind they want. Omit entirely otherwise -- search both."},
+        }, "required": ["query"]},
+    },
+    {
+        "name": "galaxy_describe",
+        "description": (
+            "Get a Galaxy tool or workflow's REAL input requirements -- "
+            "which inputs are required, their types, any conditional "
+            "branches (e.g. choosing single-end vs. paired-end changes "
+            "what else is asked), accepted file formats, and which of the "
+            "thread's already-uploaded files already match a given input. "
+            "Call this as soon as a specific target is known -- named "
+            "directly by the user, or chosen from galaxy_search's results "
+            "-- and BEFORE asking the user anything about what it needs. "
+            "Guessing a tool's parameters instead of reading them here is "
+            "never acceptable. Do NOT call this to find a tool by keyword "
+            "(that's galaxy_search) or to check whether assembled inputs "
+            "are acceptable (that's galaxy_validate)."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "target_type": {"type": "string", "enum": ["tool", "workflow"], "description": "whether this target is a tool or a workflow"},
+            "target_id": {"type": "string", "description": "the target's real id -- a tool's full ToolShed id, or a workflow's id -- exactly as named by the user or returned by galaxy_search. Never invent one."},
+            "target_version": {"type": "string", "description": "the target's version, if known (from galaxy_search or named by the user). Omit if not known."},
+        }, "required": ["target_type", "target_id"]},
+    },
+    {
+        "name": "galaxy_thread_files",
+        "description": (
+            "List every file already uploaded into THIS thread's Galaxy "
+            "history (dataset ids, names, formats) -- Galaxy's own ground "
+            "truth of what's available to use as an input. Call this "
+            "before asking the user to specify a file for a Galaxy input, "
+            "so an already-uploaded file can be matched automatically "
+            "instead of asking for one that's already there. Takes no "
+            "arguments -- the thread is already known from context."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "galaxy_validate",
+        "description": (
+            "Check with Galaxy itself whether a tentative set of inputs "
+            "for a target tool/workflow would actually be accepted, BEFORE "
+            "presenting it as a ready proposal. Call this once inputs have "
+            "been assembled from the user's words, galaxy_thread_files' "
+            "file matches, and galaxy_describe's defaults. If Galaxy "
+            "rejects something, use ITS real error message to ask the "
+            "user again -- never invent a reason of your own. Do NOT call "
+            "this to discover what inputs exist in the first place (that's "
+            "galaxy_describe)."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "target_type": {"type": "string", "enum": ["tool", "workflow"]},
+            "target_id": {"type": "string", "description": "the target's real id, exactly as used with galaxy_describe"},
+            "target_version": {"type": "string", "description": "the target's version, if known"},
+            "inputs": {
+                "type": "object",
+                "description": (
+                    "The tentative inputs to validate, keyed exactly as galaxy_describe named "
+                    "them (a tool's keys are '|'-joined paths like 'single_paired|in1'; a "
+                    "workflow's are its input labels). A file value is "
+                    "{\"src\": \"hda\" or \"hdca\", \"id\": \"<dataset id from galaxy_thread_files>\"}; "
+                    "any other value is used as-is."
+                ),
+            },
+            "parameters": {"type": "object", "description": "a workflow's runtime settings by step, keyed as galaxy_describe named them. Omit for a tool."},
+        }, "required": ["target_type", "target_id", "inputs"]},
+    },
+    {
         "name": "run_biogpt",
         "description": "Ask the fine-tuned BioGPT model a direct biomedical question.",
         "parameters": {"type": "object", "properties": {
@@ -139,8 +222,13 @@ TOOL_RUNNERS = {
     "search_literature": "run_search_literature",
     "generate_hypothesis": "run_generate_hypothesis",
     "run_galaxy": "run_galaxy_tool",
+    "galaxy_search": "run_galaxy_search",
+    "galaxy_describe": "run_galaxy_describe",
+    "galaxy_thread_files": "run_galaxy_thread_files",
+    "galaxy_validate": "run_galaxy_validate",
     "run_biogpt": "run_biogpt_tool",
     "retrieve_content": "run_retrieve_content",
+    "kg_overview": "run_kg_overview",
     "ask_human": "run_ask_human",
 }
 
