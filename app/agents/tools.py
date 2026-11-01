@@ -30,17 +30,23 @@ TOOL_SPECS = [
             "biological entity already named in the conversation -- either by "
             "the user directly, or turned up by a prior tool's result. Only "
             "call this once you have a real entity name; never guess or use a "
-            "placeholder. If the user names a gene TOGETHER WITH related items "
-            "that belong in the SAME connected graph (its transcripts, variants, "
-            "proteins -- e.g. 'annotate FTO with its transcripts X, Y, Z'), that "
-            "is ONE call with all of them in a single query string, not one call "
-            "per item -- splitting it produces several disconnected graphs "
-            "instead of one graph showing how they relate. Only use separate "
-            "calls for entities the user asked about as genuinely independent "
-            "(no stated relationship between them)."
+            "placeholder. The query string must carry the FULL scope of what "
+            "the user asked for as ONE connected graph, whatever entity types "
+            "that involves -- always driven by the actual question, never a "
+            "fixed list. This covers both: (a) the user naming specific related "
+            "items (its transcripts, variants, proteins -- e.g. 'annotate FTO "
+            "with its transcripts X, Y, Z'), and (b) open-ended relationships "
+            "the query should discover (e.g. 'map apolpp, then which group it "
+            "belongs to and what human diseases it models' -> one query string "
+            "mentioning apolpp, its gene group, AND the diseases it models -- "
+            "not just 'apolpp' alone). Splitting a connected request into "
+            "narrower calls, or dropping part of it, produces a disconnected "
+            "or incomplete graph instead of the one graph the user asked for. "
+            "Only use separate calls for entities the user asked about as "
+            "genuinely independent (no stated relationship between them)."
         ),
         "parameters": {"type": "object", "properties": {
-            "query": {"type": "string", "description": "the entity (or entities) to annotate together as one connected graph -- e.g. 'BRCA1', or 'FTO with its transcripts ENST00000538872, ENST00000546113' when they're related. Name only, no organism/schema wording here."},
+            "query": {"type": "string", "description": "the FULL request to annotate as one connected graph, in the user's own terms -- e.g. 'BRCA1', 'FTO with its transcripts ENST00000538872, ENST00000546113', or 'apolpp, the gene group it belongs to, and the human diseases it models'. Carry over every entity/relationship the question asked about, not just the first noun. Name only, no organism/schema wording here."},
             "organism": {
                 "type": "string", "enum": ["human", "fly"],
                 "description": (
