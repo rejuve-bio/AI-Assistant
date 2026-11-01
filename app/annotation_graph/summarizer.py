@@ -322,7 +322,47 @@ class GraphSummarizer:
         except Exception as e:
             logger.error(f"Unexpected error in annotate_by_id: {e}")
             return {"summary": None, "text": f"Unexpected error: {e}"}
-    
+
+    def get_graph_overview(self, token, query=None):
+        """Whole-database stats (total nodes/edges, node/edge types) via
+        the annotation service's own /kg-info endpoint.
+
+        Distinct from annotate_by_id: that answers from one already-executed
+        annotation graph (a specific graph_id); this answers "how big is the
+        knowledge graph overall" with nothing specific attached.
+        """
+        try:
+            http_response = requests.get(
+                f"{self.kg_service_url}/kg-info",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=15,
+            )
+            http_response.raise_for_status()
+            info = http_response.json()
+            logger.info(f"kg-info response: {info}")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"HTTP error in get_graph_overview: {e}")
+            return {"text": "I couldn't reach the knowledge graph service for its overall statistics. Please try again in a moment.", "raw": None}
+        except Exception as e:
+            logger.error(f"Unexpected error in get_graph_overview: {e}")
+            return {"text": f"Unexpected error retrieving knowledge graph statistics: {e}", "raw": None}
+
+        if not query:
+            return {"text": json.dumps(info, indent=2), "raw": info}
+
+        try:
+            text = self.llm.generate(
+                f"Based on this knowledge graph overview data:\n{json.dumps(info, indent=2)}\n\n"
+                f"Question: {query}\n\n"
+                f"Answer using only the numbers/facts present in this data. If the data "
+                f"doesn't contain what's asked, say so plainly instead of guessing.\nAnswer:"
+            )
+        except Exception as e:
+            logger.error(f"Failed to summarize kg-info via LLM: {e}")
+            text = json.dumps(info, indent=2)
+
+        return {"text": text, "raw": info}
+
     def summary(self, graph=None, user_query=None, graph_id=None, token=None):
 
         try:

@@ -204,6 +204,24 @@ TOOL_SPECS = [
         }, "required": ["query"]},
     },
     {
+        "name": "kg_overview",
+        "description": (
+            "Get overall statistics for the WHOLE knowledge graph database -- total "
+            "node/edge counts, node and edge types, and similar. This is a RARE, "
+            "last-resort tool -- almost every question that mentions 'the graph' is "
+            "actually about a specific annotation/hypothesis graph already attached "
+            "to this conversation, and that case MUST use retrieve_content instead, "
+            "never this tool. Only call kg_overview when the question is unmistakably "
+            "about the database as a whole, with nothing specific attached -- e.g. "
+            "literally 'how many nodes are in the knowledge base', asked with no "
+            "annotation/hypothesis graph anywhere in this conversation's context. "
+            "If in doubt, prefer retrieve_content."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "the question about the overall knowledge graph"},
+        }, "required": ["query"]},
+    },
+    {
         "name": "ask_human",
         "description": (
             "Ask the user a clarifying question. Use this whenever several "
@@ -693,3 +711,12 @@ class ToolsMixin:
         except Exception as e:
             logger.error("Error in answer_from_graph_summaries", exc_info=True)
             return {"text": f"Error processing query: {str(e)}", "json_format": None}
+
+    def run_kg_overview(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
+        query = arguments.get("query") or state["user_query"]
+        logger.info(f"kg_overview: {query}")
+        emit_to_user(user=state["user_id"], message="Looking up the knowledge graph's overall statistics...", thread_id=state.get("thread_id"))
+
+        result = self.graph_summarizer.get_graph_overview(token=state.get("token"), query=query)
+        text = result.get("text", "") if isinstance(result, dict) else str(result)
+        return {"content": text or "I couldn't retrieve the knowledge graph's statistics."}
