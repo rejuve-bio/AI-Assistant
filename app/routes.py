@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Form, File, UploadFile, Query, Request
 from fastapi.responses import JSONResponse, Response
 from dotenv import load_dotenv
 import logging
+import re
 import traceback
 import json
 import os
@@ -17,6 +18,15 @@ main_router = APIRouter()
 logger = logging.getLogger(__name__)
 
 AUDIO_MIME = "audio/mpeg"
+
+_UUID4_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.IGNORECASE
+)
+
+
+def _is_uuid4(value) -> bool:
+    return isinstance(value, str) and bool(_UUID4_RE.match(value))
+
 
 def get_ai_assistant(request: Request):
     """FastAPI dependency: resolves the AiAssistance instance from app.state."""
@@ -735,6 +745,27 @@ def _resolve_sources(species: str, sources) -> tuple:
     return sources, None
 
 
+def _generate_quick_replies(llm, question: str, summary: str) -> list:
+    """Two short, clickable follow-up suggestions for a proposal, per the
+    Threads API v1 example. Best-effort: any failure just means no chips,
+    never breaks the actual response."""
+    try:
+        prompt = (
+            f"A user asked: \"{question}\"\n\n"
+            f"The assistant proposed: \"{summary}\"\n\n"
+            "Suggest exactly 2 short, specific follow-up questions or refinements "
+            "the user might want next (e.g. narrowing scope, adding related data). "
+            "Return ONLY the 2 suggestions, one per line, no numbering, no extra text."
+        )
+        result = llm.generate(prompt)
+        text = result if isinstance(result, str) else str(result)
+        lines = [l.strip(" -\t") for l in text.strip().splitlines() if l.strip()]
+        return lines[:2] if lines else []
+    except Exception as e:
+        logger.warning(f"quick_replies generation failed, skipping: {e}")
+        return []
+
+
 def _build_proposal_title(data: dict, kind: Optional[str] = None) -> str:
     """A short structural label like the doc's own example, "APOE →
     transcripts → proteins" -- not a slice of the prose summary (which
@@ -877,6 +908,154 @@ async def post_v1_files(
     if errors:
         body["errors"] = errors
     return JSONResponse(status_code=201, content=body)
+
+
+@main_router.post("/v1/query")
+async def post_v1_query(
+    request: Request,
+    auth: AuthContext = Depends(token_required),
+    ai_assistant=Depends(get_ai_assistant),
+):
+    """Send a message. Unlike /query, this never executes anything -- it
+    only proposes (annotation only, in v1). Matches 'Send a message' in
+    the Threads API v1 proposal.
+
+    Accepts either application/json (unchanged), or multipart/form-data
+    with a "body" field holding the same JSON plus the actual file(s)
+    attached in the same request -- lets a client attach a brand-new file
+    and send the message in one round trip instead of always needing a
+    separate /v1/files upload first. A files part entry can still name an
+    already-uploaded file by "id" (unchanged) or, only in the multipart
+    case, by "name" to match one of the files attached to this request.
+    """
+    try:
+        content_type = request.headers.get("content-type", "")
+        uploaded_by_name = {}
+        if content_type.startswith("multipart/form-data"):
+            form = await request.form()
+            try:
+                body = json.loads(form.get("body") or "{}")
+            except (TypeError, ValueError):
+                return JSONResponse(status_code=400, content={"text": "'body' form field must be valid JSON."})
+            for value in form.values():
+                if getattr(value, "filename", None):
+                    uploaded_by_name[value.filename] = value
+        else:
+            body = await request.json()
+        thread_id = body.get("thread_id")
+        client_message_id = body.get("client_message_id")
+        context = body.get("context")
+        parts = body.get("parts") or []
+
+        if not thread_id:
+            return JSONResponse(status_code=400, content={"text": "thread_id is required."})
+        if not _is_uuid4(thread_id):
+            return JSONResponse(status_code=400, content={"text": "thread_id must be a UUIDv4."})
+
+        user_id = auth.user_id
+
+        if mongo_db_manager.thread_owner_conflict(thread_id, user_id):
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+
+        is_new_thread = mongo_db_manager.get_thread_summary(thread_id, user_id) is None
+
+        resolved_sources = None
+        if is_new_thread:
+            species = (context or {}).get("species") or _DEFAULT_SPECIES
+            resolved_sources, source_err = _resolve_sources(species, (context or {}).get("sources"))
+            if source_err:
+                return JSONResponse(status_code=400, content={"text": source_err})
+            context = {"species": species, "sources": resolved_sources}
+
+        allowed_part_types = {"text", "files", "about"}
+        if any(p.get("type") not in allowed_part_types for p in parts):
+            return JSONResponse(status_code=400, content={"text": "Only text, files and about parts are accepted here."})
+
+        question = " ".join(p.get("text", "") for p in parts if p.get("type") == "text").strip()
+        if not question:
+            return JSONResponse(status_code=400, content={"text": "A text part is required."})
+
+        about = next((p for p in parts if p.get("type") == "about"), None)
+        graph_id = about.get("id") if about else None
+        resource = about.get("kind") if about else None
+
+        files_part_raw = next((p for p in parts if p.get("type") == "files"), None)
+        resolved_files = None
+        if files_part_raw:
+            requested = files_part_raw.get("files") or []
+            resolved_files = []
+            for entry in requested:
+                if not isinstance(entry, dict):
+                    continue
+                file_id = entry.get("id")
+                if file_id:
+                    found = mongo_db_manager.get_content_file_by_id(user_id, file_id)
+                    if not found:
+                        return JSONResponse(status_code=400, content={"text": f"No such file '{file_id}' for this user."})
+                    resolved_files.append({"id": found["content_id"], "name": found.get("filename") or file_id})
+                    continue
+                name = entry.get("name")
+                attached = uploaded_by_name.get(name) if name else None
+                if not attached:
+                    return JSONResponse(status_code=400, content={"text": f"A files part entry must have either 'id' or a 'name' matching a file attached to this request (got: {entry})."})
+                upload_result = ai_assistant.rag.save_raw_file(attached, user_id)
+                if not isinstance(upload_result, dict) or not upload_result.get("content_id"):
+                    error = upload_result.get("error") if isinstance(upload_result, dict) else "Upload failed."
+                    return JSONResponse(status_code=400, content={"text": f"Could not store attached file '{name}': {error}"})
+                resolved_files.append({"id": upload_result["content_id"], "name": upload_result.get("name") or name})
+            if not resolved_files:
+                resolved_files = None
+
+        if client_message_id:
+            existing = mongo_db_manager.find_message_by_client_id(thread_id, user_id, client_message_id)
+            if existing:
+                doc = mongo_db_manager.get_thread(thread_id, user_id)
+                idx = next((i for i, m in enumerate(doc["messages"]) if m.get("client_message_id") == client_message_id), len(doc["messages"]) - 1)
+                return JSONResponse(status_code=200, content=_format_v1_message(thread_id, doc["messages"][idx], idx))
+
+        opening_context = None
+        if is_new_thread and context:
+            opening_context = mongo_db_manager.set_thread_context(
+                thread_id, user_id, context.get("species"), resolved_sources
+            )["context"]
+
+        if not redis_manager.acquire_thread_lock(thread_id):
+            return JSONResponse(status_code=409, content={"text": "A reply is already in progress in this thread."})
+
+        try:
+            agent_response = ai_assistant.agent(
+                question, user_id, auth.token,
+                graph_id=graph_id, resource=resource,
+                thread_id=thread_id, propose_only=True,
+                attached_files=resolved_files,
+            )
+        except Exception as e:
+            logger.error(f"/v1/query failed: {e}", exc_info=True)
+            return JSONResponse(status_code=502, content={"text": f"The model or a tool failed: {e}"})
+        finally:
+            redis_manager.release_thread_lock(thread_id)
+
+        quick_replies = None
+        if agent_response.get("json_format"):
+            quick_replies = _generate_quick_replies(
+                ai_assistant.basic_llm, question, agent_response.get("text", "")
+            ) or None
+
+        ai_assistant._record_thread_turn(
+            thread_id, user_id, question, agent_response,
+            graph_id=graph_id, resource=resource, client_message_id=client_message_id,
+            files_part=resolved_files, context_to_record=opening_context,
+            quick_replies=quick_replies,
+        )
+
+        doc = mongo_db_manager.get_thread(thread_id, user_id)
+        last_idx = len(doc["messages"]) - 1
+        formatted = _format_v1_message(thread_id, doc["messages"][last_idx], last_idx)
+
+        return JSONResponse(status_code=201, content=formatted)
+    except Exception as e:
+        logger.error(f"Error in /v1/query: {e}", exc_info=True)
+        return JSONResponse(status_code=502, content={"text": f"Error processing request: {e}"})
 
 
 @main_router.put("/v1/threads/{thread_id}/context")
