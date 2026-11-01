@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 AUDIO_MIME = "audio/mpeg"
 
-
 def get_ai_assistant(request: Request):
     """FastAPI dependency: resolves the AiAssistance instance from app.state."""
     return request.app.state.ai_assistant
@@ -84,7 +83,7 @@ def _parse_context(data):
     return question, graph_id, resource, url, json_query, content_ids
 
 
-def _dispatch_query(ai_assistant, question, json_query, uploaded_files, upload_results, content_ids, user_id, auth_token, graph_id, resource, url, resume=None, thread_id=None):
+def _dispatch_query(ai_assistant, question, json_query, uploaded_files, upload_results, content_ids, user_id, auth_token, graph_id, resource, url, resume=None, thread_id=None, client_message_id=None):
     if uploaded_files and not question and not json_query:
         suggested_questions = []
         for r in upload_results:
@@ -123,7 +122,10 @@ def _dispatch_query(ai_assistant, question, json_query, uploaded_files, upload_r
         urls=url,
         resume=resume,
         thread_id=thread_id,
+        client_message_id=client_message_id,
     )
+    if response.get("status") == "busy":
+        return JSONResponse(status_code=409, content=response)
     return JSONResponse(content=response)
 
 
@@ -137,6 +139,7 @@ def process_query(
     json_query: Optional[str] = Form(None),
     resume: Optional[str] = Form(None),
     thread_id: Optional[str] = Form(None),
+    client_message_id: Optional[str] = Form(None),
     uploaded_files: Optional[List[UploadFile]] = File(None),
 ):
     """
@@ -171,6 +174,9 @@ def process_query(
     try:
         user_id = auth.user_id
 
+        if thread_id and mongo_db_manager.thread_owner_conflict(thread_id, user_id):
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+
         question_parsed, graph_id, resource, url, json_query_parsed, content_ids = _parse_context(
             {"context": context, "json_query": json_query, "question": question, "query": query}
         )
@@ -186,11 +192,11 @@ def process_query(
             if remembered:
                 content_ids = remembered
 
-        return _dispatch_query(ai_assistant, question_parsed, json_query_parsed, uploaded_files, upload_results, content_ids, user_id, auth.token, graph_id, resource, url, resume, thread_id)
+        return _dispatch_query(ai_assistant, question_parsed, json_query_parsed, uploaded_files, upload_results, content_ids, user_id, auth.token, graph_id, resource, url, resume, thread_id, client_message_id)
     except Exception as e:
         logger.error(f"Exception: {e}")
         traceback.print_exc()
-        return Response(content=f"Bad Response: {e}", status_code=400, media_type="text/html")
+        return JSONResponse(status_code=500, content={"text": f"Error processing request: {e}"})
 
 
 @main_router.get("/user_status/documents/")
