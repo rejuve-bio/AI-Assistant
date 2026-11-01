@@ -92,7 +92,7 @@ class RAG:
 
                     self._chunk_and_store(
                         collection_name,
-                        [{"text": chunk, "summary": summary}],
+                        [chunk],
                         {
                             "content_id": url,
                             "chunk_index": index,
