@@ -849,6 +849,36 @@ def get_thread_messages(
         return JSONResponse(status_code=502, content={"text": f"Error getting messages: {e}"})
 
 
+@main_router.post("/v1/files")
+async def post_v1_files(
+    files: List[UploadFile] = File(...),
+    auth: AuthContext = Depends(token_required),
+    ai_assistant=Depends(get_ai_assistant),
+):
+    """Accept and store one or more files, per-user, no embedding -- step 1
+    only (RAG embedding is a separate, later decision). Returns {id, name}
+    per file so the client can reference them in a 'files' part on
+    /v1/query right away."""
+    items = []
+    errors = []
+    for f in files:
+        result = ai_assistant.rag.save_raw_file(f, auth.user_id)
+        if isinstance(result, dict) and result.get("error"):
+            errors.append({"name": f.filename, "error": result["error"]})
+        elif isinstance(result, dict) and result.get("content_id"):
+            items.append({"id": result["content_id"], "name": result.get("name") or f.filename})
+        else:
+            errors.append({"name": f.filename, "error": "Upload failed."})
+
+    if not items:
+        return JSONResponse(status_code=400, content={"text": "No file could be uploaded.", "errors": errors})
+
+    body = {"items": items}
+    if errors:
+        body["errors"] = errors
+    return JSONResponse(status_code=201, content=body)
+
+
 @main_router.put("/v1/threads/{thread_id}/context")
 async def put_thread_context(
     thread_id: str,
