@@ -889,6 +889,45 @@ async def put_thread_context(
         return JSONResponse(status_code=502, content={"text": f"Error setting context: {e}"})
 
 
+@main_router.post("/v1/threads/{thread_id}/messages")
+async def record_thread_run(
+    thread_id: str,
+    request: Request,
+    auth: AuthContext = Depends(token_required),
+):
+    """Records that a run started elsewhere (the platform server's own
+    call to annotation/hypothesis), purely so the thread shows a live-status
+    card. No model call, no compute -- matches 'Record a run' in the
+    Threads API v1 proposal."""
+    try:
+        if mongo_db_manager.thread_owner_conflict(thread_id, auth.user_id):
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+
+        body = await request.json()
+        client_message_id = body.get("client_message_id")
+        parts = body.get("parts") or []
+        run_parts = [p for p in parts if p.get("type") == "run"]
+        if len(run_parts) != 1:
+            return JSONResponse(status_code=400, content={"text": "Exactly one 'run' part is required."})
+
+        if client_message_id:
+            existing = mongo_db_manager.find_message_by_client_id(thread_id, auth.user_id, client_message_id)
+            if existing:
+                return JSONResponse(status_code=200, content={"text": "Already recorded."})
+
+        run_part = {k: v for k, v in run_parts[0].items() if k != "type"}
+        thread_doc = mongo_db_manager.append_message(
+            thread_id, auth.user_id, "system", "",
+            client_message_id=client_message_id,
+            run_part=run_part,
+        )
+        idx = thread_doc.get("message_count", 1) - 1
+        return JSONResponse(status_code=201, content=_format_v1_message(thread_id, thread_doc["messages"][-1], idx))
+    except Exception as e:
+        logger.error(f"Error recording run for thread {thread_id}: {e}")
+        return JSONResponse(status_code=502, content={"text": f"Error recording run: {e}"})
+
+
 @main_router.patch("/v1/threads/{thread_id}")
 async def rename_thread(
     thread_id: str,
