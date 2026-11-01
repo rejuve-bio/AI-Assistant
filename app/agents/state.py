@@ -28,6 +28,9 @@ class AgentState(TypedDict):
     user_query: str
     user_id: str
     thread_id: Optional[str]
+    propose_only: Optional[bool]
+    thread_species: Optional[str]
+    thread_sources: Optional[list]
     token: str
     response: Dict[str, Any]
     error: Annotated[str, merge_errors]
@@ -35,6 +38,7 @@ class AgentState(TypedDict):
     graph_id: Optional[str]
     urls: Optional[List[str]]
     resource: Optional[Any]
+    attached_files: Annotated[List[Dict[str, str]], operator.add]
     annotation_response: Annotated[Optional[Dict[str, Any]], keep_latest]
     rag_response: Annotated[Optional[Dict[str, Any]], keep_latest]
     galaxy_response: Annotated[Optional[Dict[str, Any]], keep_latest]

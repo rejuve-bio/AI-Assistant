@@ -217,6 +217,7 @@ class ToolsMixin:
             "sources": [RAG, PUBMED, CLINICAL_TRIALS],
             "search_context": context,
             "min_year": min_year,
+            "attached_files": state.get("attached_files"),
         })
 
         state_update, parts = {}, []
@@ -278,6 +279,7 @@ class ToolsMixin:
 
         result = self._galaxy_subgraph.invoke({
             "user_query": query, "user_id": state["user_id"], "token": state.get("token"),
+            "attached_files": state.get("attached_files"),
         })
         response = result.get("galaxy_response") or {}
         return {
@@ -286,13 +288,96 @@ class ToolsMixin:
             "agent_name": "galaxy_agent",
         }
 
+    @staticmethod
+    def _galaxy_api_error(response: Dict[str, Any]) -> Optional[str]:
+        return response.get("error") if isinstance(response, dict) and response.get("error") else None
+
+    def run_galaxy_search(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
+        query = arguments.get("query") or state["user_query"]
+        kind = arguments.get("kind")
+        emit_to_user(user=state["user_id"], message="Searching Galaxy's installed tools...", thread_id=state.get("thread_id"))
+
+        response = self.galaxy_runs_api.search(state.get("token"), query, kind)
+        error = self._galaxy_api_error(response)
+        if error:
+            return {"content": f"Couldn't search Galaxy's tools: {error}"}
+
+        items = response.get("items") if isinstance(response, dict) else response
+        items = items or []
+        if not items:
+            return {"content": f"No installed Galaxy tool or workflow matched '{query}'."}
+        lines = [
+            f"- {item.get('name', item.get('id', '?'))} ({item.get('type', 'tool')}, id={item.get('id')}, version={item.get('version', '?')})"
+            for item in items
+        ]
+        return {"content": "Matching Galaxy tools/workflows:\n" + "\n".join(lines)}
+
+    def run_galaxy_describe(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
+        target = {"type": arguments.get("target_type"), "id": arguments.get("target_id")}
+        if arguments.get("target_version"):
+            target["version"] = arguments["target_version"]
+        emit_to_user(user=state["user_id"], message="Reading the Galaxy tool's requirements...", thread_id=state.get("thread_id"))
+
+        response = self.galaxy_runs_api.describe(state.get("token"), state.get("thread_id"), target)
+        error = self._galaxy_api_error(response)
+        if error:
+            return {"content": f"Couldn't read {target.get('id')}'s requirements: {error}"}
+
+        inputs = response.get("inputs") or []
+        if not inputs:
+            return {"content": f"{response.get('target', {}).get('name', target.get('id'))} has no inputs to report (or all are at Galaxy defaults)."}
+        lines = []
+        for inp in inputs:
+            required = "" if inp.get("when") else " (required unless its branch doesn't apply)"
+            match_note = ""
+            matches = inp.get("matches") or []
+            if matches:
+                match_note = " -- already matched in this thread: " + ", ".join(m.get("name", m.get("id", "?")) for m in matches)
+            lines.append(f"- {inp.get('label', inp.get('path'))} [{inp.get('type')}]{required}{match_note}")
+        return {"content": f"{target.get('id')}'s real inputs:\n" + "\n".join(lines)}
+
+    def run_galaxy_thread_files(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
+        emit_to_user(user=state["user_id"], message="Checking this thread's Galaxy files...", thread_id=state.get("thread_id"))
+
+        response = self.galaxy_runs_api.thread_files(state.get("token"), state.get("thread_id"))
+        error = self._galaxy_api_error(response)
+        if error:
+            return {"content": f"Couldn't read this thread's Galaxy files: {error}"}
+
+        items = response.get("items") if isinstance(response, dict) else response
+        items = items or []
+        if not items:
+            return {"content": "No files have been uploaded into this thread's Galaxy history yet."}
+        lines = [f"- {f.get('name', f.get('id', '?'))} ({f.get('format', '?')}, id={f.get('id')})" for f in items]
+        return {"content": "Files already in this thread's Galaxy history:\n" + "\n".join(lines)}
+
+    def run_galaxy_validate(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
+        target = {"type": arguments.get("target_type"), "id": arguments.get("target_id")}
+        if arguments.get("target_version"):
+            target["version"] = arguments["target_version"]
+        emit_to_user(user=state["user_id"], message="Checking these inputs with Galaxy...", thread_id=state.get("thread_id"))
+
+        response = self.galaxy_runs_api.validate(
+            state.get("token"), state.get("thread_id"), target,
+            arguments.get("inputs") or {}, arguments.get("parameters"),
+        )
+        error = self._galaxy_api_error(response)
+        if error:
+            return {"content": f"Couldn't validate these inputs: {error}"}
+
+        if response.get("valid"):
+            return {"content": "Galaxy accepts these inputs -- ready to propose."}
+        errors = response.get("errors") or {}
+        lines = [f"- {path}: {msg}" for path, msg in errors.items()] if isinstance(errors, dict) else [str(errors)]
+        return {"content": "Galaxy rejected these inputs:\n" + "\n".join(lines)}
+
     def run_biogpt_tool(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
         if getattr(self, "_biogpt_subgraph", None) is None:
             self._biogpt_subgraph = build_biogpt_subgraph(self.biogpt)
 
         emit_to_user(user=state["user_id"], message="Analyzing biomedical information...", thread_id=state.get("thread_id"))
         query = arguments.get("query") or state["user_query"]
-        result = self._biogpt_subgraph.invoke({"user_query": query})
+        result = self._biogpt_subgraph.invoke({"user_query": query, "attached_files": state.get("attached_files")})
         response = result.get("biogpt_response") or {}
         return {
             "content": response.get("text", ""),
@@ -318,6 +403,7 @@ class ToolsMixin:
                 "content_ids": state.get("content_ids"),
                 "resource": state.get("resource"),
                 "thread_id": state.get("thread_id"),
+                "attached_files": state.get("attached_files"),
             })
         except GraphBubbleUp:
             raise

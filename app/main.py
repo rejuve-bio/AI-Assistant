@@ -76,6 +76,8 @@ class AiAssistance(
         urls: Optional[List[str]] = None,
         resource: Optional[Any] = None,
         thread_id: Optional[str] = None,
+        propose_only: bool = False,
+        attached_files: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         """Main entry point for processing queries with parallel agent execution.
         """
@@ -89,11 +91,18 @@ class AiAssistance(
             f"content_ids: {content_ids}, graph_id: {graph_id}, urls: {urls}"
         )
         try:
+            thread_summary = self.store.get_thread_summary(thread_id, user_id)
+            thread_context = (thread_summary or {}).get("context") or {}
+            thread_species = thread_context.get("species")
+            thread_sources = thread_context.get("sources")
             initial_state = {
                 "messages": [],
                 "user_query": message,
                 "user_id": user_id,
                 "thread_id": thread_id,
+                "propose_only": propose_only,
+                "thread_species": thread_species,
+                "thread_sources": thread_sources,
                 "token": token,
                 "response": {"text": "", "json_format": None},
                 "error": "",
@@ -101,6 +110,7 @@ class AiAssistance(
                 "graph_id": graph_id,
                 "urls": urls,
                 "resource": resource,
+                "attached_files": attached_files or [],
                 "annotation_response": None,
                 "rag_response": None,
                 "galaxy_response": None,
@@ -109,6 +119,8 @@ class AiAssistance(
                 "hypothesis_response": None,
                 "pubmed_response": None,
                 "clinical_trials_response": None,
+                "proposals": [],
+                "proposals_baseline": 0,
                 "agents_completed": [],
                 "loop_iterations": 0,
                 "one_round_only": None,
