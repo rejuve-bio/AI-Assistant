@@ -1,8 +1,10 @@
 from typing import Dict, Any, Tuple, Optional, List, Union
 from app.prompts.hypothesis_prompt import hypothesis_format_prompt, hypothesis_response
 from app.socket_manager import emit_to_user
+from app.agents.proposal_requirements import FILE_FORMAT_REQUIREMENTS
 import logging
 import os
+import re
 import difflib
 import requests
 import time
@@ -12,6 +14,29 @@ logger = logging.getLogger(__name__)
 # Load API endpoints from environment variables
 HYPOTHESIS_MAIN_ENDPOINT = os.getenv('HYPOTHESIS_MAIN_ENDPOINT')
 HYPOTHESIS_DATA_API = os.getenv('HYPOTHESIS_DATA_API')
+HYPOTHESIS_SERVICE_BASE_URL = os.getenv('HYPOTHESIS_SERVICE_BASE_URL')
+
+_RSID_RE = re.compile(r"\brs\d+\b", re.IGNORECASE)
+
+_TISSUE_LABELS = {
+    "fetal_inhibitory_neuron_1": "fetal inhibitory neurons",
+    "adipose_subcutaneous": "subcutaneous adipose tissue",
+    "t_lymphocyte_1_cd8": "CD8 T lymphocytes",
+}
+
+
+def _extract_rsid(query: str) -> Optional[str]:
+    m = _RSID_RE.search(query or "")
+    return m.group(0) if m else None
+
+
+def _humanize_tissue(name: Optional[str]) -> str:
+    if not name:
+        return "an unspecified tissue"
+    key = name.strip().lower().strip("_")
+    if key in _TISSUE_LABELS:
+        return _TISSUE_LABELS[key]
+    return name.replace("_", " ").strip().lower()
 
 
 class HypothesisGeneration:
@@ -56,10 +81,22 @@ class HypothesisGeneration:
                 
             response.raise_for_status()
             data = response.json()
-            return data 
+            return data
+        except requests.exceptions.HTTPError as e:
+            detail = None
+            try:
+                body = e.response.json() if e.response is not None else None
+                if isinstance(body, dict):
+                    detail = body.get("detail") or body.get("error")
+            except ValueError:
+                pass
+            status = e.response.status_code if e.response is not None else "?"
+            message = detail or f"HTTP {status}"
+            logger.error(f"API request failed: {message}")
+            return {"error": message}
         except requests.exceptions.RequestException as e:
             logger.error(f"API request failed: {e}")
-            return {"error": f"Request failed Please Try Again"}
+            return {"error": "Request failed -- could not reach the hypothesis service"}
 
     def _validate_response(self, response: Dict[str, Any], required_keys: List[str] = []) -> Tuple[bool, str]:
         """
@@ -73,6 +110,21 @@ class HypothesisGeneration:
                 return False, f"Missing required key: {key}"
         
         return True, ""
+
+    '''DISABLED -- the old "run it for real" generate flow (_step_1_enrich
+    through _step_4_generate below, and format_user_query through
+    generate_hypothesis further down). Kept here, not deleted, only
+    because a separate, older (pre-/v1) /query endpoint still calls
+    agent() without propose_only=True and would otherwise reach this
+    code -- see app/agents/subgraphs/hypothesis.py's generate_node/
+    confirm_node, whose own old branches are disabled the same way, for
+    where this was wired in. It has real, unfixed bugs (POST /hypothesis
+    sending a JSON body instead of query params; HYPOTHESIS_MAIN_ENDPOINT/
+    HYPOTHESIS_DATA_API in .env pointing at an unreachable address) and
+    must never run automatically regardless -- this whole path performs
+    the actual mutating POST /enrich and POST /hypothesis calls, which is
+    exactly what "propose, never run" forbids. propose_hypothesis()
+    further down is the real, current, safe implementation.
 
     def _step_1_enrich(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Step 1: Start Enrichment"""
@@ -146,6 +198,7 @@ class HypothesisGeneration:
             return {"error": f"Final generation failed: {error}"}
             
         return response
+    '''
 
 
     def get_by_hypothesis_id(self, token: str, hypothesis_id: str, user_id, query=None, thread_id=None) -> Dict[str, Any]:
@@ -158,7 +211,8 @@ class HypothesisGeneration:
 
         try:
             headers = {"Authorization": f"Bearer {token}"}
-            response = requests.get(HYPOTHESIS_MAIN_ENDPOINT, params={"id": hypothesis_id}, headers=headers)
+            url = f"{HYPOTHESIS_SERVICE_BASE_URL}/hypothesis"
+            response = requests.get(url, params={"id": hypothesis_id}, headers=headers)
             response.raise_for_status()
             data = response.json()
             logger.info(f"Hypothesis GET response status: {data.get('status')}")
@@ -216,6 +270,15 @@ class HypothesisGeneration:
             logger.error(f"Failed to retrieve hypothesis by ID {hypothesis_id}: {e}")
             emit_to_user(user=user_id, message="Error retrieving hypothesis", thread_id=thread_id)
             return {"text": "NO summaries provided"}
+
+    '''DISABLED -- the rest of the old "run it for real" generate flow
+    (format_user_query through generate_hypothesis below). Same reason and
+    same caveats as the _step_1_enrich..._step_4_generate block disabled
+    above -- not deleted only because the older, pre-/v1 /query endpoint
+    still calls agent() with propose_only defaulting to False and would
+    otherwise reach it; must never run automatically regardless, since it
+    performs the actual mutating generate calls. propose_hypothesis()
+    below is the real, current, safe implementation.
 
     def format_user_query(self, query: str, user_id, thread_id=None) -> Dict[str, Any]:
         """
@@ -531,3 +594,204 @@ class HypothesisGeneration:
              return self._format_validation_error(error_details)
 
         return self._start_enrichment(token, params, user_id, thread_id=thread_id)
+    '''
+
+
+    def _list_projects_raw(self, token: str) -> List[Dict[str, Any]]:
+        """GET /projects -- read-only."""
+        url = f"{HYPOTHESIS_SERVICE_BASE_URL}/projects"
+        response = self._make_api_request("GET", url, token)
+        if isinstance(response, list):
+            return response
+        return response.get("projects", []) if isinstance(response, dict) else []
+
+    def _get_project_detail_raw(self, token: str, project_id: str) -> Dict[str, Any]:
+        """GET /projects?id=<id> -- read-only."""
+        url = f"{HYPOTHESIS_SERVICE_BASE_URL}/projects"
+        response = self._make_api_request("GET", url, token, params={"id": project_id})
+        return response if isinstance(response, dict) and "error" not in response else {}
+
+    @staticmethod
+    def _match_project_by_phenotype(query: str, projects: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        query_lower = (query or "").lower()
+        query_words = set(re.findall(r"[a-z0-9]+", query_lower))
+        best, best_score = None, 0.0
+        for p in projects:
+            phenotype = (p.get("phenotype") or "").lower()
+            if not phenotype:
+                continue
+            if phenotype in query_lower:
+                return p
+            phenotype_words = set(re.findall(r"[a-z0-9]+", phenotype))
+            overlap = (
+                len(phenotype_words & query_words) / len(phenotype_words)
+                if phenotype_words else 0.0
+            )
+            ratio = difflib.SequenceMatcher(None, phenotype, query_lower).ratio()
+            score = max(overlap, ratio)
+            if score > best_score:
+                best, best_score = p, score
+        return best if best_score >= 0.5 else None
+
+    @staticmethod
+    def _pick_best_tissue(project_detail: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        tissues = (project_detail.get("ldsc") or {}).get("tissues") or []
+        if not tissues:
+            return None
+        return min(tissues, key=lambda t: t.get("p_value", float("inf")))
+
+    @staticmethod
+    def _match_named_tissue(requested: Optional[str], project_detail: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """A tissue the user explicitly asked for, matched against this
+        project's own REAL ldsc.tissues list -- never a free-text guess.
+        None means either nothing was requested, or what was requested
+        genuinely isn't one of the tissues this project actually
+        analyzed; the caller falls back to auto-picking in that case."""
+        tissues = (project_detail.get("ldsc") or {}).get("tissues") or []
+        if not requested or not tissues:
+            return None
+        requested_lower = requested.lower()
+        requested_words = set(re.findall(r"[a-z0-9]+", requested_lower))
+        best, best_score = None, 0.0
+        for t in tissues:
+            label = _humanize_tissue(t.get("name")).lower()
+            if label in requested_lower or requested_lower in label:
+                return t
+            label_words = set(re.findall(r"[a-z0-9]+", label))
+            overlap = len(label_words & requested_words) / len(label_words) if label_words else 0.0
+            if overlap > best_score:
+                best, best_score = t, overlap
+        return best if best_score >= 0.5 else None
+
+    @staticmethod
+    def _match_credible_set_by_variant(project_detail: Dict[str, Any], rsid: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not rsid:
+            return None
+        rsid_lower = rsid.lower()
+        for cs in project_detail.get("credible_sets") or []:
+            lead = cs.get("lead_variant")
+            lead_rsid = lead.get("rs_id") if isinstance(lead, dict) else lead
+            if lead_rsid and lead_rsid.lower() == rsid_lower:
+                return cs
+        return None
+
+    @staticmethod
+    def _new_project_requirements_note() -> str:
+        """One line describing what creating a new GWAS project needs,
+        built from the one confirmed source of truth
+        (FILE_FORMAT_REQUIREMENTS) rather than reinvented here. Only the
+        GWAS file's accepted formats are actually confirmed from the real
+        service's source; phenotype/population/reference genome are named
+        here as likely requirements (every existing project has them) but
+        aren't verified yet against the real upload endpoint's exact
+        parameter list."""
+        hyp = FILE_FORMAT_REQUIREMENTS.get("hypothesis", {})
+        extensions = hyp.get("accepted_extensions") or []
+        ext_text = "/".join(e.lstrip(".") for e in extensions) if extensions else "a supported"
+        return (
+            f"upload a GWAS summary-statistics file ({ext_text}) along with its "
+            "phenotype, population, and reference genome, through the platform UI."
+        )
+
+    def propose_hypothesis(self, token: str, user_query: str, user_id: str, thread_id=None,
+                            requested_tissue: Optional[str] = None,
+                            requested_phenotype: Optional[str] = None,
+                            requested_variant: Optional[str] = None,
+                            attached_file_note: Optional[str] = None) -> Dict[str, Any]:
+        """Propose-only: match to an existing GWAS project by phenotype,
+        pick its tissue, and try to match a lead variant to one of its
+        credible sets. requested_phenotype/requested_variant/
+        requested_tissue are the LLM-extracted structured parameters (the
+        tool schema's job, not this function's) -- user_query is only a
+        fallback safety net for whichever of those didn't reach this call
+        filled in. Tissue is never auto-picked when a real requested_tissue
+        match exists; falls back to the lowest-p-value tissue when none
+        was requested or the requested one wasn't actually analyzed here.
+        Returns {"text", "json_format"} -- never a resource, since nothing
+        was generated. json_format is the proposal's self-contained data:
+        project_id, project_name, phenotype, credible_set_id (None if
+        unmatched), variant, tissue, seed. Safe calls only (GET /projects,
+        GET /projects?id=)."""
+        if not HYPOTHESIS_SERVICE_BASE_URL:
+            logger.error("HYPOTHESIS_SERVICE_BASE_URL is not set")
+            return {"text": "The hypothesis service isn't configured right now, so I can't look up GWAS projects.", "json_format": None}
+
+        emit_to_user(user=user_id, message="Looking for a matching GWAS project...", thread_id=thread_id)
+
+        attached_suffix = f"\n\n{attached_file_note}" if attached_file_note else ""
+
+        projects = self._list_projects_raw(token)
+        if not projects:
+            return {
+                "text": "There's no GWAS project available yet to build a hypothesis from." + attached_suffix,
+                "json_format": None,
+            }
+
+        project = self._match_project_by_phenotype(requested_phenotype or user_query, projects)
+        if not project:
+            names = ", ".join(p.get("phenotype", "?") for p in projects)
+            return {
+                "text": (f"I couldn't match this to any of the available GWAS projects ({names}). "
+                         f"I can't create a new one myself, but you can generate a new hypothesis "
+                         f"from your own GWAS data: {self._new_project_requirements_note()} "
+                         "Want to do that instead, or try a different phenotype?") + attached_suffix,
+                "json_format": None,
+            }
+
+        project_id = project["id"]
+        project_name = project.get("name", project_id)
+        phenotype = project.get("phenotype", "")
+        detail = self._get_project_detail_raw(token, project_id)
+
+        tissue_mismatch_note = ""
+        matched_tissue = self._match_named_tissue(requested_tissue, detail)
+        if matched_tissue:
+            tissue_name = matched_tissue.get("name")
+        else:
+            best_tissue = self._pick_best_tissue(detail)
+            tissue_name = best_tissue.get("name") if best_tissue else None
+            if requested_tissue:
+                analyzed = (detail.get("ldsc") or {}).get("tissues") or []
+                analyzed_labels = ", ".join(_humanize_tissue(t.get("name")) for t in analyzed)
+                tissue_mismatch_note = (
+                    f" You asked for {requested_tissue}, but only "
+                    f"{analyzed_labels or 'no tissue'} {'was' if len(analyzed) <= 1 else 'were'} "
+                    f"analyzed for this project — using {_humanize_tissue(tissue_name)} instead."
+                )
+        tissue_label = _humanize_tissue(tissue_name)
+
+        rsid = requested_variant or _extract_rsid(user_query)
+        matched_cs = self._match_credible_set_by_variant(detail, rsid)
+
+        data = {
+            "project_id": project_id,
+            "project_name": project_name,
+            "phenotype": phenotype,
+            "credible_set_id": matched_cs.get("_id") if matched_cs else None,
+            "variant": rsid,
+            "tissue": tissue_name,
+            "seed": 0,
+        }
+
+        if matched_cs:
+            text = (
+                f"That one I can fill in completely — {rsid} leads one of the "
+                f"{project_name} project's credible sets, and its heritability "
+                f"lands on {tissue_label}. Review it and generate."
+            )
+        elif rsid:
+            text = (
+                f"{phenotype} matches the sample GWAS project, and its "
+                f"heritability lands on {tissue_label}, so I have filled both "
+                f"in. I could not match {rsid} to one of its credible sets — "
+                "pick the locus on the Manhattan and generate."
+            )
+        else:
+            text = (
+                f"{phenotype} matches the sample GWAS project, and its "
+                f"heritability lands on {tissue_label}. Name a lead variant "
+                "to match it to one of the project's credible sets, or pick "
+                "the locus on the Manhattan and generate."
+            )
+
+        return {"text": text + tissue_mismatch_note + attached_suffix, "json_format": data}
