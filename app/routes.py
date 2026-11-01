@@ -808,6 +808,83 @@ def get_thread_messages(
         return JSONResponse(status_code=502, content={"text": f"Error getting messages: {e}"})
 
 
+@main_router.patch("/v1/threads/{thread_id}")
+async def rename_thread(
+    thread_id: str,
+    request: Request,
+    auth: AuthContext = Depends(token_required),
+):
+    """Renames a thread. Clearing the title (empty string) falls back to the
+    first message's text again, so it's never empty -- matches 'The thread'
+    in the Threads API v1 proposal."""
+    try:
+        if mongo_db_manager.thread_owner_conflict(thread_id, auth.user_id):
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+
+        body = await request.json()
+        title = body.get("title")
+
+        summary = mongo_db_manager.get_thread_summary(thread_id, auth.user_id)
+        if not summary:
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+
+        mongo_db_manager.set_thread_title(thread_id, auth.user_id, title)
+        return JSONResponse(status_code=200, content=mongo_db_manager.get_thread_summary(thread_id, auth.user_id))
+    except Exception as e:
+        logger.error(f"Error renaming thread {thread_id}: {e}")
+        return JSONResponse(status_code=502, content={"text": f"Error renaming thread: {e}"})
+
+
+@main_router.delete("/v1/threads/{thread_id}")
+def delete_thread_route(
+    thread_id: str,
+    auth: AuthContext = Depends(token_required),
+):
+    """Deletes a thread. Never touches the annotations/hypotheses/galaxy
+    runs it referenced -- those live entirely in their own services."""
+    try:
+        if mongo_db_manager.thread_owner_conflict(thread_id, auth.user_id):
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+        deleted = mongo_db_manager.delete_thread(thread_id, auth.user_id)
+        if not deleted:
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+        return Response(status_code=204)
+    except Exception as e:
+        logger.error(f"Error deleting thread {thread_id}: {e}")
+        return JSONResponse(status_code=502, content={"text": f"Error deleting thread: {e}"})
+
+
+@main_router.delete("/v1/threads/{thread_id}/messages/{message_id}")
+def delete_thread_message(
+    thread_id: str,
+    message_id: str,
+    auth: AuthContext = Depends(token_required),
+):
+    """Deletes one message by its stable id (<thread_id>_msg_<seq>) -- e.g.
+    lets a user dismiss a run card without touching the real run. seq is
+    stamped once when the message is created, so this id never changes
+    even if an earlier message in the thread gets deleted."""
+    try:
+        if mongo_db_manager.thread_owner_conflict(thread_id, auth.user_id):
+            return JSONResponse(status_code=404, content={"text": "No such thread or message for this user."})
+
+        prefix = f"{thread_id}_msg_"
+        if not message_id.startswith(prefix):
+            return JSONResponse(status_code=404, content={"text": "No such thread or message for this user."})
+        try:
+            seq = int(message_id[len(prefix):])
+        except ValueError:
+            return JSONResponse(status_code=404, content={"text": "No such thread or message for this user."})
+
+        deleted = mongo_db_manager.delete_message(thread_id, auth.user_id, seq)
+        if not deleted:
+            return JSONResponse(status_code=404, content={"text": "No such thread or message for this user."})
+        return Response(status_code=204)
+    except Exception as e:
+        logger.error(f"Error deleting message {message_id} in thread {thread_id}: {e}")
+        return JSONResponse(status_code=502, content={"text": f"Error deleting message: {e}"})
+
+
 @main_router.get("/")
 def health_check():
     return "This is health check"
