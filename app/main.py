@@ -254,8 +254,34 @@ class AiAssistance(
         resume: Optional[str] = None,
         thread_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        
         thread_id = thread_id or user_id
+        if not redis_manager.acquire_thread_lock(thread_id):
+            logger.info(f"Thread {thread_id} is already processing a request — rejecting the concurrent one")
+            return {
+                "text": "I'm still working on your previous message in this conversation — "
+                        "please wait for it to finish before sending another.",
+                "json_format": None,
+                "status": "busy",
+            }
+        try:
+            return self._assistant_response_locked(
+                query, user_id, token, graph_id, urls, content_ids, resource, resume, thread_id,
+            )
+        finally:
+            redis_manager.release_thread_lock(thread_id)
+
+    def _assistant_response_locked(
+        self,
+        query: str,
+        user_id: str,
+        token: str,
+        graph_id: Optional[str],
+        urls: Optional[List[str]],
+        content_ids: Optional[List[str]],
+        resource: Optional[Any],
+        resume: Optional[str],
+        thread_id: str,
+    ) -> Dict[str, Any]:
         try:
             logger.info(
                 f"Assistant response called with query={query}, user_id={user_id}, thread_id={thread_id}, "
