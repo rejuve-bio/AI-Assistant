@@ -116,7 +116,7 @@ class AiAssistance(
             }
 
             config = {"configurable": {"thread_id": thread_id}}
-            result = self.app.invoke(initial_state, config=config)
+            result = self.app.invoke(initial_state, config=config, durability="sync")
 
             response = self._extract_response_or_interrupt(result, config)
             logger.info(f"Agent completed successfully for user: {user_id}")
@@ -144,9 +144,19 @@ class AiAssistance(
         return {}
 
 
-    def _extract_response_or_interrupt(self, result: Dict[str, Any], config: dict) -> Dict[str, Any]:
+    def _extract_response_or_interrupt(self, result: Dict[str, Any], config: dict, resumed: bool = False) -> Dict[str, Any]:
         """Build the response dict from an invoke() result, whether the graph
         finished normally or paused on any agent's confirmation interrupt().
+
+        `resumed` is True only when this invoke() was itself resuming a
+        previously-paused confirmation (Command(resume=...), from
+        confirmation.py). Only then does a now-resolved turn reset the
+        thread's checkpoint -- cleaning up the dangling interrupt state,
+        not the whole conversation. An ordinary turn (resumed=False, the
+        default -- every call from agent()) must never reset: that's the
+        orchestrator's actual cross-turn memory, and wiping it after every
+        single turn left the assistant unable to remember anything it was
+        just told.
         """
         state = self.app.get_state(config)
         if state.next:
@@ -162,7 +172,8 @@ class AiAssistance(
                 "agents_completed": result.get("agents_completed", []),
             }
 
-        self._reset_thread(config)
+        if resumed:
+            self._reset_thread(config)
 
         response = result.get("response", {"text": ""})
         if not isinstance(response, dict):
