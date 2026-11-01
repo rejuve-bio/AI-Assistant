@@ -189,12 +189,14 @@ class ToolsMixin:
 
         query = arguments.get("query") or state["user_query"]
         context = (state.get("hypothesis_response") or {}).get("text", "")
+        min_year = self._extract_min_year(state["user_query"])
         result = self._literature_graph.invoke({
             "user_query": query,
             "user_id": state["user_id"],
             "content_ids": state.get("content_ids"),
             "sources": [RAG, PUBMED, CLINICAL_TRIALS],
             "search_context": context,
+            "min_year": min_year,
         })
 
         state_update, parts = {}, []
@@ -328,6 +330,21 @@ class ToolsMixin:
         answer = interrupt({"confirmation_text": question, "options": [], "allow_free_text": True})
         return {"content": str(answer)}
 
+
+    @staticmethod
+    def _extract_min_year(user_query: str) -> Optional[int]:
+        q = user_query.lower()
+
+        m = re.search(r"\b(?:since|from|after)\s+(\d{4})\b", q)
+        if m:
+            return int(m.group(1))
+
+        m = re.search(r"\b(?:last|past|previous)\s+(\d{1,2})\s+years?\b", q)
+        if m:
+            from datetime import datetime
+            return datetime.now().year - int(m.group(1)) + 1
+
+        return None
 
     def _extract_search_term(self, user_query: str, context: str = "") -> str:
         context_line = f"\nAdditional context: {context[:500]}" if context else ""
