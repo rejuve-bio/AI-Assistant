@@ -232,6 +232,10 @@ class ToolsMixin:
                 "organism_override": organism_override,
                 "organism_hint_text": state["user_query"],
                 "thread_id": state.get("thread_id"),
+                "propose_only": state.get("propose_only", False),
+                "thread_species": state.get("thread_species"),
+                "thread_sources": state.get("thread_sources"),
+                "attached_files": state.get("attached_files"),
             })
         except GraphBubbleUp:
             raise
