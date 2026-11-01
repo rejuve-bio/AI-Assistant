@@ -694,6 +694,120 @@ def get_thread(
         return JSONResponse(status_code=502, content={"text": f"Error getting thread: {e}"})
 
 
+def _build_proposal_title(data: dict, kind: Optional[str] = None) -> str:
+    """A short structural label like the doc's own example, "APOE →
+    transcripts → proteins" -- not a slice of the prose summary (which
+    was cutting off mid-word/mid-sentence at 80 chars). Walks the
+    predicate chain from a root node (one never a predicate's target),
+    labeling each node by a real property value when it has one (e.g.
+    the gene's name) or its type, pluralized, when it doesn't yet.
+
+    A hypothesis proposal's data is self-contained (project_id,
+    phenotype, variant, credible_set_id, ...), not a nodes/predicates
+    graph, so it gets its own short branch: "{variant} → {phenotype}"
+    once a credible set is actually matched, or "A locus in {phenotype}"
+    while that's still unresolved ("you choose")."""
+    if kind == "hypothesis":
+        phenotype = (data or {}).get("phenotype") or "a phenotype"
+        variant = (data or {}).get("variant")
+        if (data or {}).get("credible_set_id") and variant:
+            return f"{variant} → {phenotype.lower()}"
+        return f"A locus in {phenotype.lower()}"
+
+    nodes = {n.get("node_id"): n for n in (data or {}).get("nodes", []) if n.get("node_id")}
+    predicates = (data or {}).get("predicates", []) or []
+    if not nodes:
+        return "Annotation"
+
+    def label(node: dict) -> str:
+        for v in (node.get("properties") or {}).values():
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        node_type = (node.get("type") or "entity").strip() or "entity"
+        return f"{node_type}s"
+
+    targets = {p.get("target") for p in predicates}
+    roots = [nid for nid in nodes if nid not in targets]
+    current = roots[0] if roots else next(iter(nodes))
+
+    chain, seen = [], set()
+    while current in nodes and current not in seen:
+        seen.add(current)
+        chain.append(label(nodes[current]))
+        current = next((p.get("target") for p in predicates if p.get("source") == current), None)
+
+    return " → ".join(chain) if chain else "Annotation"
+
+
+def _format_v1_message(thread_id: str, m: dict, index: int) -> dict:
+    """Shared shaping of one stored message entry into the Threads API v1
+    {id, thread_id, role, created_at, client_message_id?, parts} shape --
+    used by both the messages-read endpoint and /v1/query's own response,
+    so the two can never drift apart.
+
+    The id uses the message's stable, stored `seq` (stamped once at
+    creation in append_message) rather than its array position, so
+    deleting an earlier message never changes a later message's id.
+    `index` is only a fallback for messages stored before `seq` existed.
+    """
+    msg_num = m.get("seq", index)
+    if m.get("context_part"):
+        parts = [{"type": "context", **m["context_part"]}]
+    elif m.get("run_part"):
+        parts = [{"type": "run", **m["run_part"]}]
+    else:
+        parts = [{"type": "text", "text": m.get("text", "")}]
+        if m.get("files_part"):
+            parts.append({"type": "files", "files": m["files_part"]})
+        if m.get("role") == "user" and m.get("graph_id"):
+            parts.append({"type": "about", "kind": m.get("resource_type") or "annotation", "id": m["graph_id"]})
+        if m.get("proposals"):
+            for i, prop in enumerate(m["proposals"]):
+                kind = prop.get("kind") or "annotation"
+                data = prop.get("data")
+                suffix = f"_{i}" if len(m["proposals"]) > 1 else ""
+                parts.append({"type": "proposal", "id": f"{thread_id}_msg_{msg_num}_prop{suffix}", "kind": kind,
+                              "title": _build_proposal_title(data, kind=kind), "data": data})
+        elif m.get("json_format"):
+            kind = m.get("resource_type") or "annotation"
+            parts.append({"type": "proposal", "id": f"{thread_id}_msg_{msg_num}_prop", "kind": kind,
+                          "title": _build_proposal_title(m["json_format"], kind=kind), "data": m["json_format"]})
+        if m.get("quick_replies"):
+            parts.append({"type": "quick_replies", "replies": m["quick_replies"]})
+    created_at = m.get("created_at")
+    return {
+        "id": f"{thread_id}_msg_{msg_num}",
+        "thread_id": thread_id,
+        "role": m.get("role"),
+        "created_at": mongo_db_manager._iso(created_at) if hasattr(created_at, "isoformat") else created_at,
+        "client_message_id": m.get("client_message_id"),
+        "parts": parts,
+    }
+
+
+@main_router.get("/v1/threads/{thread_id}/messages")
+def get_thread_messages(
+    thread_id: str,
+    auth: AuthContext = Depends(token_required),
+):
+    """A thread's messages, oldest first, read from the existing stored
+    turns. Each message's id is built from its stable, stored `seq`
+    (see _format_v1_message) -- read-only, no schema change."""
+    try:
+        doc = mongo_db_manager.get_thread(thread_id, auth.user_id)
+        if not doc.get("messages") and not mongo_db_manager.get_thread_summary(thread_id, auth.user_id):
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+
+        items = [_format_v1_message(thread_id, m, i) for i, m in enumerate(doc.get("messages", []))]
+        return JSONResponse(status_code=200, content={
+            "items": items,
+            "next_cursor": None,
+        })
+    except Exception as e:
+        logger.error(f"Error getting messages for thread {thread_id}: {e}")
+        return JSONResponse(status_code=502, content={"text": f"Error getting messages: {e}"})
+
+
 @main_router.get("/")
 def health_check():
     return "This is health check"
