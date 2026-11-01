@@ -1,0 +1,20 @@
+name: CADD
+website: https://forgedb.cancer.gov
+nodes:
+  snp:
+    url: https://forgedb.cancer.gov/api/cadd/v1.0/cadd.forgedb.csv.gz
+    input_label: snp
+    output_label: snp
+    description: A single nucleotide polymorphism (SNP) is a variation in a single
+      nucleotide that occurs at a specific position in the genome
+    properties:
+      id: str
+      chr: str
+      start: int
+      end: int
+      ref: str
+      alt: str
+      caf_ref: str
+      caf_alt: str
+      raw_cadd_score: float
+      phred_score: float

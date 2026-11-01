@@ -1,0 +1,108 @@
+name: UniProt
+website: https://www.uniprot.org
+nodes:
+  protein:
+    url: https://www.uniprot.org/
+    input_label: protein
+    properties:
+      id: str
+      protein_name: str
+      accessions: str[]
+      canonical_accession: str
+      is_canonical: bool
+      is_isoform: bool
+      isoform_name: str
+      taxon_id: int
+      source: str
+      source_url: str
+relationships:
+  translates to:
+    url: https://www.uniprot.org/
+    input_label: translates_to
+    output_label: translates_to
+    description: x (amino acid chain/polypeptide) is the ribosomal translation of
+      y (transcript)
+    source: transcript
+    target: protein
+    properties:
+      taxon_id: int
+  protein has_xref gene:
+    url: https://www.uniprot.org/
+    input_label: protein_has_xref_gene
+    output_label: has_xref
+    source: protein
+    target: gene
+    properties:
+      evidence: str[]
+  protein has_xref transcript:
+    url: https://www.uniprot.org/
+    input_label: protein_has_xref_transcript
+    output_label: has_xref
+    source: protein
+    target: transcript
+    properties:
+      evidence: str[]
+  protein has_xref protein:
+    url: https://www.uniprot.org/
+    input_label: protein_has_xref_protein
+    output_label: has_xref
+    source: protein
+    target: protein
+    properties:
+      evidence: str[]
+  protein has_xref biological_process:
+    url: https://www.uniprot.org/
+    input_label: protein_has_xref_biological_process
+    output_label: has_xref
+    source: protein
+    target: biological process
+    properties:
+      evidence: str[]
+  protein has_xref cellular_component:
+    url: https://www.uniprot.org/
+    input_label: protein_has_xref_cellular_component
+    output_label: has_xref
+    source: protein
+    target: cellular component
+    properties:
+      evidence: str[]
+  protein has_xref molecular_function:
+    url: https://www.uniprot.org/
+    input_label: protein_has_xref_molecular_function
+    output_label: has_molecular_function
+    source: protein
+    target: molecular function
+    properties:
+      evidence: str[]
+  protein has_xref catalytic_activity:
+    url: https://www.uniprot.org/
+    input_label: protein_has_xref_catalytic_activity
+    output_label: has_xref
+    source: protein
+    target: small_molecule
+    properties:
+      evidence: str[]
+  protein has_xref cofactor:
+    url: https://www.uniprot.org/
+    input_label: protein_has_xref_cofactor
+    output_label: has_xref
+    source: protein
+    target: small_molecule
+    properties:
+      evidence: str[]
+  protein has_xref binding_site_ligand:
+    url: https://www.uniprot.org/
+    input_label: protein_has_xref_binding_site_ligand
+    output_label: has_xref
+    source: protein
+    target: small_molecule
+    properties:
+      evidence: str[]
+  chemical_substance part_of chemical_substance:
+    url: https://www.uniprot.org/
+    input_label: chemical_substance_part_of_chemical_substance
+    output_label: part_of
+    source: small_molecule
+    target: small_molecule
+    properties:
+      evidence: str[]

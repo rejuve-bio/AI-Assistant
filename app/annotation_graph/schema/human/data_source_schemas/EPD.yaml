@@ -1,0 +1,20 @@
+name: EPD
+website: https://epd.expasy.org
+nodes:
+  promoter:
+    url: https://epd.expasy.org/ftp/epdnew/H_sapiens/
+    input_label: promoter
+    output_label: promoter
+    properties:
+      taxon_id: int
+      end: int
+      start: int
+      chr: str
+relationships:
+  promoter to gene association:
+    url: https://epd.expasy.org/ftp/epdnew/H_sapiens/
+    input_label: promoter_gene
+    output_label: associated_with
+    description: An association between a promoter and a gene
+    source: promoter
+    target: gene

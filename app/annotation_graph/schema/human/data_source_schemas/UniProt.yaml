@@ -1,0 +1,48 @@
+name: UniProt
+website: https://www.uniprot.org
+nodes:
+  protein:
+    url: https://www.uniprot.org/
+    input_label: protein
+    output_label: protein
+    properties:
+      id: str
+      protein_name: str
+      accessions: str[]
+      is_canonical: bool
+      is_isoform: bool
+      canonical_accession: str
+      isoform_name: str
+      source: str
+      source_url: str
+relationships:
+  translates to:
+    url: https://www.uniprot.org/
+    input_label: translates_to
+    output_label: translates_to
+    description: x (amino acid chain/polypeptide) is the ribosomal translation of
+      y (transcript) if and only if a ribosome reads y (transcript) through a series
+      of triplet codon-amino acid adaptor activities (GO:0030533) and produces x (amino
+      acid chain/polypeptide)
+    source: transcript
+    target: protein
+  protein has_xref gene:
+    url: https://www.uniprot.org/
+    input_label: protein_has_xref_gene
+    output_label: has_xref
+    source: protein
+    target: gene
+  protein has_xref transcript:
+    url: https://www.uniprot.org/
+    input_label: protein_has_xref_transcript
+    output_label: has_xref
+    source: protein
+    target: transcript
+  protein has_xref small molecule:
+    url: https://www.uniprot.org/
+    input_label: protein_has_xref_small_molecule
+    output_label: has_xref
+    description: Cross-reference between a protein and a small molecule (e.g. binding
+      site ligand, cofactor, or catalytic activity substrate).
+    source: protein
+    target: small_molecule

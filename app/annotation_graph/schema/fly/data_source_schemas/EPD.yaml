@@ -1,0 +1,22 @@
+name: EPD
+website: https://epd.expasy.org
+nodes:
+  promoter:
+    url: https://epd.expasy.org/ftp/epdnew/
+    input_label: promoter
+    properties:
+      id: str
+      chr: str
+      start: int
+      end: int
+      taxon_id: int
+relationships:
+  promoter to gene association:
+    url: https://epd.expasy.org/ftp/epdnew/
+    input_label: promoter_gene
+    output_label: associated_with
+    description: An association between a promoter and a gene
+    source: promoter
+    target: gene
+    properties:
+      taxon_id: int

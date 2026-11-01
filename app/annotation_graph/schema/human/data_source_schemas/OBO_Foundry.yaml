@@ -1,0 +1,225 @@
+name: OBO Foundry
+website: http://www.obofoundry.org
+nodes:
+  biological process:
+    url: http://www.obofoundry.org/
+    input_label: biological_process
+    output_label: biological_process
+    properties:
+      synonym: str[]
+      term_name: str
+      description: str
+  molecular function:
+    url: http://www.obofoundry.org/
+    input_label: molecular_function
+    output_label: molecular_function
+    properties:
+      synonym: str[]
+      term_name: str
+      description: str
+  cellular component:
+    url: http://www.obofoundry.org/
+    input_label: cellular_component
+    output_label: cellular_component
+    properties:
+      synonym: str[]
+      term_name: str
+      description: str
+  anatomy:
+    url: http://www.obofoundry.org/
+    input_label: anatomy
+    output_label: anatomy
+    properties:
+      id: str
+      term_name: str
+      synonym: str[]
+      description: str
+  cell line:
+    url: http://www.obofoundry.org/
+    input_label: cell_line
+    output_label: cell_line
+    properties:
+      id: str
+      term_name: str
+      synonym: str[]
+      description: str
+  cell type:
+    url: http://www.obofoundry.org/
+    input_label: cell_type
+    output_label: cell_type
+    properties:
+      id: str
+      term_name: str
+      synonym: str[]
+      description: str
+  experimental factor:
+    url: http://www.obofoundry.org/
+    input_label: experimental_factor
+    output_label: experimental_factor
+    properties:
+      id: str
+      term_name: str
+      synonym: str[]
+      description: str
+  tissue:
+    url: http://www.obofoundry.org/
+    input_label: tissue
+    output_label: tissue
+    properties:
+      id: str
+      term_name: str
+      synonym: str[]
+      description: str
+  small molecule:
+    url: http://www.obofoundry.org/
+    input_label: small_molecule
+    output_label: small_molecule
+    properties:
+      id: str
+      term_name: str
+      synonym: str[]
+      description: str
+  phenotype:
+    url: http://www.obofoundry.org/
+    input_label: phenotype
+    output_label: phenotype
+    properties:
+      id: str
+      term_name: str
+      description: str
+  disease:
+    url: http://www.obofoundry.org/
+    input_label: disease
+    output_label: disease
+    properties:
+      id: str
+      term_name: str
+      synonym: str[]
+      description: str
+  developmental_stage:
+    url: http://www.obofoundry.org/
+    input_label: developmental_stage
+    output_label: developmental_stage
+    properties:
+      id: str
+      term_name: str
+      synonym: str[]
+      description: str
+relationships:
+  biological process subclass:
+    url: http://www.obofoundry.org/
+    input_label: biological_process_subclass_of
+    output_label: is_a
+    source: biological_process
+    target: biological_process
+    properties:
+      rel_type: str
+  molecular function subclass:
+    url: http://www.obofoundry.org/
+    input_label: molecular_function_subclass_of
+    output_label: is_a
+    source: molecular_function
+    target: molecular_function
+    properties:
+      rel_type: str
+  cellular component subclass:
+    url: http://www.obofoundry.org/
+    input_label: cellular_component_subclass_of
+    output_label: is_a
+    source: cellular_component
+    target: cellular_component
+    properties:
+      rel_type: str
+  uberon subclass of:
+    url: http://www.obofoundry.org/
+    input_label: uberon_subclass_of
+    output_label: is_a
+    source: anatomy
+    target: anatomy
+    properties:
+      rel_type: str
+  clo subclass of:
+    url: http://www.obofoundry.org/
+    input_label: clo_subclass_of
+    output_label: is_a
+    source: cell_line
+    target: cell_line
+    properties:
+      rel_type: str
+  cl subclass of:
+    url: http://www.obofoundry.org/
+    input_label: cl_subclass_of
+    output_label: is_a
+    source: cell_type
+    target: cell_type
+    properties:
+      rel_type: str
+  cl capable of:
+    url: http://www.obofoundry.org/
+    input_label: cl_capable_of
+    output_label: capable_of
+    description: Represents the capability of a cell type (CL term) to carry out or
+      be involved in a specific biological process.
+    source: cell_type
+    target: biological_process
+  cl part of anatomy:
+    url: http://www.obofoundry.org/
+    input_label: cl_part_of
+    output_label: part_of
+    description: Represents a part-whole relationship between a CL term and an UBERON
+      anatomy term.
+    source: cell_type
+    target: anatomy
+  cell type part of tissue:
+    url: http://www.obofoundry.org/
+    input_label: cell_type_part_of_tissue
+    output_label: part_of
+    description: Cross-ontology relation linking a CL cell type to a BTO tissue term.
+    source: cell_type
+    target: tissue
+  tissue part of anatomy:
+    url: http://www.obofoundry.org/
+    input_label: tissue_part_of_anatomy
+    output_label: part_of
+    description: Cross-ontology relation linking a BRENDA Tissue Ontology (BTO) term
+      to an UBERON anatomy term.
+    source: tissue
+    target: anatomy
+  efo subclass of:
+    url: http://www.obofoundry.org/
+    input_label: efo_subclass_of
+    output_label: is_a
+    source: experimental_factor
+    target: experimental_factor
+    properties:
+      rel_type: str
+  bto subclass of:
+    url: http://www.obofoundry.org/
+    input_label: bto_subclass_of
+    output_label: is_a
+    source: tissue
+    target: tissue
+    properties:
+      rel_type: str
+  chebi subclass of:
+    url: http://www.obofoundry.org/
+    input_label: chebi_subclass_of
+    output_label: is_a
+    source: small_molecule
+    target: small_molecule
+    properties:
+      rel_type: str
+  hpo subclass of:
+    url: http://www.obofoundry.org/
+    input_label: hpo_subclass_of
+    output_label: is_a
+    source: phenotype
+    target: phenotype
+  do subclass of:
+    url: http://www.obofoundry.org/
+    input_label: do_subclass_of
+    output_label: is_a
+    source: disease
+    target: disease
+    properties:
+      rel_type: str

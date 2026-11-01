@@ -1,0 +1,214 @@
+name: REACTOME
+website: https://reactome.org
+nodes:
+  pathway:
+    url: https://reactome.org
+    input_label: pathway
+    properties:
+      id: str
+      pathway_name: str
+      taxon_id: str
+      evidence: str
+      source: str
+      source_url: str
+  reaction:
+    url: https://reactome.org
+    input_label: reaction
+    properties:
+      id: str
+      reaction_name: str
+      taxon_id: str
+      evidence: str
+      reaction_url: str
+      pubmed_url: str
+relationships:
+  gene to pathway association:
+    url: https://reactome.org
+    input_label: genes_pathways
+    output_label: participates_in
+    description: An interaction between a gene and a pathway.
+    source: gene
+    target: pathway
+    properties:
+      taxon_id: int
+  protein to pathway association:
+    url: https://reactome.org
+    input_label: protein_pathways
+    output_label: participates_in
+    description: An interaction between a protein and a pathway.
+    source: protein
+    target: pathway
+  transcript to pathway association:
+    url: https://reactome.org
+    input_label: transcript_pathways
+    output_label: participates_in
+    description: An interaction between a transcript and a pathway.
+    source: transcript
+    target: pathway
+  gene to reaction association:
+    url: https://reactome.org
+    input_label: gene_or_gene_product_reaction
+    output_label: involved_in
+    description: An interaction between a gene and a reaction.
+    source: gene
+    target: reaction
+    properties:
+      taxon_id: int
+  protein to reaction association:
+    url: https://reactome.org
+    input_label: protein_reaction
+    output_label: involved_in
+    description: An interaction between a protein and a reaction.
+    source: protein
+    target: reaction
+  transcript to reaction association:
+    url: https://reactome.org
+    input_label: transcript_reaction
+    output_label: involved_in
+    description: An interaction between a transcript and a reaction.
+    source: transcript
+    target: reaction
+  reaction to pathway association:
+    url: https://reactome.org
+    input_label: reaction_to_pathway
+    output_label: part_of
+    description: holds between a reaction and the pathway it is part of.
+    source: reaction
+    target: pathway
+  parent pathway of:
+    url: https://reactome.org
+    input_label: parent_pathway_of
+    description: holds between two pathways where the domain class is a parent pathway
+      of the range class
+    source: pathway
+    target: pathway
+    properties:
+      taxon_id: int
+  child pathway of:
+    url: https://reactome.org
+    input_label: child_pathway_of
+    description: holds between two pathways where the domain class is a child pathway
+      of the range class
+    source: pathway
+    target: pathway
+    properties:
+      taxon_id: int
+  pathway_to_biological_process:
+    url: https://reactome.org
+    input_label: pathway_to_biological_process
+    output_label: equivalent_to
+    description: An association between a pathway and a biological process.
+    source: pathway
+    target: biological_process
+  small molecule to pathway association:
+    url: https://reactome.org
+    input_label: small_molecule_to_pathway
+    output_label: participates_in
+    description: An interaction between a small molecule and a pathway.
+    source: small_molecule
+    target: pathway
+  small molecule to reaction association:
+    url: https://reactome.org
+    input_label: small_molecule_to_reaction
+    output_label: participates_in
+    description: An interaction between a small molecule and a reaction.
+    source: small_molecule
+    target: reaction
+  input role protein to pathway association:
+    url: https://reactome.org
+    input_label: protein_enables_pathway
+    output_label: enables
+    description: holds between a protein playing an input role in a pathway.
+    source: protein
+    target: pathway
+    properties:
+      relation_ontology_term: str
+  input role protein to reaction association:
+    url: https://reactome.org
+    input_label: protein_enables_reaction
+    output_label: enables
+    description: holds between a protein playing an input role in a reaction.
+    source: protein
+    target: reaction
+    properties:
+      relation_ontology_term: str
+  output role protein to pathway association:
+    url: https://reactome.org
+    input_label: protein_produced_by_pathway
+    output_label: produced_by
+    description: holds between a protein produced by a pathway.
+    source: protein
+    target: pathway
+    properties:
+      relation_ontology_term: str
+  output role protein to reaction association:
+    url: https://reactome.org
+    input_label: protein_produced_by_reaction
+    output_label: produced_by
+    description: holds between a protein produced by a reaction.
+    source: protein
+    target: reaction
+    properties:
+      relation_ontology_term: str
+  catalyst protein to pathway association:
+    url: https://reactome.org
+    input_label: protein_regulates_pathway
+    output_label: regulates
+    description: holds between a protein playing a catalyst role in a pathway.
+    source: protein
+    target: pathway
+    properties:
+      relation_ontology_term: str
+  catalyst protein to reaction association:
+    url: https://reactome.org
+    input_label: protein_regulates_reaction
+    output_label: regulates
+    description: holds between a protein playing a catalyst role in a reaction.
+    source: protein
+    target: reaction
+    properties:
+      relation_ontology_term: str
+  negative role protein to pathway association:
+    url: https://reactome.org
+    input_label: protein_negatively_regulates_pathway
+    output_label: negatively_regulates
+    description: holds between a protein negatively regulating a pathway.
+    source: protein
+    target: pathway
+    properties:
+      relation_ontology_term: str
+  negative role protein to reaction association:
+    url: https://reactome.org
+    input_label: protein_negatively_regulates_reaction
+    output_label: negatively_regulates
+    description: holds between a protein negatively regulating a reaction.
+    source: protein
+    target: reaction
+    properties:
+      relation_ontology_term: str
+  positive role protein to pathway association:
+    url: https://reactome.org
+    input_label: protein_positively_regulates_pathway
+    output_label: positively_regulates
+    description: holds between a protein positively regulating a pathway.
+    source: protein
+    target: pathway
+    properties:
+      relation_ontology_term: str
+  positive role protein to reaction association:
+    url: https://reactome.org
+    input_label: protein_positively_regulates_reaction
+    output_label: positively_regulates
+    description: holds between a protein positively regulating a reaction.
+    source: protein
+    target: reaction
+    properties:
+      relation_ontology_term: str
+  post translational interaction:
+    url: https://reactome.org/
+    input_label: interacts_with
+    output_label: interacts_with
+    source: protein
+    target: protein
+    properties:
+      interaction_type: str
