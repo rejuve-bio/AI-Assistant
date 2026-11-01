@@ -58,6 +58,7 @@ class MongoManager:
             self.content_files_collection.create_index("content_id", unique=True)
             self.content_files_collection.create_index("content_type")
             self.content_files_collection.create_index("upload_time")
+            self.content_files_collection.create_index("content_hash")
 
             # FAQ indexes
             self.faq_collection.create_index("question_id", unique=True)
@@ -421,6 +422,7 @@ class MongoManager:
         keywords: str = None,
         topics: str = None,
         metadata: dict = None,
+        content_hash: str = None,
     ):
         """Add a content file record"""
         try:
@@ -430,6 +432,7 @@ class MongoManager:
                 "content_id": content_id,
                 "content_type": content_type,
                 "filename": filename,
+                "content_hash": content_hash,
                 "num_pages": num_pages,
                 "url": url,
                 "title": title,

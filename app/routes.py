@@ -37,16 +37,9 @@ def _handle_uploads(uploaded_files, ai_assistant, user_id, content_ids):
         if uploaded.filename and uploaded.filename.lower().endswith(".pdf"):
             response = ai_assistant.rag.save_retrievable_docs(uploaded, user_id)
             if isinstance(response, dict):
-                is_duplicate = response.get("text") == "PDF already exists."
-                if is_duplicate:
-                    pdf_files = mongo_db_manager.get_user_content_files(user_id, "pdf")
-                    existing = next((f for f in pdf_files if f.get("filename") == uploaded.filename), None)
-                    if existing:
-                        newly_uploaded_content_ids.append(existing.get("content_id"))
-                else:
-                    new_id = response.get("resource", {}).get("content_id")
-                    if new_id:
-                        newly_uploaded_content_ids.append(new_id)
+                new_id = response.get("resource", {}).get("content_id")
+                if new_id:
+                    newly_uploaded_content_ids.append(new_id)
                 upload_results.append({"filename": uploaded.filename, "response": response})
 
     if newly_uploaded_content_ids:
