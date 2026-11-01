@@ -496,14 +496,18 @@ class MongoManager:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    @staticmethod
+    def _thread_title(doc: dict) -> str:
+        first_text = next((m.get("text") for m in doc.get("messages") or [] if m.get("text")), "")
+        return doc.get("custom_title") or first_text[:80] or "Untitled thread"
+
     def get_thread_summary(self, thread_id: str, user_id: str) -> Optional[dict]:
         """One thread's summary row, or None if it doesn't belong to this
         user -- the data backing a future GET /v1/threads/{id} read."""
         doc = self.threads_collection.find_one({"thread_id": thread_id, "user_id": user_id})
         if not doc:
             return None
-        first_message = (doc.get("messages") or [{}])[0]
-        title = doc.get("custom_title") or (first_message.get("text") or "")[:80] or "Untitled thread"
+        title = self._thread_title(doc)
         created_at = doc["_id"].generation_time if doc.get("_id") else None
         return {
             "id": doc["thread_id"],
@@ -592,12 +596,11 @@ class MongoManager:
         try:
             cursor = self.threads_collection.find(
                 {"user_id": user_id},
-                {"thread_id": 1, "messages": {"$slice": 1}, "message_count": 1, "updated_at": 1, "_id": 1, "context": 1, "custom_title": 1},
+                {"thread_id": 1, "messages": {"$slice": 5}, "message_count": 1, "updated_at": 1, "_id": 1, "context": 1, "custom_title": 1},
             ).sort("updated_at", -1)
             summaries = []
             for doc in cursor:
-                first_message = (doc.get("messages") or [{}])[0]
-                title = doc.get("custom_title") or (first_message.get("text") or "")[:80] or "Untitled thread"
+                title = self._thread_title(doc)
                 created_at = doc["_id"].generation_time if doc.get("_id") else None
                 summaries.append({
                     "id": doc["thread_id"],
