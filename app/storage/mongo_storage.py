@@ -1,6 +1,7 @@
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Optional
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
 from langgraph.checkpoint.mongodb import MongoDBSaver
@@ -366,28 +367,57 @@ class MongoManager:
         agents: list = None,
         graph_id: str = None,
         resource_type: str = None,
+        client_message_id: str = None,
+        context_part: dict = None,
+        run_part: dict = None,
+        files_part: list = None,
+        quick_replies: list = None,
+        proposals: list = None,
     ) -> dict:
         try:
-            entry = {"role": role, "text": text, "created_at": datetime.utcnow()}
+            counter_doc = self.threads_collection.find_one_and_update(
+                {"thread_id": thread_id, "user_id": user_id},
+                {
+                    "$inc": {"next_seq": 1},
+                    "$setOnInsert": {
+                        "thread_id": thread_id, "user_id": user_id,
+                        "messages": [], "tool_calls": [], "running_summary": "",
+                    },
+                },
+                upsert=True,
+                return_document=True,
+            )
+            seq = counter_doc.get("next_seq", 1)
+
+            entry = {"seq": seq, "role": role, "text": text, "created_at": datetime.utcnow()}
             if json_format:
                 entry["json_format"] = json_format
             if agents:
                 entry["agents"] = agents
             if graph_id:
                 entry["graph_id"] = graph_id
-                entry["resource_type"] = resource_type or "unknown"
+            if resource_type:
+                entry["resource_type"] = resource_type
+            elif graph_id:
+                entry["resource_type"] = "unknown"
+            if client_message_id:
+                entry["client_message_id"] = client_message_id
+            if context_part:
+                entry["context_part"] = context_part
+            if run_part:
+                entry["run_part"] = run_part
+            if files_part:
+                entry["files_part"] = files_part
+            if quick_replies:
+                entry["quick_replies"] = quick_replies
+            if proposals:
+                entry["proposals"] = proposals
             doc = self.threads_collection.find_one_and_update(
                 {"thread_id": thread_id, "user_id": user_id},
                 {
                     "$push": {"messages": entry},
                     "$inc": {"message_count": 1},
                     "$set": {"updated_at": datetime.utcnow()},
-                    "$setOnInsert": {
-                        "thread_id": thread_id,
-                        "user_id": user_id,
-                        "tool_calls": [],
-                        "running_summary": "",
-                    },
                 },
                 upsert=True,
                 return_document=True,
@@ -401,6 +431,155 @@ class MongoManager:
         except Exception as e:
             logger.error(f"Error appending message to thread {thread_id}: {e}")
             return self.get_thread(thread_id, user_id)
+
+    def find_message_by_client_id(self, thread_id: str, user_id: str, client_message_id: str) -> Optional[dict]:
+        """Looks up a previously-stored message by its client-supplied
+        idempotency key, scoped to this thread. Used to detect a retried
+        send so it can be answered from the stored result instead of
+        reprocessed -- see the client_message_id convention in the
+        Threads API v1 proposal."""
+        if not client_message_id:
+            return None
+        try:
+            doc = self.threads_collection.find_one(
+                {"thread_id": thread_id, "user_id": user_id, "messages.client_message_id": client_message_id},
+                {"messages.$": 1},
+            )
+            if doc and doc.get("messages"):
+                return doc["messages"][0]
+        except Exception as e:
+            logger.error(f"Error looking up client_message_id {client_message_id} in thread {thread_id}: {e}")
+        return None
+
+    @staticmethod
+    def _iso(dt) -> Optional[str]:
+        """One canonical timestamp shape everywhere in the v1 API --
+        second precision, UTC, literal 'Z' -- matching the doc's own
+        example ("2026-10-08T09:00:04Z"). Source datetimes are a mix of
+        naive (stored via datetime.utcnow()) and tz-aware (ObjectId's
+        generation_time), which without this produced three different
+        serializations across the same response."""
+        if not dt:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def get_thread_summary(self, thread_id: str, user_id: str) -> Optional[dict]:
+        """One thread's summary row, or None if it doesn't belong to this
+        user -- the data backing a future GET /v1/threads/{id} read."""
+        doc = self.threads_collection.find_one({"thread_id": thread_id, "user_id": user_id})
+        if not doc:
+            return None
+        first_message = (doc.get("messages") or [{}])[0]
+        title = doc.get("custom_title") or (first_message.get("text") or "")[:80] or "Untitled thread"
+        created_at = doc["_id"].generation_time if doc.get("_id") else None
+        return {
+            "id": doc["thread_id"],
+            "title": title,
+            "context": doc.get("context"),
+            "created_at": self._iso(created_at),
+            "updated_at": self._iso(doc.get("updated_at")),
+            "message_count": doc.get("message_count", 0),
+        }
+
+    def thread_owner_conflict(self, thread_id: str, user_id: str) -> bool:
+        """True if thread_id already exists but belongs to a different user --
+        the 404 case: 'another user's thread counts as missing'."""
+        doc = self.threads_collection.find_one({"thread_id": thread_id}, {"user_id": 1})
+        return bool(doc and doc.get("user_id") != user_id)
+
+    def set_thread_context(self, thread_id: str, user_id: str, species: str, sources: list) -> dict:
+        """Sets a thread's species/sources, matching the Threads API v1
+        proposal's PUT .../context. Returns {"changed": bool, "context": {...}}
+        so the caller can tell a real change (201 + divider message) from a
+        no-op (204)."""
+        existing = self.get_thread_summary(thread_id, user_id) or {}
+        new_context = {"species": species, "sources": sources}
+        if existing.get("context") == new_context:
+            return {"changed": False, "context": new_context}
+        self.threads_collection.update_one(
+            {"thread_id": thread_id, "user_id": user_id},
+            {
+                "$set": {"context": new_context, "updated_at": datetime.utcnow()},
+                "$setOnInsert": {
+                    "thread_id": thread_id, "user_id": user_id,
+                    "messages": [], "tool_calls": [], "running_summary": "",
+                },
+            },
+            upsert=True,
+        )
+        return {"changed": True, "context": new_context}
+
+    def set_thread_title(self, thread_id: str, user_id: str, title: Optional[str]) -> None:
+        """PATCH .../threads/{id}: an empty title clears the override, so the
+        summary falls back to the first message's text again -- 'clearing a
+        name sends the first message's text back, so it's never empty'."""
+        if title:
+            self.threads_collection.update_one(
+                {"thread_id": thread_id, "user_id": user_id},
+                {"$set": {"custom_title": title, "updated_at": datetime.utcnow()}},
+            )
+        else:
+            self.threads_collection.update_one(
+                {"thread_id": thread_id, "user_id": user_id},
+                {"$unset": {"custom_title": ""}, "$set": {"updated_at": datetime.utcnow()}},
+            )
+
+    def delete_thread(self, thread_id: str, user_id: str) -> bool:
+        """DELETE .../threads/{id}: removes only the thread record -- never
+        touches the annotations/hypotheses it referenced, since those live
+        in their own services entirely."""
+        result = self.threads_collection.delete_one({"thread_id": thread_id, "user_id": user_id})
+        return result.deleted_count > 0
+
+    def delete_message(self, thread_id: str, user_id: str, seq: int) -> bool:
+        """DELETE .../threads/{id}/messages/{message_id}: removes one message
+        by its stable seq, matched directly -- not by array position, so
+        deleting one message never changes any other message's id.
+
+        Existence is checked separately before the update: the update's own
+        $set (updated_at) always matches and modifies the document even when
+        $pull finds nothing, so modified_count alone can't tell a real
+        delete from a no-op on an already-gone or bogus seq.
+        """
+        exists = self.threads_collection.find_one(
+            {"thread_id": thread_id, "user_id": user_id, "messages.seq": seq},
+            {"_id": 1},
+        )
+        if not exists:
+            return False
+        self.threads_collection.update_one(
+            {"thread_id": thread_id, "user_id": user_id},
+            {"$pull": {"messages": {"seq": seq}}, "$inc": {"message_count": -1}, "$set": {"updated_at": datetime.utcnow()}},
+        )
+        return True
+
+    def list_threads(self, user_id: str) -> list:
+        """Thread summaries for a user, latest activity first -- the data
+        backing a future GET /v1/threads read."""
+        try:
+            cursor = self.threads_collection.find(
+                {"user_id": user_id},
+                {"thread_id": 1, "messages": {"$slice": 1}, "message_count": 1, "updated_at": 1, "_id": 1, "context": 1, "custom_title": 1},
+            ).sort("updated_at", -1)
+            summaries = []
+            for doc in cursor:
+                first_message = (doc.get("messages") or [{}])[0]
+                title = doc.get("custom_title") or (first_message.get("text") or "")[:80] or "Untitled thread"
+                created_at = doc["_id"].generation_time if doc.get("_id") else None
+                summaries.append({
+                    "id": doc["thread_id"],
+                    "title": title,
+                    "context": doc.get("context"),
+                    "created_at": self._iso(created_at),
+                    "updated_at": self._iso(doc.get("updated_at")),
+                    "message_count": doc.get("message_count", 0),
+                })
+            return summaries
+        except Exception as e:
+            logger.error(f"Error listing threads for user {user_id}: {e}")
+            return []
 
     def record_tool_call(self, thread_id: str, user_id: str, agent: str, resource_id: str, label: str = "") -> None:
         if not resource_id:
@@ -418,19 +597,24 @@ class MongoManager:
         except Exception as e:
             logger.error(f"Error recording tool call for thread {thread_id}: {e}")
 
-    def compact_thread(self, thread_id: str, user_id: str, new_summary: str, remaining_messages: list) -> None:
+    def extend_running_summary(self, thread_id: str, user_id: str, new_summary: str, through_count: int) -> None:
+        """Extends the thread's running summary to cover its first
+        through_count messages. Unlike the old compact_thread this replaced,
+        the stored messages themselves are never touched or deleted -- every
+        one stays retrievable via GET /v1/threads/{id}/messages for the life
+        of the thread. This is purely an extra, lightweight aid for the
+        LLM's context on a long thread, not a replacement for full storage."""
         try:
             self.threads_collection.update_one(
                 {"thread_id": thread_id, "user_id": user_id},
                 {"$set": {
                     "running_summary": new_summary,
-                    "messages": remaining_messages,
-                    "message_count": len(remaining_messages),
+                    "summary_watermark": through_count,
                     "updated_at": datetime.utcnow(),
                 }},
             )
         except Exception as e:
-            logger.error(f"Error compacting thread {thread_id}: {e}")
+            logger.error(f"Error extending running summary for thread {thread_id}: {e}")
 
     def add_content_file(
         self,
