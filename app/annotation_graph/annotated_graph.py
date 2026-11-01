@@ -360,10 +360,9 @@ class Graph:
                                     {"node_id": node_id, "reason": f"'{node_db_id}' not found in database"}
                                 )
                             else:
-                                # Nothing even remotely similar exists — say so plainly instead
-                                # of echoing the user's own input back as a fake "suggestion"
                                 node["status"] = False
-                                node["needs_confirmation"] = False
+                                node["needs_confirmation"] = True
+                                node["pending_substitutions"] = {node_db_id: None}
                                 node["validation_error"] = f"'{node_db_id}' not found in the database, and no similar value exists."
                                 validation_report["failed_nodes"].append(
                                     {"node_id": node_id, "reason": node["validation_error"]}
@@ -655,10 +654,13 @@ class Graph:
                 node_id_val = node.get("id", "")
                 if node_id_val and node_id_val in subs:
                     suggested = subs[node_id_val]
-                    id_prop = self._node_id_property.get(node.get("type", "").lower())
-                    if id_prop:
-                        node.setdefault("properties", {})[id_prop] = suggested
-                    node["id"] = ""
+                    if suggested is None:
+                        apply = False
+                    else:
+                        id_prop = self._node_id_property.get(node.get("type", "").lower())
+                        if id_prop:
+                            node.setdefault("properties", {})[id_prop] = suggested
+                        node["id"] = ""
 
                 # Handle property-value substitutions
                 for prop_key, prop_val in node.get("properties", {}).items():
@@ -732,14 +734,11 @@ class Graph:
         return cleaned, unresolved
 
     def _deduplicate_nodes(self, nodes: list, predicates: list) -> list:
-        """Remove nodes whose type+properties are exact duplicates of an earlier node.
-        Predicates that reference a removed duplicate are remapped to the surviving node.
-        """
-        seen = {}       # (type, frozenset(properties.items())) -> surviving node_id
-        removed = {}    # removed node_id -> surviving node_id
+        seen = {}       
+        removed = {}    
         kept = []
         for node in nodes:
-            key = (node.get("type", ""), frozenset(
+            key = (node.get("type", ""), node.get("id", ""), frozenset(
                 (k, v) for k, v in node.get("properties", {}).items()
             ))
             if key in seen:
@@ -831,6 +830,14 @@ class Graph:
             all_vals = u.get("all_list_values") or []
             known_vals = [v for v in all_vals if v != u["original"]]
 
+            if u.get("suggestion") is None:
+                base = f"I couldn't find **'{u['original']}'** in the database, and nothing similar exists either."
+                if known_vals:
+                    base += f" Would you like me to build the annotation without it, using only {known_vals}? Or would you like to provide a different identifier?"
+                else:
+                    base += " Would you like to provide a different identifier, or skip it?"
+                return base
+
             base = (
                 f"I couldn't find **'{u['original']}'** in the database. "
                 f"The closest match I found is **'{u['suggestion']}'**.\n\n"
@@ -844,8 +851,9 @@ class Graph:
 
         lines = ["I couldn't find some of the nodes you mentioned in the database:"]
         for u in unconfirmed_nodes:
+            suggestion_text = f"closest match is **'{u['suggestion']}'**" if u.get("suggestion") is not None else "nothing similar exists"
             lines.append(
-                f"  - **'{u['original']}'** — closest match is **'{u['suggestion']}'**"
+                f"  - **'{u['original']}'** — {suggestion_text}"
             )
         lines.append(
             "\nShould I go ahead with these substitutions? "
