@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 from langgraph.errors import GraphBubbleUp
 from langgraph.types import interrupt
 
-from app.agents.state import AgentState, ANALYZING_MSG
+from app.agents.state import AgentState, ANALYZING_MSG, UNRESOLVED_MARKER
 from app.agents.subgraphs.annotation import ABANDONED, build_annotation_subgraph
 from app.agents.subgraphs.biogpt import build_biogpt_subgraph
 from app.agents.subgraphs.content_retrieval import build_content_retrieval_subgraph
@@ -174,7 +174,7 @@ class ToolsMixin:
         if result.get("outcome") == ABANDONED:
             logger.info("Annotation confirmation abandoned — the user said something else")
             new_text = result.get("handoff_query") or "(no reply captured)"
-            return {"content": f"The pending confirmation wasn't answered — the user said instead: {new_text!r}"}
+            return {"content": f"{UNRESOLVED_MARKER}The pending confirmation wasn't answered — the user said instead: {new_text!r}"}
 
         response = result.get("annotation_response") or {}
         return {
@@ -189,12 +189,14 @@ class ToolsMixin:
 
         query = arguments.get("query") or state["user_query"]
         context = (state.get("hypothesis_response") or {}).get("text", "")
+        min_year = self._extract_min_year(state["user_query"])
         result = self._literature_graph.invoke({
             "user_query": query,
             "user_id": state["user_id"],
             "content_ids": state.get("content_ids"),
             "sources": [RAG, PUBMED, CLINICAL_TRIALS],
             "search_context": context,
+            "min_year": min_year,
         })
 
         state_update, parts = {}, []
@@ -230,7 +232,7 @@ class ToolsMixin:
 
         if result.get("outcome") == HYPOTHESIS_ABANDONED:
             new_text = result.get("handoff_query") or "(no reply captured)"
-            return {"content": f"The pending GO-term confirmation wasn't answered — the user said instead: {new_text!r}"}
+            return {"content": f"{UNRESOLVED_MARKER}The pending GO-term confirmation wasn't answered — the user said instead: {new_text!r}"}
 
         response = result.get("hypothesis_response") or {}
         if result.get("failed"):
@@ -328,6 +330,21 @@ class ToolsMixin:
         answer = interrupt({"confirmation_text": question, "options": [], "allow_free_text": True})
         return {"content": str(answer)}
 
+
+    @staticmethod
+    def _extract_min_year(user_query: str) -> Optional[int]:
+        q = user_query.lower()
+
+        m = re.search(r"\b(?:since|from|after)\s+(\d{4})\b", q)
+        if m:
+            return int(m.group(1))
+
+        m = re.search(r"\b(?:last|past|previous)\s+(\d{1,2})\s+years?\b", q)
+        if m:
+            from datetime import datetime
+            return datetime.now().year - int(m.group(1)) + 1
+
+        return None
 
     def _extract_search_term(self, user_query: str, context: str = "") -> str:
         context_line = f"\nAdditional context: {context[:500]}" if context else ""
