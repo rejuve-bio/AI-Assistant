@@ -30,10 +30,25 @@ TOOL_SPECS = [
             "biological entity already named in the conversation -- either by "
             "the user directly, or turned up by a prior tool's result. Only "
             "call this once you have a real entity name; never guess or use a "
-            "placeholder."
+            "placeholder. If the user names a gene TOGETHER WITH related items "
+            "that belong in the SAME connected graph (its transcripts, variants, "
+            "proteins -- e.g. 'annotate FTO with its transcripts X, Y, Z'), that "
+            "is ONE call with all of them in a single query string, not one call "
+            "per item -- splitting it produces several disconnected graphs "
+            "instead of one graph showing how they relate. Only use separate "
+            "calls for entities the user asked about as genuinely independent "
+            "(no stated relationship between them)."
         ),
         "parameters": {"type": "object", "properties": {
-            "query": {"type": "string", "description": "the exact gene symbol or entity to annotate, e.g. 'BRCA1'"},
+            "query": {"type": "string", "description": "the entity (or entities) to annotate together as one connected graph -- e.g. 'BRCA1', or 'FTO with its transcripts ENST00000538872, ENST00000546113' when they're related. Name only, no organism/schema wording here."},
+            "organism": {
+                "type": "string", "enum": ["human", "fly"],
+                "description": (
+                    "Only set this if the user explicitly names an organism or schema "
+                    "(e.g. 'fly schema', 'drosophila', 'human'). Omit entirely otherwise -- "
+                    "it will be auto-detected from the gene name."
+                ),
+            },
         }, "required": ["query"]},
         "requires_grounded_query": True,
     },
@@ -156,7 +171,8 @@ class ToolsMixin:
             self._annotation_subgraph = build_annotation_subgraph(self.annotation_graph)
 
         effective_query = arguments.get("query") or state["user_query"]
-        logger.info(f"annotate_gene: {effective_query}")
+        organism_override = arguments.get("organism")
+        logger.info(f"annotate_gene: {effective_query} (organism_override={organism_override})")
         emit_to_user(user=state["user_id"], message="Processing your biological query...")
 
         try:
@@ -164,6 +180,8 @@ class ToolsMixin:
                 "user_query": f"annotate the gene {effective_query}" if effective_query else state["user_query"],
                 "user_id": state["user_id"],
                 "query_type": "annotation_biological",
+                "organism_override": organism_override,
+                "organism_hint_text": state["user_query"],
             })
         except GraphBubbleUp:
             raise
