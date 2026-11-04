@@ -173,7 +173,7 @@ class ToolsMixin:
         effective_query = arguments.get("query") or state["user_query"]
         organism_override = arguments.get("organism")
         logger.info(f"annotate_gene: {effective_query} (organism_override={organism_override})")
-        emit_to_user(user=state["user_id"], message="Processing your biological query...")
+        emit_to_user(user=state["user_id"], message="Processing your biological query...", thread_id=state.get("thread_id"))
 
         try:
             result = self._annotation_subgraph.invoke({
@@ -182,6 +182,7 @@ class ToolsMixin:
                 "query_type": "annotation_biological",
                 "organism_override": organism_override,
                 "organism_hint_text": state["user_query"],
+                "thread_id": state.get("thread_id"),
             })
         except GraphBubbleUp:
             raise
@@ -211,6 +212,7 @@ class ToolsMixin:
         result = self._literature_graph.invoke({
             "user_query": query,
             "user_id": state["user_id"],
+            "thread_id": state.get("thread_id"),
             "content_ids": state.get("content_ids"),
             "sources": [RAG, PUBMED, CLINICAL_TRIALS],
             "search_context": context,
@@ -236,11 +238,12 @@ class ToolsMixin:
             self._hypothesis_subgraph = build_hypothesis_subgraph(self.hypothesis_generation)
 
         query = arguments.get("query") or state["user_query"]
-        emit_to_user(user=state["user_id"], message="Generating hypothesis...")
+        emit_to_user(user=state["user_id"], message="Generating hypothesis...", thread_id=state.get("thread_id"))
 
         try:
             result = self._hypothesis_subgraph.invoke({
                 "user_query": query, "user_id": state["user_id"], "token": state.get("token"),
+                "thread_id": state.get("thread_id"),
             })
         except GraphBubbleUp:
             raise
@@ -271,7 +274,7 @@ class ToolsMixin:
             self._galaxy_subgraph = build_galaxy_subgraph(self.galaxy_handler)
 
         query = arguments.get("query") or state["user_query"]
-        emit_to_user(user=state["user_id"], message="Retrieving Galaxy tools information...")
+        emit_to_user(user=state["user_id"], message="Retrieving Galaxy tools information...", thread_id=state.get("thread_id"))
 
         result = self._galaxy_subgraph.invoke({
             "user_query": query, "user_id": state["user_id"], "token": state.get("token"),
@@ -287,7 +290,7 @@ class ToolsMixin:
         if getattr(self, "_biogpt_subgraph", None) is None:
             self._biogpt_subgraph = build_biogpt_subgraph(self.biogpt)
 
-        emit_to_user(user=state["user_id"], message="Analyzing biomedical information...")
+        emit_to_user(user=state["user_id"], message="Analyzing biomedical information...", thread_id=state.get("thread_id"))
         query = arguments.get("query") or state["user_query"]
         result = self._biogpt_subgraph.invoke({"user_query": query})
         response = result.get("biogpt_response") or {}
@@ -304,7 +307,7 @@ class ToolsMixin:
             )
 
         user_id = state["user_id"]
-        emit_to_user(user=user_id, message="Retrieving relevant content...")
+        emit_to_user(user=user_id, message="Retrieving relevant content...", thread_id=state.get("thread_id"))
         try:
             result = self._content_graph.invoke({
                 "user_query": arguments.get("query") or state.get("user_query"),
@@ -314,6 +317,7 @@ class ToolsMixin:
                 "urls": state.get("urls"),
                 "content_ids": state.get("content_ids"),
                 "resource": state.get("resource"),
+                "thread_id": state.get("thread_id"),
             })
         except GraphBubbleUp:
             raise
@@ -381,7 +385,7 @@ class ToolsMixin:
         except Exception:
             return user_query
 
-    def answer_from_graph_summaries(self, query, user_id, resource, token, graph_id):
+    def answer_from_graph_summaries(self, query, user_id, resource, token, graph_id, thread_id=None):
         logger.info(
             f"Answer from graph summaries called with query: {query}, user_id: {user_id}, "
             f"resource: {resource}, graph_id: {graph_id}"
@@ -395,14 +399,14 @@ class ToolsMixin:
                 summary_text = summary_result.get('text', '') if isinstance(summary_result, dict) else summary_result
                 if isinstance(summary_result, dict):
                     entity_found = summary_result.get('entity_found')
-                emit_to_user(user=user_id, message=ANALYZING_MSG)
+                emit_to_user(user=user_id, message=ANALYZING_MSG, thread_id=thread_id)
 
             elif resource == "hypothesis":
                 summary_result = self.hypothesis_generation.get_by_hypothesis_id(
-                    token, graph_id, user_id, query
+                    token, graph_id, user_id, query, thread_id=thread_id
                 )
                 summary_text = summary_result.get('text', '') if isinstance(summary_result, dict) else summary_result
-                emit_to_user(user=user_id, message=ANALYZING_MSG)
+                emit_to_user(user=user_id, message=ANALYZING_MSG, thread_id=thread_id)
             else:
                 return "Invalid resource type specified."
 

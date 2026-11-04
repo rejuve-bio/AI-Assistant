@@ -22,6 +22,7 @@ class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], operator.add]
     user_query: str
     user_id: str
+    thread_id: Optional[str]
     token: str
     response: Dict[str, Any]
     error: Annotated[str, merge_errors]

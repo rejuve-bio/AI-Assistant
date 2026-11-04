@@ -23,6 +23,7 @@ class AnnotationState(TypedDict, total=False):
     query_type: str
     organism_override: Optional[str]
     organism_hint_text: Optional[str]
+    thread_id: Optional[str]
     pending: Optional[Dict[str, Any]]
     confirmation_text: str
     annotation_response: Optional[Dict[str, Any]]
@@ -71,6 +72,7 @@ def build_annotation_subgraph(annotation_graph):
             query_type=state.get("query_type", "annotation_biological"),
             organism_override=state.get("organism_override"),
             organism_hint_text=state.get("organism_hint_text"),
+            thread_id=state.get("thread_id"),
         )
         logger.info(f"Pipeline response: {result}")
 

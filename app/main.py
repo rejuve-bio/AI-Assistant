@@ -93,6 +93,7 @@ class AiAssistance(
                 "messages": [],
                 "user_query": message,
                 "user_id": user_id,
+                "thread_id": thread_id,
                 "token": token,
                 "response": {"text": "", "json_format": None},
                 "error": "",
@@ -128,7 +129,7 @@ class AiAssistance(
                 "json_format": None,
                 "agents_completed": []
             }
-            emit_to_user(user=user_id, message=error_response, status="error")
+            emit_to_user(user=user_id, message=error_response, status="error", thread_id=thread_id)
             return error_response
 
     @staticmethod
@@ -189,7 +190,7 @@ class AiAssistance(
                 agents_used=[],
             )
             self._record_thread_turn(thread_id, user_id, query, {"text": final_response}, graph_id=graph_id, resource=resource)
-            emit_to_user(user=user_id, message=final_response, status="completed")
+            emit_to_user(user=user_id, message=final_response, status="completed", thread_id=thread_id)
             return {"text": final_response}
 
         if "question:" in response:
@@ -225,7 +226,7 @@ class AiAssistance(
                 agents_used=agents_used,
             )
             self._record_thread_turn(thread_id, user_id, query, agent_response, graph_id=graph_id, resource=resource)
-            emit_to_user(user=user_id, message=agent_response, status="completed")
+            emit_to_user(user=user_id, message=agent_response, status="completed", thread_id=thread_id)
             return agent_response
 
         logger.error("No response generated from LLM")
@@ -239,7 +240,7 @@ class AiAssistance(
             urls=urls,
             agents_used=[],
         )
-        emit_to_user(user=user_id, message={"text": error_msg}, status="completed")
+        emit_to_user(user=user_id, message={"text": error_msg}, status="completed", thread_id=thread_id)
         return {"text": error_msg}
 
     def assistant_response(
@@ -300,7 +301,7 @@ class AiAssistance(
                     agents_used=resp.get("agents_completed", []),
                 )
                 self._record_thread_turn(thread_id, user_id, f"[resume:{resume}]", resp, graph_id=graph_id, resource=resource)
-                emit_to_user(user=user_id, message=resp, status="completed")
+                emit_to_user(user=user_id, message=resp, status="completed", thread_id=thread_id)
                 return resp
             try:
                 is_pending = bool(self.app.get_state({"configurable": {"thread_id": thread_id}}).next)
@@ -321,7 +322,7 @@ class AiAssistance(
                         agents_used=resp.get("agents_completed", []),
                     )
                     self._record_thread_turn(thread_id, user_id, query, resp, graph_id=graph_id, resource=resource)
-                    emit_to_user(user=user_id, message=resp, status="completed")
+                    emit_to_user(user=user_id, message=resp, status="completed", thread_id=thread_id)
                     return resp
 
             try:
@@ -355,7 +356,7 @@ class AiAssistance(
             logger.info("Advanced llm response")
             response = self.advanced_llm.generate(prompt)
             logger.info(f"Response from the advanced LLM: {response}")
-            emit_to_user(user=user_id, message=ANALYZING_MSG)
+            emit_to_user(user=user_id, message=ANALYZING_MSG, thread_id=thread_id)
 
             return self._route_to_agent(
                 response or "",
