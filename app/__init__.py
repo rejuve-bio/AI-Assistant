@@ -166,7 +166,6 @@ async def lifespan(app: FastAPI):
     )
     logger.info("AiAssistance initialized")
 
-    # Shared state for route/socket handlers -- replaces Flask's app.config[...] locator.
     app.state.qdrant_client = qdrant_client
     app.state.embedding_model = embedding_model
     app.state.embedding_vector_size = vector_size
