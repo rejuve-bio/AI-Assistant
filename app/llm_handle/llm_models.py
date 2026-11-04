@@ -4,7 +4,7 @@ import time
 import os
 import logging
 import json
-from typing import Any, Dict
+from typing import Any, Dict, List
 from sentence_transformers import SentenceTransformer
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 
@@ -149,9 +149,24 @@ def get_llm_model(model_provider, model_version=None):
         raise ValueError("Invalid model type in configuration")
 
 
+def _parse_openai_tool_calls(message) -> Dict[str, Any]:
+
+    tool_calls = []
+    for tc in (message.tool_calls or []):
+        try:
+            arguments = json.loads(tc.function.arguments)
+        except (json.JSONDecodeError, TypeError):
+            arguments = {}
+        tool_calls.append({"id": tc.id, "name": tc.function.name, "arguments": arguments})
+    return {"tool_calls": tool_calls, "content": message.content}
+
+
 class LLMInterface:
     def generate(self, prompt: str, **kwargs) -> Dict[str, Any]:
         raise NotImplementedError("Subclasses must implement the generate method")
+
+    def generate_with_tools(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
+        raise NotImplementedError("Subclasses must implement generate_with_tools")
 
 
 class LocalModel(LLMInterface):
@@ -184,6 +199,13 @@ class LocalModel(LLMInterface):
             return json.loads(json_content)
         except json.JSONDecodeError:
             return json_content
+
+    def generate_with_tools(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
+        response = self.client.chat.completions.create(
+            model=self.model_name, messages=messages, tools=tools,
+            tool_choice="auto", temperature=0,
+        )
+        return _parse_openai_tool_calls(response.choices[0].message)
 
     def _extract_json_from_codeblock(self, content: str) -> str:
         start = content.find(JSON_CODEBLOCK_MARKER)
@@ -223,6 +245,13 @@ class OllamaModel(LLMInterface):
         except json.JSONDecodeError:
             return json_content
 
+    def generate_with_tools(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
+        response = self.client.chat.completions.create(
+            model=self.model_name, messages=messages, tools=tools,
+            tool_choice="auto", temperature=0,
+        )
+        return _parse_openai_tool_calls(response.choices[0].message)
+
     def _extract_json_from_codeblock(self, content: str) -> str:
         start = content.find(JSON_CODEBLOCK_MARKER)
         end = content.rfind("```")
@@ -253,6 +282,15 @@ class GeminiModel(LLMInterface):
             return json.loads(json_content)
         except json.JSONDecodeError:
             return json_content
+
+    def generate_with_tools(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
+        response = self.model.bind_tools(tools).invoke(messages)
+        tool_calls = [
+            {"id": tc.get("id"), "name": tc.get("name"), "arguments": tc.get("args") or {}}
+            for tc in (response.tool_calls or [])
+        ]
+        content = getattr(response, "content", None) or None
+        return {"tool_calls": tool_calls, "content": content}
 
     def _extract_json_from_codeblock(self, content: str) -> str:
         start = content.find(JSON_CODEBLOCK_MARKER)
@@ -293,6 +331,13 @@ class OpenAIModel(LLMInterface):
             return json.loads(json_content)
         except json.JSONDecodeError:
             return json_content
+
+    def generate_with_tools(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
+        response = openai.chat.completions.create(
+            model=self.model_name, messages=messages, tools=tools,
+            tool_choice="auto", temperature=0,
+        )
+        return _parse_openai_tool_calls(response.choices[0].message)
 
     def _extract_json_from_codeblock(self, content: str) -> str:
         start = content.find(JSON_CODEBLOCK_MARKER)
