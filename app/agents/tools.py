@@ -67,10 +67,37 @@ TOOL_SPECS = [
     },
     {
         "name": "generate_hypothesis",
-        "description": "Generate a biological hypothesis from a genetic variant and tissue (GWAS-style enrichment).",
+        "description": (
+            "Check the assistant's own existing GWAS analysis projects (by "
+            "phenotype), and match a named lead variant/locus against the "
+            "matched project's credible sets, to PROPOSE the parameters for "
+            "a hypothesis -- project, credible set, tissue -- never "
+            "generates or runs anything itself. Call this for ANY request "
+            "to build/generate a hypothesis for a phenotype, even when NO "
+            "variant is named yet (e.g. 'generate a hypothesis about "
+            "obesity') -- there is always at least a sample GWAS project to "
+            "check against, so the right response is grounded in what that "
+            "check actually finds (which project matched, its tissue), "
+            "with the tool's own text asking for the missing variant -- "
+            "NEVER answer directly from a guess about whether a project "
+            "might exist without calling this tool first. Also use this "
+            "whenever the question is phrased as working from a GWAS locus "
+            "toward a causal gene using the assistant's own sample data, "
+            "e.g. 'rs123 is the lead variant in an X locus -- which gene is "
+            "it acting through?', 'do the same for rsXXX in <phenotype>'. "
+            "This is NOT a literature lookup or a known-biology question "
+            "(that's search_literature/annotate_gene) -- it's specifically "
+            "about whether the assistant's own stored GWAS projects contain "
+            "a matching locus. When this phrasing pattern applies, call "
+            "ONLY this tool -- don't also search literature or annotate a "
+            "graph for the same request."
+        ),
         "parameters": {"type": "object", "properties": {
-            "query": {"type": "string", "description": "the hypothesis request, naming the variant/tissue if known"},
-        }, "required": ["query"]},
+            "query": {"type": "string", "description": "the full hypothesis request, in the user's own words, for context"},
+            "phenotype": {"type": "string", "description": "the phenotype/condition this is about -- carry forward anything implied by earlier turns (e.g. 'same phenotype' -> the actual phenotype named earlier in this thread). Required: never omit, never guess one that wasn't actually named or implied."},
+            "variant": {"type": "string", "description": "the lead variant (rsID) named, if any. Omit entirely if none was named -- never invent one."},
+            "tissue": {"type": "string", "description": "ONLY set this if the user explicitly asked for a specific tissue instead of letting the strongest one be auto-picked (e.g. 'use adipose tissue instead', 'in CD8 T cells'). Omit entirely otherwise -- the tool auto-selects the project's strongest tissue by default. If the named tissue wasn't actually analyzed for the matched project, the tool falls back to the strongest one and says so."},
+        }, "required": ["query", "phenotype"]},
     },
     {
         "name": "run_galaxy",
@@ -307,6 +334,11 @@ class ToolsMixin:
             result = self._hypothesis_subgraph.invoke({
                 "user_query": query, "user_id": state["user_id"], "token": state.get("token"),
                 "thread_id": state.get("thread_id"),
+                "propose_only": state.get("propose_only", False),
+                "requested_tissue": arguments.get("tissue"),
+                "requested_phenotype": arguments.get("phenotype"),
+                "requested_variant": arguments.get("variant"),
+                "attached_files": state.get("attached_files"),
             })
         except GraphBubbleUp:
             raise

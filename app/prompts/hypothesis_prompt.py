@@ -9,13 +9,15 @@ The user query is: {question}
 Extract the following from the query:
 1. Genetic variant identifier(s) - typically in rs#### format (e.g., rs9939609, rs7903146)
 2. Tissue type mentioned (e.g., adipose tissue, liver tissue, adipose subcutaneous tissue, muscle tissue)
-3. Gene(s) mentioned (e.g., FTO, PPARG)
-4. Causal gene(s) explicitly described as causal or associated with variants (e.g., FTO as causal gene for rs9939609)
-5. GO terms (Gene Ontology terms) mentioned (e.g., "Regulation of Adipose Tissue Development")
+3. Disease or trait mentioned (e.g., obesity, ulcerative colitis, type 2 diabetes) -- this is a LOCUS/PHENOTYPE name, used to find the matching project, never a tissue
+4. Gene(s) mentioned (e.g., FTO, PPARG)
+5. Causal gene(s) explicitly described as causal or associated with variants (e.g., FTO as causal gene for rs9939609)
+6. GO terms (Gene Ontology terms) mentioned (e.g., "Regulation of Adipose Tissue Development")
 
 ## RULES FOR EXTRACTION
 - Extract ALL genetic variants mentioned in the query
-- Extract tissue type mentioned in the query (look for tissue names like "adipose", "liver", "muscle", "subcutaneous", etc.)
+- Extract tissue type ONLY if the query actually names one -- never guess or infer a plausible-sounding tissue for a disease; that's a separate downstream step, not this extraction
+- Extract the disease/trait name ONLY if the query actually names one (e.g. "obesity locus", "in ulcerative colitis") -- this is distinct from tissue
 - Extract ALL genes mentioned in the query
 - Extract ALL causal genes mentioned in the query
 - Extract ALL GO terms mentioned in the query
@@ -33,10 +35,11 @@ Extract the following from the query:
 Return ONLY a dictionary with the following format, including only keys that have values:
 ```
 {{
-  "variant": "rs####", 
-  "tissue_name": "tissue_type", 
-  "gene": "GENE", 
-  "causal_gene": "GENE", 
+  "variant": "rs####",
+  "tissue_name": "tissue_type",
+  "disease": "disease_or_trait",
+  "gene": "GENE",
+  "causal_gene": "GENE",
   "GO": "term"
 }}
 ```
@@ -44,18 +47,19 @@ Return ONLY a dictionary with the following format, including only keys that hav
 For multiple items in any category, use lists:
 ```
 {{
-  "variant": ["rs####", "rs####"], 
+  "variant": ["rs####", "rs####"],
   "tissue_name": "tissue_type",
+  "disease": "disease_or_trait",
   "gene": ["GENE1", "GENE2"],
   "causal_gene": "GENE",
   "GO": "term"
 }}
-```   
+```
 
 ## EXAMPLES
 Example 1:
 Input: "What is the association between rs1421085 and obesity risk?"
-Output: {{"variant": "rs1421085", "tissue_name": "adipose tissue"}}
+Output: {{"variant": "rs1421085", "disease": "obesity"}}
 
 Example 2:
 Input: "Generate a hypothesis for variant rs9939609 in adipose subcutaneous tissue."
