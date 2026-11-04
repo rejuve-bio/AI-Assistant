@@ -5,6 +5,7 @@ from .annotation_graph.summarizer import GraphSummarizer
 from .hypothesis_generation.hypothesis import HypothesisGeneration
 from .socket_manager import emit_to_user
 from .Galaxy_integration.galaxy import GalaxyHandler
+from .Galaxy_integration.galaxy_runs_api import GalaxyRunsAPI
 from .biogpt_agent.biogpt import BioGPTAgent
 from .agents import (
     ToolsMixin,
@@ -53,6 +54,7 @@ class AiAssistance(
         self.store = mongo_db_manager
         self.hypothesis_generation = HypothesisGeneration(advanced_llm)
         self.galaxy_handler = GalaxyHandler(advanced_llm, qdrant_client, embedding_model)
+        self.galaxy_runs_api = GalaxyRunsAPI()
         self.embedding_model = embedding_model
         self.biogpt = BioGPTAgent(basic_llm=basic_llm, advanced_llm=advanced_llm)
 
