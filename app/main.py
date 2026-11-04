@@ -116,7 +116,7 @@ class AiAssistance(
             }
 
             config = {"configurable": {"thread_id": thread_id}}
-            result = self.app.invoke(initial_state, config=config)
+            result = self.app.invoke(initial_state, config=config, durability="sync")
 
             response = self._extract_response_or_interrupt(result, config)
             logger.info(f"Agent completed successfully for user: {user_id}")
@@ -144,9 +144,19 @@ class AiAssistance(
         return {}
 
 
-    def _extract_response_or_interrupt(self, result: Dict[str, Any], config: dict) -> Dict[str, Any]:
+    def _extract_response_or_interrupt(self, result: Dict[str, Any], config: dict, resumed: bool = False) -> Dict[str, Any]:
         """Build the response dict from an invoke() result, whether the graph
         finished normally or paused on any agent's confirmation interrupt().
+
+        `resumed` is True only when this invoke() was itself resuming a
+        previously-paused confirmation (Command(resume=...), from
+        confirmation.py). Only then does a now-resolved turn reset the
+        thread's checkpoint -- cleaning up the dangling interrupt state,
+        not the whole conversation. An ordinary turn (resumed=False, the
+        default -- every call from agent()) must never reset: that's the
+        orchestrator's actual cross-turn memory, and wiping it after every
+        single turn left the assistant unable to remember anything it was
+        just told.
         """
         state = self.app.get_state(config)
         if state.next:
@@ -162,7 +172,8 @@ class AiAssistance(
                 "agents_completed": result.get("agents_completed", []),
             }
 
-        self._reset_thread(config)
+        if resumed:
+            self._reset_thread(config)
 
         response = result.get("response", {"text": ""})
         if not isinstance(response, dict):
@@ -176,7 +187,8 @@ class AiAssistance(
 
 
     def _route_to_agent(self, response: str, query: str, user_id: str, token: str,
-                        graph_id, content_ids, urls, resource, thread_id: Optional[str] = None) -> Dict[str, Any]:
+                        graph_id, content_ids, urls, resource, thread_id: Optional[str] = None,
+                        client_message_id: Optional[str] = None) -> Dict[str, Any]:
         if "response:" in response:
             result = response.split("response:")[1].strip()
             final_response = result.strip('"')
@@ -189,7 +201,7 @@ class AiAssistance(
                 urls=urls,
                 agents_used=[],
             )
-            self._record_thread_turn(thread_id, user_id, query, {"text": final_response}, graph_id=graph_id, resource=resource)
+            self._record_thread_turn(thread_id, user_id, query, {"text": final_response}, graph_id=graph_id, resource=resource, client_message_id=client_message_id)
             emit_to_user(user=user_id, message=final_response, status="completed", thread_id=thread_id)
             return {"text": final_response}
 
@@ -225,7 +237,7 @@ class AiAssistance(
                 urls=urls,
                 agents_used=agents_used,
             )
-            self._record_thread_turn(thread_id, user_id, query, agent_response, graph_id=graph_id, resource=resource)
+            self._record_thread_turn(thread_id, user_id, query, agent_response, graph_id=graph_id, resource=resource, client_message_id=client_message_id)
             emit_to_user(user=user_id, message=agent_response, status="completed", thread_id=thread_id)
             return agent_response
 
@@ -254,8 +266,18 @@ class AiAssistance(
         resource: Optional[Any] = None,
         resume: Optional[str] = None,
         thread_id: Optional[str] = None,
+        client_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         thread_id = thread_id or user_id
+        if client_message_id:
+            existing = self.store.find_message_by_client_id(thread_id, user_id, client_message_id)
+            if existing:
+                logger.info(f"client_message_id {client_message_id} already processed for thread {thread_id} — replaying stored result")
+                return {
+                    "text": existing.get("text", ""),
+                    "json_format": existing.get("json_format"),
+                    "agents_completed": existing.get("agents", []),
+                }
         if not redis_manager.acquire_thread_lock(thread_id):
             logger.info(f"Thread {thread_id} is already processing a request — rejecting the concurrent one")
             return {
@@ -267,6 +289,7 @@ class AiAssistance(
         try:
             return self._assistant_response_locked(
                 query, user_id, token, graph_id, urls, content_ids, resource, resume, thread_id,
+                client_message_id=client_message_id,
             )
         finally:
             redis_manager.release_thread_lock(thread_id)
@@ -282,6 +305,7 @@ class AiAssistance(
         resource: Optional[Any],
         resume: Optional[str],
         thread_id: str,
+        client_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         try:
             logger.info(
@@ -300,7 +324,7 @@ class AiAssistance(
                     urls=urls,
                     agents_used=resp.get("agents_completed", []),
                 )
-                self._record_thread_turn(thread_id, user_id, f"[resume:{resume}]", resp, graph_id=graph_id, resource=resource)
+                self._record_thread_turn(thread_id, user_id, f"[resume:{resume}]", resp, graph_id=graph_id, resource=resource, client_message_id=client_message_id)
                 emit_to_user(user=user_id, message=resp, status="completed", thread_id=thread_id)
                 return resp
             try:
@@ -321,7 +345,7 @@ class AiAssistance(
                         urls=urls,
                         agents_used=resp.get("agents_completed", []),
                     )
-                    self._record_thread_turn(thread_id, user_id, query, resp, graph_id=graph_id, resource=resource)
+                    self._record_thread_turn(thread_id, user_id, query, resp, graph_id=graph_id, resource=resource, client_message_id=client_message_id)
                     emit_to_user(user=user_id, message=resp, status="completed", thread_id=thread_id)
                     return resp
 
@@ -362,6 +386,7 @@ class AiAssistance(
                 response or "",
                 query, user_id, token, graph_id, content_ids, urls, resource,
                 thread_id=thread_id,
+                client_message_id=client_message_id,
             )
 
         except Exception as e:
