@@ -27,6 +27,7 @@ class ContentRetrievalState(TypedDict, total=False):
     sources: Annotated[List[str], operator.add]
     graph_covers_query: bool
     stop_response: Optional[Dict[str, Any]]
+    attached_files: Optional[List[Dict[str, str]]]
 
 
 def build_content_retrieval_subgraph(rag, answer_from_graph_summaries, store):

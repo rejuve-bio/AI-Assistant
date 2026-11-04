@@ -14,7 +14,12 @@ def merge_errors(existing, new):
     return new
 
 
+RESET = "__agent_state_reset__"
+
+
 def keep_latest(existing, new):
+    if new == RESET:
+        return None
     return new if new is not None else existing
 
 
@@ -23,6 +28,9 @@ class AgentState(TypedDict):
     user_query: str
     user_id: str
     thread_id: Optional[str]
+    propose_only: Optional[bool]
+    thread_species: Optional[str]
+    thread_sources: Optional[list]
     token: str
     response: Dict[str, Any]
     error: Annotated[str, merge_errors]
@@ -30,6 +38,7 @@ class AgentState(TypedDict):
     graph_id: Optional[str]
     urls: Optional[List[str]]
     resource: Optional[Any]
+    attached_files: Annotated[List[Dict[str, str]], operator.add]
     annotation_response: Annotated[Optional[Dict[str, Any]], keep_latest]
     rag_response: Annotated[Optional[Dict[str, Any]], keep_latest]
     galaxy_response: Annotated[Optional[Dict[str, Any]], keep_latest]
@@ -38,6 +47,8 @@ class AgentState(TypedDict):
     hypothesis_response: Annotated[Optional[Dict[str, Any]], keep_latest]
     pubmed_response: Annotated[Optional[Dict[str, Any]], keep_latest]
     clinical_trials_response: Annotated[Optional[Dict[str, Any]], keep_latest]
+    proposals: Annotated[List[Dict[str, Any]], operator.add]
+    proposals_baseline: Optional[int]
     agents_completed: Annotated[List[str], operator.add]
     loop_iterations: int
     one_round_only: Optional[bool]

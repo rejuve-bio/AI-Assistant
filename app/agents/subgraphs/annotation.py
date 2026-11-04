@@ -24,6 +24,10 @@ class AnnotationState(TypedDict, total=False):
     organism_override: Optional[str]
     organism_hint_text: Optional[str]
     thread_id: Optional[str]
+    propose_only: Optional[bool]
+    thread_species: Optional[str]
+    thread_sources: Optional[list]
+    attached_files: Optional[List[Dict[str, str]]]
     pending: Optional[Dict[str, Any]]
     confirmation_text: str
     annotation_response: Optional[Dict[str, Any]]

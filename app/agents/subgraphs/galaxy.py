@@ -1,6 +1,6 @@
 
 import logging
-from typing import Any, Dict, Optional, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -16,6 +16,7 @@ class GalaxyState(TypedDict, total=False):
     user_id: str
     token: str
     galaxy_response: Optional[Dict[str, Any]]
+    attached_files: Optional[List[Dict[str, str]]]
 
 
 def build_galaxy_subgraph(galaxy_handler):

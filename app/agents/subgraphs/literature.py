@@ -36,6 +36,7 @@ class LiteratureState(TypedDict, total=False):
     clinical_trials_response: Optional[Dict[str, Any]]
     agents_completed: Annotated[List[str], operator.add]
     messages: Annotated[List[Any], operator.add]
+    attached_files: Optional[List[Dict[str, str]]]
 
 
 def _found_nothing(text: str) -> bool:

@@ -1,6 +1,6 @@
 
 import logging
-from typing import Any, Dict, Optional, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -12,6 +12,7 @@ ANSWER = "answer"
 class BioGPTState(TypedDict, total=False):
     user_query: str
     biogpt_response: Optional[Dict[str, Any]]
+    attached_files: Optional[List[Dict[str, str]]]
 
 
 def build_biogpt_subgraph(biogpt):
