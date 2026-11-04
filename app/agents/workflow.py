@@ -108,6 +108,58 @@ class WorkflowMixin:
                 "retrieve_content rather than asking the user to restate it.)"
             )
 
+        summary_lines = []
+        if state.get("thread_id") and state.get("user_id"):
+            try:
+                summary_lines = self.store.get_proposal_summary(state["thread_id"], state["user_id"])
+            except Exception as e:
+                logger.warning(f"Could not load proposal summary for thread {state.get('thread_id')}: {e}")
+        if summary_lines:
+            notes.append(
+                "(Note: earlier proposals made in this conversation, for reference if this "
+                "question refers back to one of them -- these are summaries only, not live "
+                "data, so don't restate them as if freshly generated:\n"
+                + "\n".join(summary_lines) + ")"
+            )
+
+        attached_files = state.get("attached_files") or []
+
+        if attached_files:
+            names = ", ".join(f.get("name") or f.get("id", "") for f in attached_files)
+            notes.append(
+                f"(Note: file(s) attached in this conversation: {names}. They are stored but "
+                "not yet parsed or searchable -- you can acknowledge them by name, but you "
+                "cannot read their contents or answer questions about what's inside them. If "
+                "more than one file could plausibly fill the same role and it isn't clear "
+                "which one the user means, ask them to say which one rather than guessing or "
+                "ignoring the ambiguity.)"
+            )
+
+            hyp_formats = FILE_FORMAT_REQUIREMENTS.get("hypothesis", {})
+            accepted = hyp_formats.get("accepted_extensions")
+            if accepted and re.search(r"\bgwas\b|\bhypothesis\b|\bcredible set\b|\brs\d+\b", query, re.IGNORECASE):
+                mismatched = [
+                    f.get("name", "") for f in attached_files
+                    if f.get("name") and not any(f["name"].lower().endswith(ext) for ext in accepted)
+                ]
+                formats_str = ", ".join(accepted)
+                if mismatched:
+                    notes.append(
+                        f"(Note: this looks like a GWAS/hypothesis-related request, but the "
+                        f"attached file(s) {', '.join(mismatched)} don't match the formats the "
+                        f"real hypothesis service accepts for a GWAS file ({formats_str}). Tell "
+                        "the user this plainly rather than assuming the file will work -- "
+                        "generating a hypothesis from it isn't built yet regardless, but the "
+                        "file format matters once it is.)"
+                    )
+                else:
+                    notes.append(
+                        f"(Note: this looks like a GWAS/hypothesis-related request. The real "
+                        f"hypothesis service accepts {formats_str} for a GWAS file -- the "
+                        "attached file's extension matches. Generating a hypothesis from it "
+                        "isn't built yet, so say so, but confirm the format is right.)"
+                    )
+
         attached_urls = set(state.get("urls") or [])
         unattached_urls = set(URL_IN_TEXT_RE.findall(query)) - attached_urls
         if unattached_urls:

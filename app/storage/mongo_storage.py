@@ -329,7 +329,38 @@ class MongoManager:
                 return doc
         except Exception as e:
             logger.error(f"Error getting thread {thread_id}: {e}")
-        return {"thread_id": thread_id, "messages": [], "tool_calls": [], "content_ids": [], "running_summary": "", "message_count": 0}
+        return {"thread_id": thread_id, "messages": [], "tool_calls": [], "content_ids": [], "running_summary": "", "message_count": 0, "summary_watermark": 0}
+
+    def append_proposal_summary(self, thread_id: str, user_id: str, line: str) -> None:
+        """Appends one short, deterministic line describing a proposal
+        (kind, title, real ids, source/type) to the thread's running
+        summary. This -- not the full proposal objects -- is what _seed
+        feeds the orchestrator for awareness of earlier proposals in the
+        thread, so "summarize the hypothesis from before" has something
+        accurate and compact to work from without re-exposing raw state
+        that goes stale. Distinct field from the legacy `running_summary`
+        string used by the old /query path -- this one is a growing list of
+        lines, owned entirely by the new orchestrator."""
+        if not line:
+            return
+        try:
+            self.threads_collection.update_one(
+                {"thread_id": thread_id, "user_id": user_id},
+                {
+                    "$push": {"proposal_summary_lines": line},
+                    "$set": {"updated_at": datetime.utcnow()},
+                    "$setOnInsert": {
+                        "thread_id": thread_id, "user_id": user_id,
+                        "messages": [], "tool_calls": [], "running_summary": "",
+                    },
+                },
+                upsert=True,
+            )
+        except Exception as e:
+            logger.error(f"Error appending proposal summary for thread {thread_id}: {e}")
+
+    def get_proposal_summary(self, thread_id: str, user_id: str) -> list:
+        return self.get_thread(thread_id, user_id).get("proposal_summary_lines", [])
 
     def add_thread_content_ids(self, thread_id: str, user_id: str, content_ids: list) -> None:
 

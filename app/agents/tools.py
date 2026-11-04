@@ -166,6 +166,19 @@ def grounding_violation(tool_name: str, arguments: Dict[str, Any], state: AgentS
 
 
 class ToolsMixin:
+    def _append_proposal_summary(self, state: AgentState, line: str) -> None:
+        """One short, deterministic line (real ids/title/kind, never
+        LLM-paraphrased) recording a proposal just made, so a much later
+        turn can be told "a hypothesis/annotation like this existed" without
+        the orchestrator needing the full, potentially-stale proposal object
+        -- see mongo_storage.py's append_proposal_summary."""
+        if not line or not state.get("thread_id") or not state.get("user_id"):
+            return
+        try:
+            self.store.append_proposal_summary(state["thread_id"], state["user_id"], line)
+        except Exception as e:
+            logger.warning(f"Could not append proposal summary: {e}")
+
     def run_annotate_gene(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
         if getattr(self, "_annotation_subgraph", None) is None:
             self._annotation_subgraph = build_annotation_subgraph(self.annotation_graph)
@@ -196,9 +209,18 @@ class ToolsMixin:
             return {"content": f"{UNRESOLVED_MARKER}The pending confirmation wasn't answered — the user said instead: {new_text!r}"}
 
         response = result.get("annotation_response") or {}
+        state_update = {"annotation_response": response}
+        if response.get("json_format"):
+            state_update["proposals"] = [{"kind": "annotation", "data": response["json_format"]}]
+            data = response["json_format"]
+            self._append_proposal_summary(
+                state,
+                f'[annotation] query="{effective_query}" organism={response.get("organism", "human")} '
+                f'nodes={len(data.get("nodes") or [])}'
+            )
         return {
             "content": response.get("text", "") or "Annotation completed.",
-            "state_update": {"annotation_response": response},
+            "state_update": state_update,
             "agent_name": "annotation_agent",
         }
 
@@ -264,9 +286,19 @@ class ToolsMixin:
                 "state_update": {"hypothesis_response": response},
             }
 
+        state_update = {"hypothesis_response": response}
+        if response.get("json_format"):
+            state_update["proposals"] = [{"kind": "hypothesis", "data": response["json_format"]}]
+            data = response["json_format"]
+            self._append_proposal_summary(
+                state,
+                f'[hypothesis] project="{data.get("project_name")}" (project_id={data.get("project_id")}) '
+                f'phenotype={data.get("phenotype")} credible_set={data.get("credible_set_id") or "none"} '
+                f'variant={data.get("variant") or "none"} tissue={data.get("tissue") or "none"}'
+            )
         return {
             "content": response.get("text", ""),
-            "state_update": {"hypothesis_response": response},
+            "state_update": state_update,
             "agent_name": "hypothesis_agent",
         }
 
