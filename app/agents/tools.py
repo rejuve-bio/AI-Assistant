@@ -30,17 +30,23 @@ TOOL_SPECS = [
             "biological entity already named in the conversation -- either by "
             "the user directly, or turned up by a prior tool's result. Only "
             "call this once you have a real entity name; never guess or use a "
-            "placeholder. If the user names a gene TOGETHER WITH related items "
-            "that belong in the SAME connected graph (its transcripts, variants, "
-            "proteins -- e.g. 'annotate FTO with its transcripts X, Y, Z'), that "
-            "is ONE call with all of them in a single query string, not one call "
-            "per item -- splitting it produces several disconnected graphs "
-            "instead of one graph showing how they relate. Only use separate "
-            "calls for entities the user asked about as genuinely independent "
-            "(no stated relationship between them)."
+            "placeholder. The query string must carry the FULL scope of what "
+            "the user asked for as ONE connected graph, whatever entity types "
+            "that involves -- always driven by the actual question, never a "
+            "fixed list. This covers both: (a) the user naming specific related "
+            "items (its transcripts, variants, proteins -- e.g. 'annotate FTO "
+            "with its transcripts X, Y, Z'), and (b) open-ended relationships "
+            "the query should discover (e.g. 'map apolpp, then which group it "
+            "belongs to and what human diseases it models' -> one query string "
+            "mentioning apolpp, its gene group, AND the diseases it models -- "
+            "not just 'apolpp' alone). Splitting a connected request into "
+            "narrower calls, or dropping part of it, produces a disconnected "
+            "or incomplete graph instead of the one graph the user asked for. "
+            "Only use separate calls for entities the user asked about as "
+            "genuinely independent (no stated relationship between them)."
         ),
         "parameters": {"type": "object", "properties": {
-            "query": {"type": "string", "description": "the entity (or entities) to annotate together as one connected graph -- e.g. 'BRCA1', or 'FTO with its transcripts ENST00000538872, ENST00000546113' when they're related. Name only, no organism/schema wording here."},
+            "query": {"type": "string", "description": "the FULL request to annotate as one connected graph, in the user's own terms -- e.g. 'BRCA1', 'FTO with its transcripts ENST00000538872, ENST00000546113', or 'apolpp, the gene group it belongs to, and the human diseases it models'. Carry over every entity/relationship the question asked about, not just the first noun. Name only, no organism/schema wording here."},
             "organism": {
                 "type": "string", "enum": ["human", "fly"],
                 "description": (
@@ -137,6 +143,25 @@ def _looks_like_placeholder(value: str) -> bool:
     return bool(_TEMPLATE_TOKEN.match(v) and "_" in v)
 
 
+_GROUNDING_STOPWORDS = {
+    "the", "a", "an", "and", "or", "its", "it", "to", "of", "with", "in",
+    "on", "for", "is", "are", "that", "which", "what", "this", "then",
+    "gene", "genes", "protein", "proteins", "group", "groups", "belongs",
+    "belong", "model", "models", "modeled", "disease", "diseases", "human",
+    "humans", "association", "associated", "associations", "late",
+    "onset", "related", "relationship", "relationships", "involved",
+    "role", "roles", "map", "mapping", "annotate", "annotation",
+}
+_ENTITY_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)*")
+
+
+def _entity_tokens(query: str) -> list:
+    return [
+        w for w in _ENTITY_TOKEN_RE.findall(query)
+        if len(w) >= 3 and w.lower() not in _GROUNDING_STOPWORDS
+    ]
+
+
 def grounding_violation(tool_name: str, arguments: Dict[str, Any], state: AgentState) -> Optional[str]:
     """None if the call is fine; otherwise a human-readable reason it was
     rejected, to hand back to the orchestrator as a corrective ToolMessage."""
@@ -156,7 +181,18 @@ def grounding_violation(tool_name: str, arguments: Dict[str, Any], state: AgentS
         (m.content if isinstance(getattr(m, "content", None), str) else str(getattr(m, "content", "")))
         for m in state.get("messages", [])
     )
-    if query.lower() not in haystack.lower():
+    haystack_lower = haystack.lower()
+    tokens = _entity_tokens(query)
+    if tokens:
+        ungrounded = [t for t in tokens if t.lower() not in haystack_lower]
+        if ungrounded:
+            return (
+                f"{', '.join(repr(t) for t in ungrounded)} hasn't actually been "
+                f"established anywhere in this conversation yet -- {tool_name} "
+                "needs a value that's either named by the user or came back "
+                "from a prior tool's real result."
+            )
+    elif query.lower() not in haystack_lower:
         return (
             f"'{query}' hasn't actually been established anywhere in this "
             f"conversation yet -- {tool_name} needs a value that's either "
