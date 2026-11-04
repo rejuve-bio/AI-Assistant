@@ -3,6 +3,8 @@ import difflib
 import json
 import logging
 import os
+import requests
+import yaml
 from dotenv import load_dotenv
 from app.annotation_graph.neo4j_handler import Neo4jConnection, SimilarityLookupError
 from app.annotation_graph.schema_handler import SchemaHandler
