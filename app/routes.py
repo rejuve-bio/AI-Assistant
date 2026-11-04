@@ -37,16 +37,9 @@ def _handle_uploads(uploaded_files, ai_assistant, user_id, content_ids):
         if uploaded.filename and uploaded.filename.lower().endswith(".pdf"):
             response = ai_assistant.rag.save_retrievable_docs(uploaded, user_id)
             if isinstance(response, dict):
-                is_duplicate = response.get("text") == "PDF already exists."
-                if is_duplicate:
-                    pdf_files = mongo_db_manager.get_user_content_files(user_id, "pdf")
-                    existing = next((f for f in pdf_files if f.get("filename") == uploaded.filename), None)
-                    if existing:
-                        newly_uploaded_content_ids.append(existing.get("content_id"))
-                else:
-                    new_id = response.get("resource", {}).get("content_id")
-                    if new_id:
-                        newly_uploaded_content_ids.append(new_id)
+                new_id = response.get("resource", {}).get("content_id")
+                if new_id:
+                    newly_uploaded_content_ids.append(new_id)
                 upload_results.append({"filename": uploaded.filename, "response": response})
 
     if newly_uploaded_content_ids:
@@ -171,7 +164,8 @@ def process_query(
           Scopes both the checkpointer (pause/resume state) and the durable
           conversation thread (messages + tool-call references).
     - For content queries (resource == 'content'), content_ids are extracted from context['id'].
-    - If content_ids are provided, answers are retrieved only from those content items; otherwise, answers are retrieved from all collections (user and general).
+    - If content_ids are provided, answers are retrieved only from those content items. If omitted, any content_ids this thread has already
+      uploaded or referenced are recalled automatically; only a thread with no such history falls back to the general collection.
     - Handles both user-uploaded content question answering and general knowledge queries.
     """
     try:
@@ -184,6 +178,13 @@ def process_query(
         upload_results = []
         if uploaded_files:
             upload_results, content_ids = _handle_uploads(uploaded_files, ai_assistant, user_id, content_ids)
+
+        if content_ids and thread_id:
+            mongo_db_manager.add_thread_content_ids(thread_id, user_id, content_ids)
+        elif thread_id:
+            remembered = mongo_db_manager.get_thread_content_ids(thread_id, user_id)
+            if remembered:
+                content_ids = remembered
 
         return _dispatch_query(ai_assistant, question_parsed, json_query_parsed, uploaded_files, upload_results, content_ids, user_id, auth.token, graph_id, resource, url, resume, thread_id)
     except Exception as e:

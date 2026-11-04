@@ -1,4 +1,3 @@
-from datetime import datetime
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 import os
@@ -134,8 +133,12 @@ class Qdrant:
         self.ensure_collection_exists(collection_name)
         meta = metadata or {}
 
+        logger.info(f"Chunked into {len(chunks)} chunk(s) for '{collection_name}' -- embedding in batches of {self.batch_size}")
+
         for i in range(0, len(chunks), self.batch_size):
             batch_chunks = chunks[i : i + self.batch_size]
+            batch_num = i // self.batch_size + 1
+            logger.info(f"Embedding batch {batch_num} ({len(batch_chunks)} chunk(s))...")
             embeddings = self._get_embeddings(batch_chunks)
 
             points = []
@@ -147,8 +150,9 @@ class Qdrant:
                     )
                 )
             self.client.upsert(collection_name=collection_name, points=points)
+            logger.info(f"Upserted batch {batch_num} ({len(points)} point(s)) into '{collection_name}'")
 
-        logger.info("Content chunks saved")
+        logger.info(f"Content chunks saved -- {len(chunks)} chunk(s) total")
         return "Content Data Successfully Uploaded"
 
     def _upsert_general_data(self, collection_name, data):
@@ -285,7 +289,7 @@ class Qdrant:
                 limit=top_k,
                 query_filter=query_filter,
                 with_payload=True,
-                score_threshold=0.5 
+                score_threshold=0.5
                 if query_filter is None else None
             )
             logger.info(f"Found {len(hits.points)} hits in collection '{collection_name}'")
