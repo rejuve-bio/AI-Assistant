@@ -1,0 +1,65 @@
+name: GENCODE
+website: https://www.gencodegenes.org
+nodes:
+  gene:
+    url: https://www.gencodegenes.org/
+    input_label: gene
+    properties:
+      id: str
+      chr: str
+      start: int
+      end: int
+      gene_type: str
+      gene_name: str
+      synonym: str[]
+      taxon_id: int
+  transcript:
+    url: https://www.gencodegenes.org/
+    input_label: transcript
+    description: An RNA synthesized on a DNA or RNA template by an RNA polymerase.
+    properties:
+      id: str
+      transcript_type: str
+      transcript_name: str
+      transcript_id: str
+      gene_name: str
+      taxon_id: int
+  exon:
+    url: https://www.gencodegenes.org/
+    input_label: exon
+    properties:
+      id: str
+      chr: str
+      start: int
+      end: int
+      exon_id: str
+      exon_number: int
+      gene_id: str
+      transcript_id: str
+      taxon_id: int
+relationships:
+  transcribes to:
+    url: https://www.gencodegenes.org/
+    input_label: transcribes_to
+    output_label: transcribes_to
+    description: x transcribes to y if and only if y is synthesized from template x
+    source: gene
+    target: transcript
+  exon part_of transcript:
+    url: https://www.gencodegenes.org/
+    input_label: part_of_transcript
+    output_label: part_of
+    description: holds between an exon and the transcript it is part of
+    source: exon
+    target: transcript
+    properties:
+      taxon_id: int
+  exon part_of gene:
+    url: https://www.gencodegenes.org/
+    input_label: part_of_gene
+    output_label: part_of
+    description: holds between an exon and the gene it is part of
+    source: exon
+    target: gene
+    properties:
+      taxon_id: int

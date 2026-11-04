@@ -1,0 +1,15 @@
+name: TopLD
+website: http://topld.genetics.unc.edu
+relationships:
+  topld in linkage disequilibrium with:
+    url: http://topld.genetics.unc.edu/
+    input_label: in_linkage_disequilibrium_with
+    output_label: in_linkage_disequilibrium_with
+    description: holds between two sequence variants, the presence of which are correlated
+      in a population
+    source: snp
+    target: snp
+    properties:
+      r2: float
+      ancestry: str
+      d_prime: float

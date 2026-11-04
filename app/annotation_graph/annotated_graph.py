@@ -221,6 +221,40 @@ class Graph:
             logger.error(f"Failed to convert information to annotation JSON: {e}")
             raise
 
+    def _resolve_unambiguous_ids(self, initial_json, neo4j):
+        """Fill a node's real database id when it's a cheap, unambiguous lookup.
+
+        Not validation: no fuzzy matching, no LLM disambiguation, no
+        confirmation flow -- a direct exact-match query only, and it fills
+        the id in only when exactly one row matches. Ambiguous or
+        not-found values are left exactly as drafted, same as before.
+        Safe to run during propose_only since it's a lookup, not a run.
+        """
+        lookup_needed = {}
+        for node in initial_json.get("nodes", []):
+            if node.get("id"):
+                continue
+            node_type = node.get("type")
+            id_prop = self._node_id_property.get((node_type or "").lower())
+            if not id_prop:
+                continue
+            value = (node.get("properties") or {}).get(id_prop)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            lookup_needed.setdefault((node_type, id_prop), set()).add(value)
+
+        for (node_type, id_prop), values in lookup_needed.items():
+            resolved = neo4j.get_ids_for_property_values_batch(node_type, id_prop, list(values))
+            for node in initial_json.get("nodes", []):
+                if node.get("id") or node.get("type") != node_type:
+                    continue
+                value = (node.get("properties") or {}).get(id_prop)
+                match = resolved.get(value)
+                if match and match["candidate_count"] == 1 and match["id"]:
+                    node["id"] = match["id"]
+
+        return initial_json
+
     def _validate_and_update(self, initial_json, neo4j=None, schema_handler=None):
         try:
             logger.info("Validating and updating the JSON structure.")
@@ -521,6 +555,9 @@ class Graph:
                 "candidates": batch_for_llm,  # {item: [(candidate, score), ...]}
             }
 
+        except SimilarityLookupError:
+            raise
+
         except Exception as e:
             logger.error(f"Validation and update of JSON failed: {e}")
             validation_report["validation_status"] = "failed"
@@ -759,7 +796,7 @@ class Graph:
 
         return kept
 
-    def _describe_annotation_result(self, query: str, validated_json: dict) -> str:
+    def _describe_annotation_result(self, query: str, validated_json: dict, organism: str = "human", thread_sources: list = None, unverified: bool = False) -> str:
         """Generate a meaningful biological description from the query + validated JSON.
         Replaces the generic 'structure created successfully' text so the aggregator
         has real content to work with instead of hallucinating.
@@ -804,10 +841,26 @@ class Graph:
                 "not imply those entities exist or were annotated."
                 if failed_nodes else ""
             )
+            scope_instruction = (
+                f" IMPORTANT: this structure was built using only these source(s): {', '.join(thread_sources)}. "
+                "Compare the user's question to the structure above -- if they asked about something that "
+                "isn't represented in it (a different entity or relationship type), say so plainly and name "
+                "what's missing, noting it's because the selected source(s) don't cover it. Do not silently "
+                "describe only the part that was included as if that were the whole request."
+                if thread_sources else ""
+            )
+            unverified_instruction = (
+                " IMPORTANT: this draft could NOT be checked against the database -- it's unreachable "
+                "right now. Say so plainly: these ids and values are UNCONFIRMED, not validated, and "
+                "the structure may be wrong or incomplete. Do not describe this as a successful or "
+                "complete annotation; present it only as an unverified draft to try again later."
+                if unverified else ""
+            )
             prompt = DESCRIBE_ANNOTATION_PROMPT.format(
                 query=query,
                 structure_summary=structure_summary,
-                failure_instruction=failure_instruction,
+                failure_instruction=failure_instruction + scope_instruction + unverified_instruction,
+                organism=organism,
             )
             result = self.llm.generate(prompt)
             if result and result.strip():
@@ -826,14 +879,16 @@ class Graph:
             )
         return "The annotation structure was built successfully."
 
-    def _build_confirmation_text(self, unconfirmed_nodes: list) -> str:
+    def _build_confirmation_text(self, unconfirmed_nodes: list, sources: list = None) -> str:
+        on_sources = ""
+
         if len(unconfirmed_nodes) == 1:
             u = unconfirmed_nodes[0]
             all_vals = u.get("all_list_values") or []
             known_vals = [v for v in all_vals if v != u["original"]]
 
             if u.get("suggestion") is None:
-                base = f"I couldn't find **'{u['original']}'** in the database, and nothing similar exists either."
+                base = f"I couldn't find **'{u['original']}'**{on_sources}, and nothing similar exists either."
                 if known_vals:
                     base += f" Would you like me to build the annotation without it, using only {known_vals}? Or would you like to provide a different identifier?"
                 else:
@@ -841,7 +896,7 @@ class Graph:
                 return base
 
             base = (
-                f"I couldn't find **'{u['original']}'** in the database. "
+                f"I couldn't find **'{u['original']}'**{on_sources}. "
                 f"The closest match I found is **'{u['suggestion']}'**.\n\n"
                 f"Should I go ahead and use **'{u['suggestion']}'** in place of **'{u['original']}'**?"
             )
@@ -851,7 +906,7 @@ class Graph:
                 base += " Or would you like to cancel and try a different identifier?"
             return base
 
-        lines = ["I couldn't find some of the nodes you mentioned in the database:"]
+        lines = [f"I couldn't find some of the nodes you mentioned{on_sources}:"]
         for u in unconfirmed_nodes:
             suggestion_text = f"closest match is **'{u['suggestion']}'**" if u.get("suggestion") is not None else "nothing similar exists"
             lines.append(
@@ -866,18 +921,21 @@ class Graph:
 
     def process_annotation_query(
         self, query, user_id, query_type="annotation_biological",
-        organism_override=None, organism_hint_text=None, thread_id=None,
+        organism_override=None, organism_hint_text=None, thread_id=None, propose_only=False,
+        thread_species=None, thread_sources=None,
     ):
         # orchestrate the entire annotation pipeline from user query to final response
         try:
             logger.info(
                 f"Starting annotation pipeline for query: '{query}', type: {query_type}, "
-                f"organism_override: {organism_override}"
+                f"organism_override: {organism_override}, propose_only: {propose_only}, "
+                f"thread_species: {thread_species}, thread_sources: {thread_sources}"
             )
 
             return self._handle_biological_query(
                 query, user_id, organism_override=organism_override, organism_hint_text=organism_hint_text,
-                thread_id=thread_id,
+                thread_id=thread_id, propose_only=propose_only, thread_species=thread_species,
+                thread_sources=thread_sources,
             )
 
         except Exception as e:
@@ -894,15 +952,90 @@ class Graph:
                 },
             }
 
-    def _organism_context(self, query, organism_override=None, organism_hint_text=None):
-        if organism_override:
-            normalized = organism_override if organism_override in ("human", "fly") else self._detect_organism(organism_override)
+    _SOURCE_SCHEMA_DIRS = {
+        "human": "app/annotation_graph/schema/human/data_source_schemas",
+        "fly": "app/annotation_graph/schema/fly/data_source_schemas",
+    }
+
+    def _build_schema_from_sources(self, organism: str, sources: list):
+        """Dynamically assembles a schema restricted to only the named
+        sources, read from the real per-source yaml files -- so choosing a
+        source actually changes which node/relationship types extraction
+        can see, instead of 'sources' being pure unused metadata. Returns
+        None if no sources were given (caller falls back to the full
+        default schema in that case, same as today's behavior)."""
+        if not sources:
+            return None
+        directory = self._SOURCE_SCHEMA_DIRS.get(organism)
+        if not directory:
+            return None
+
+        node_props = {}
+        rel_lines = []
+        for source_name in sources:
+            path = os.path.join(directory, f"{source_name}.yaml")
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path) as f:
+                    data = yaml.safe_load(f) or {}
+            except Exception as e:
+                logger.warning(f"Could not load source schema {path}: {e}")
+                continue
+
+            for node_type, node_def in (data.get("nodes") or {}).items():
+                node_key = node_type.replace(" ", "_")
+                props = (node_def or {}).get("properties") or {}
+                node_props.setdefault(node_key, {}).update(props)
+
+            for rel_name, rel_def in (data.get("relationships") or {}).items():
+                rel_def = rel_def or {}
+                src = (rel_def.get("source") or "").replace(" ", "_")
+                tgt = (rel_def.get("target") or "").replace(" ", "_")
+                label = rel_def.get("output_label") or rel_def.get("input_label") or rel_name.replace(" ", "_")
+                if src and tgt:
+                    rel_lines.append(f"(:{src})-[:{label}]->(:{tgt})")
+
+        if not node_props and not rel_lines:
+            logger.warning(f"No schema content found for sources={sources} (organism={organism})")
+
+        lines = ["### Schema:\n", "#### Node Properties:"]
+        for node_type, props in node_props.items():
+            lines.append(f"- **{node_type}**")
+            for prop_name, prop_type in props.items():
+                lines.append(f"  - `{prop_name}`: {prop_type}")
+            lines.append("")
+        lines.append("#### Relationships:")
+        lines.extend(sorted(set(rel_lines)))
+
+        full_schema = self.enhanced_schema if organism == "human" else (self.fly_enhanced_schema or "")
+        rules_marker = "#### Important Rules:"
+        if rules_marker in full_schema:
+            lines.append("\n" + full_schema[full_schema.index(rules_marker):])
+
+        return "\n".join(lines)
+
+    def _organism_context(self, query, organism_override=None, organism_hint_text=None, thread_species=None, thread_sources=None):
+        organism, schema, schema_handler, neo4j = self._resolve_organism(
+            query, organism_override, organism_hint_text, thread_species
+        )
+        restricted = self._build_schema_from_sources(organism, thread_sources)
+        if restricted is not None:
+            logger.info(f"Restricting schema to sources={thread_sources} for organism={organism}")
+            schema = restricted
+        return organism, schema, schema_handler, neo4j
+
+    def _resolve_organism(self, query, organism_override=None, organism_hint_text=None, thread_species=None):
+        for source, value in (("explicitly requested", organism_override), ("thread context", thread_species)):
+            if not value:
+                continue
+            normalized = value if value in ("human", "fly") else self._detect_organism(value)
             if normalized == "fly" and self.fly_schema_handler:
-                logger.info(f"Organism explicitly requested ('{organism_override}' -> fly) — using fly schema and Neo4j")
+                logger.info(f"Organism {source} ('{value}' -> fly) — using fly schema and Neo4j")
                 return ("fly", self.fly_enhanced_schema, self.fly_schema_handler,
                         self.fly_neo4j or self.neo4j)
             if normalized == "human":
-                logger.info(f"Organism explicitly requested ('{organism_override}' -> human) — using human schema and Neo4j")
+                logger.info(f"Organism {source} ('{value}' -> human) — using human schema and Neo4j")
                 return "human", self.enhanced_schema, self.schema_handler, self.neo4j
 
         if self._detect_organism(organism_hint_text or query) == "fly" and self.fly_schema_handler:
@@ -929,13 +1062,13 @@ class Graph:
                 })
         return unconfirmed
 
-    def _confirmation_needed(self, validation, unconfirmed, organism):
+    def _confirmation_needed(self, validation, unconfirmed, organism, sources=None):
         """Pause the pipeline and hand the caller everything needed to resume."""
         logger.info(f"Returning needs_confirmation for {len(unconfirmed)} node(s)")
         return {
             "success": True,
             "needs_confirmation": True,
-            "confirmation_text": self._build_confirmation_text(unconfirmed),
+            "confirmation_text": self._build_confirmation_text(unconfirmed, sources=sources),
             "pending": {
                 "json": validation["updated_json"],
                 "candidates": validation.get("candidates", {}),
@@ -948,11 +1081,11 @@ class Graph:
             "resource": {"id": None, "type": "annotation"},
         }
 
-    def _annotation_result(self, query, validation, organism):
+    def _annotation_result(self, query, validation, organism, thread_sources=None):
         """A fully validated annotation, described for the user."""
         result = {
             "success": True,
-            "summary": self._describe_annotation_result(query, validation["updated_json"]),
+            "summary": self._describe_annotation_result(query, validation["updated_json"], organism=organism, thread_sources=thread_sources),
             "json_format": validation["updated_json"],
             "organism": organism,
             "validation_report": validation["validation_report"],
@@ -962,11 +1095,12 @@ class Graph:
         logger.info(f"JSON query structure: {json.dumps(result, indent=2)}")
         return result
 
-    def _handle_biological_query(self, query, user_id, organism_override=None, organism_hint_text=None, thread_id=None):
+    def _handle_biological_query(self, query, user_id, organism_override=None, organism_hint_text=None, thread_id=None, propose_only=False, thread_species=None, thread_sources=None):
 
+        initial_json = None
         try:
             organism, schema, schema_handler, neo4j = self._organism_context(
-                query, organism_override, organism_hint_text
+                query, organism_override, organism_hint_text, thread_species=thread_species, thread_sources=thread_sources
             )
 
             emit_to_user(user=user_id,
@@ -977,30 +1111,68 @@ class Graph:
                 )
                 logger.info("Relevant information extraction successful")
 
-                emit_to_user(user=user_id, message="Validating Constructed Json Format...", thread_id=thread_id)
+                emit_to_user(user=user_id, message="Building query draft..." if propose_only else "Validating Constructed Json Format...", thread_id=thread_id)
                 initial_json = self._convert_to_annotation_json(
                     relevant_information, query, enhanced_schema=schema
                 )
                 logger.info("Initial JSON conversion successful")
 
+                if propose_only:
+                    unverified = False
+                    try:
+                        initial_json = self._resolve_unambiguous_ids(initial_json, neo4j)
+                    except SimilarityLookupError as e:
+                        logger.warning(f"Cheap id resolution unavailable, returning the draft marked unverified: {e}")
+                        unverified = True
+                    return {
+                        "success": True,
+                        "proposal": True,
+                        "unverified": unverified,
+                        "summary": self._describe_annotation_result(query, initial_json, organism=organism, thread_sources=thread_sources, unverified=unverified),
+                        "json_format": initial_json,
+                        "organism": organism,
+                        "resource": {"id": None, "type": "annotation"},
+                    }
+
                 validation = self._validate_and_update(
                     initial_json, neo4j=neo4j, schema_handler=schema_handler
                 )
+                if validation["validation_report"].get("validation_status") == "failed":
+                    error_message = validation["validation_report"].get("error_message", "Unknown error")
+                    logger.warning(f"Validation failed, returning the draft marked unverified: {error_message}")
+                    return {
+                        "success": True,
+                        "unverified": True,
+                        "summary": self._describe_annotation_result(query, validation["updated_json"], organism=organism, thread_sources=thread_sources, unverified=True),
+                        "json_format": validation["updated_json"],
+                        "organism": organism,
+                        "resource": {"id": None, "type": "annotation"},
+                    }
                 logger.info("JSON validation successful")
 
                 unconfirmed = self._collect_unconfirmed_nodes(validation["updated_json"])
                 if unconfirmed:
-                    return self._confirmation_needed(validation, unconfirmed, organism)
+                    return self._confirmation_needed(validation, unconfirmed, organism, sources=thread_sources)
 
-                return self._annotation_result(query, validation, organism)
+                return self._annotation_result(query, validation, organism, thread_sources=thread_sources)
 
             except SimilarityLookupError as e:
-                logger.error(f"Similarity lookup unavailable: {e}")
+                if initial_json is None:
+                    logger.error(f"Similarity lookup unavailable before a draft was built: {e}")
+                    return {
+                        "success": False,
+                        "error": "I couldn't reach the annotation database to look that up. "
+                                 "Please try again in a moment.",
+                        "pipeline_status": {"json_extraction": "unavailable"},
+                    }
+                logger.warning(f"Similarity lookup unavailable, returning the draft marked unverified: {e}")
                 return {
-                    "success": False,
-                    "error": "I couldn't reach the annotation database to look that up. "
-                             "Please try again in a moment.",
-                    "pipeline_status": {"json_extraction": "unavailable"},
+                    "success": True,
+                    "unverified": True,
+                    "summary": self._describe_annotation_result(query, initial_json, organism=organism, thread_sources=thread_sources, unverified=True),
+                    "json_format": initial_json,
+                    "organism": organism,
+                    "resource": {"id": None, "type": "annotation"},
                 }
 
             except Exception as e:

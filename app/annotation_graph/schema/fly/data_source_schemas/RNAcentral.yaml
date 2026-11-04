@@ -1,0 +1,40 @@
+name: RNAcentral
+website: https://rnacentral.org
+nodes:
+  non coding rna:
+    url: https://rnacentral.org/downloads
+    input_label: non_coding_rna
+    properties:
+      id: str
+      chr: str
+      start: int
+      end: int
+      rna_type: str
+      taxon_id: int
+      source: str
+      source_url: str
+relationships:
+  biological process rna:
+    url: https://rnacentral.org/downloads
+    input_label: biological_process_rna
+    output_label: participates_in
+    source: non coding rna
+    target: biological process
+    properties:
+      taxon_id: int
+  molecular function rna:
+    url: https://rnacentral.org/downloads
+    input_label: molecular_function_rna
+    output_label: enables
+    source: non coding rna
+    target: molecular function
+    properties:
+      taxon_id: int
+  cellular component rna:
+    url: https://rnacentral.org/downloads
+    input_label: cellular_component_rna
+    output_label: located_in
+    source: non coding rna
+    target: cellular component
+    properties:
+      taxon_id: int

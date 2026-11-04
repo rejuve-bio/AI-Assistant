@@ -1,0 +1,15 @@
+name: HOCOMOCOv11
+website: https://hocomoco11.autosome.org
+nodes:
+  motif:
+    url: https://hocomoco11.autosome.org/downloads_v11
+    input_label: motif
+    output_label: motif
+    properties:
+      taxon_id: int
+      pwm_C: float[]
+      length: int
+      pwm_T: float[]
+      tf_name: str
+      pwm_G: float[]
+      pwm_A: float[]

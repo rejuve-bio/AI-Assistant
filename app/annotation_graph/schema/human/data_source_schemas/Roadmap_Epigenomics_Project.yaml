@@ -1,0 +1,128 @@
+name: Roadmap Epigenomics Project
+website: https://forgedb.cancer.gov
+relationships:
+  chromatin state snp to anatomy:
+    url: https://forgedb.cancer.gov/api/forge2.erc2-chromatin15state-all/v1.0/forge2.erc2-chromatin15state-all.{0-9}.forgedb.csv.gz
+    input_label: chromatin_state
+    output_label: chromatin_state
+    description: Association between a SNP and a chromatin state in an anatomy context
+    source: snp
+    target: anatomy
+    properties:
+      state: str
+  chromatin state snp to cell type:
+    url: https://forgedb.cancer.gov/api/forge2.erc2-chromatin15state-all/v1.0/forge2.erc2-chromatin15state-all.{0-9}.forgedb.csv.gz
+    input_label: chromatin_state
+    output_label: chromatin_state
+    description: Association between a SNP and a chromatin state in a cell type context
+    source: snp
+    target: cell_type
+    properties:
+      state: str
+  chromatin state snp to cell line:
+    url: https://forgedb.cancer.gov/api/forge2.erc2-chromatin15state-all/v1.0/forge2.erc2-chromatin15state-all.{0-9}.forgedb.csv.gz
+    input_label: chromatin_state
+    output_label: chromatin_state
+    description: Association between a SNP and a chromatin state in a cell line context
+    source: snp
+    target: cell_line
+    properties:
+      state: str
+  chromatin state snp to experimental factor:
+    url: https://forgedb.cancer.gov/api/forge2.erc2-chromatin15state-all/v1.0/forge2.erc2-chromatin15state-all.{0-9}.forgedb.csv.gz
+    input_label: chromatin_state
+    output_label: chromatin_state
+    description: Association between a SNP and a chromatin state in an experimental factor context
+    source: snp
+    target: experimental_factor
+    properties:
+      state: str
+  chromatin state snp to tissue:
+    url: https://forgedb.cancer.gov/api/forge2.erc2-chromatin15state-all/v1.0/forge2.erc2-chromatin15state-all.{0-9}.forgedb.csv.gz
+    input_label: chromatin_state
+    output_label: chromatin_state
+    description: Association between a SNP and a chromatin state in a tissue context
+    source: snp
+    target: tissue
+    properties:
+      state: str
+  histone modification snp to anatomy:
+    url: https://forgedb.cancer.gov/api/forge2.erc2-H3-all/v1.0/forge2.erc2-H3-all.{0-9}.forgedb.csv.gz
+    input_label: histone_modification
+    output_label: histone_modification
+    description: A post-translational modification of histone proteins e.g methylation, acetylation, phosphorylation in an anatomy context
+    source: snp
+    target: anatomy
+    properties:
+      modification: str
+  histone modification snp to cell type:
+    url: https://forgedb.cancer.gov/api/forge2.erc2-H3-all/v1.0/forge2.erc2-H3-all.{0-9}.forgedb.csv.gz
+    input_label: histone_modification
+    output_label: histone_modification
+    description: A post-translational modification of histone proteins e.g methylation, acetylation, phosphorylation in a cell type context
+    source: snp
+    target: cell_type
+    properties:
+      modification: str
+  histone modification snp to cell line:
+    url: https://forgedb.cancer.gov/api/forge2.erc2-H3-all/v1.0/forge2.erc2-H3-all.{0-9}.forgedb.csv.gz
+    input_label: histone_modification
+    output_label: histone_modification
+    description: A post-translational modification of histone proteins e.g methylation, acetylation, phosphorylation in a cell line context
+    source: snp
+    target: cell_line
+    properties:
+      modification: str
+  histone modification snp to experimental factor:
+    url: https://forgedb.cancer.gov/api/forge2.erc2-H3-all/v1.0/forge2.erc2-H3-all.{0-9}.forgedb.csv.gz
+    input_label: histone_modification
+    output_label: histone_modification
+    description: A post-translational modification of histone proteins e.g methylation, acetylation, phosphorylation in an experimental factor context
+    source: snp
+    target: experimental_factor
+    properties:
+      modification: str
+  histone modification snp to tissue:
+    url: https://forgedb.cancer.gov/api/forge2.erc2-H3-all/v1.0/forge2.erc2-H3-all.{0-9}.forgedb.csv.gz
+    input_label: histone_modification
+    output_label: histone_modification
+    description: A post-translational modification of histone proteins e.g methylation, acetylation, phosphorylation in a tissue context
+    source: snp
+    target: tissue
+    properties:
+      modification: str
+  dnase I hotspot snp to anatomy:
+    url: https://forgedb.cancer.gov/api/forge2.erc2-DHS/v1.0/forge2.erc2-DHS.forgedb.csv.gz
+    input_label: in_dnase_I_hotspot
+    output_label: in_dnase_I_hotspot
+    description: A region of chromatin that is sensitive to cleavage by the enzyme DNase I in an anatomy context
+    source: snp
+    target: anatomy
+  dnase I hotspot snp to cell type:
+    url: https://forgedb.cancer.gov/api/forge2.erc2-DHS/v1.0/forge2.erc2-DHS.forgedb.csv.gz
+    input_label: in_dnase_I_hotspot
+    output_label: in_dnase_I_hotspot
+    description: A region of chromatin that is sensitive to cleavage by the enzyme DNase I in a cell type context
+    source: snp
+    target: cell_type
+  dnase I hotspot snp to cell line:
+    url: https://forgedb.cancer.gov/api/forge2.erc2-DHS/v1.0/forge2.erc2-DHS.forgedb.csv.gz
+    input_label: in_dnase_I_hotspot
+    output_label: in_dnase_I_hotspot
+    description: A region of chromatin that is sensitive to cleavage by the enzyme DNase I in a cell line context
+    source: snp
+    target: cell_line
+  dnase I hotspot snp to experimental factor:
+    url: https://forgedb.cancer.gov/api/forge2.erc2-DHS/v1.0/forge2.erc2-DHS.forgedb.csv.gz
+    input_label: in_dnase_I_hotspot
+    output_label: in_dnase_I_hotspot
+    description: A region of chromatin that is sensitive to cleavage by the enzyme DNase I in an experimental factor context
+    source: snp
+    target: experimental_factor
+  dnase I hotspot snp to tissue:
+    url: https://forgedb.cancer.gov/api/forge2.erc2-DHS/v1.0/forge2.erc2-DHS.forgedb.csv.gz
+    input_label: in_dnase_I_hotspot
+    output_label: in_dnase_I_hotspot
+    description: A region of chromatin that is sensitive to cleavage by the enzyme DNase I in a tissue context
+    source: snp
+    target: tissue

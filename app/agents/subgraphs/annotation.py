@@ -77,6 +77,9 @@ def build_annotation_subgraph(annotation_graph):
             organism_override=state.get("organism_override"),
             organism_hint_text=state.get("organism_hint_text"),
             thread_id=state.get("thread_id"),
+            propose_only=state.get("propose_only", False),
+            thread_species=state.get("thread_species"),
+            thread_sources=state.get("thread_sources"),
         )
         logger.info(f"Pipeline response: {result}")
 

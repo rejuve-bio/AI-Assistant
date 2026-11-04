@@ -100,6 +100,13 @@ class Neo4jConnection:
     def get_ids_for_property_values_batch(self, label: str,
                                           property_key: str,
                                           values: List[str]) -> dict:
+        """Direct exact-match id lookup -- no fuzzy search, no disambiguation.
+
+        Returns {value: {"id": db_id or None, "candidate_count": n}} so a
+        caller can tell an unambiguous hit (count == 1) from one it would
+        be wrong to silently resolve. Cheap enough to run during propose:
+        a single indexed match, not a query execution.
+        """
         logger.info(f"Resolving database id for {len(values)} value(s) in '{label}.{property_key}'.")
 
         query = f"""
@@ -117,20 +124,17 @@ class Neo4jConnection:
                 result = session.run(query, values=values)
                 resolved = {}
                 for record in result:
-                    if record["candidate_count"] > 1:
-                        logger.warning(
-                            f"'{record['value']}' matches {record['candidate_count']} "
-                            f"distinct '{label}.id' values in '{label}.{property_key}' — "
-                            f"using {record['db_id']!r} (lowest id) deterministically."
-                        )
-                    resolved[record["value"]] = record["db_id"]
+                    resolved[record["value"]] = {
+                        "id": record["db_id"],
+                        "candidate_count": record["candidate_count"],
+                    }
                 for v in values:
-                    resolved.setdefault(v, None)
+                    resolved.setdefault(v, {"id": None, "candidate_count": 0})
                 return resolved
 
         except Exception as e:
             logger.error(f"Error resolving ids for '{label}.{property_key}': {str(e)}")
-            return {v: None for v in values}
+            raise SimilarityLookupError(str(e)) from e
 
     def get_similar_property_values(self, label: str,
                                     property_key: str,

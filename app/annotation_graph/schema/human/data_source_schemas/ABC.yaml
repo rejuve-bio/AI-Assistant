@@ -1,0 +1,14 @@
+name: ABC
+website: https://forgedb.cancer.gov
+relationships:
+  activity by contact:
+    url: https://forgedb.cancer.gov/api/abc/v1.0/abc.forgedb.csv.gz
+    input_label: activity_by_contact
+    output_label: activity_by_contact
+    description: An association between a variant in a regulatory region and a gene
+      it predicted by the ABC model (Fulco et.al 2019)
+    source: snp
+    target: gene
+    properties:
+      biological_context: str
+      score: float

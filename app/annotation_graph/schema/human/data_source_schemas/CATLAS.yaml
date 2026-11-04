@@ -1,0 +1,94 @@
+name: CATLAS
+website: https://catlas.org
+nodes:
+  enhancer:
+    url: https://catlas.org/
+    input_label: enhancer
+    output_label: enhancer
+    description: A distal cCRE (candidate cis-regulatory element) from the CATLAS
+      single-cell chromatin accessibility atlas.
+    properties:
+      chr: str
+      start: int
+      end: int
+      development_stage: str[]
+      ccre_module: int
+      taxon_id: str
+  promoter:
+    url: https://catlas.org/
+    input_label: promoter
+    output_label: promoter
+    description: A promoter-proximal cCRE from the CATLAS single-cell chromatin
+      accessibility atlas.
+    properties:
+      chr: str
+      start: int
+      end: int
+      development_stage: str[]
+      ccre_module: int
+      taxon_id: str
+relationships:
+  enhancer activity by contact:
+    url: https://catlas.org/
+    input_label: enhancer_activity_by_contact
+    output_label: activity_by_contact
+    description: An enhancer-to-gene association predicted by the ABC model
+      (Activity-By-Contact, Fulco et al. 2019) using CATLAS single-cell
+      chromatin accessibility data.
+    source: enhancer
+    target: gene
+    properties:
+      abc_score: float
+      distance: int
+      biological_context: str
+      taxon_id: str
+  promoter to gene association:
+    url: https://catlas.org/
+    input_label: promoter_gene
+    output_label: associated_with
+    description: An association between a promoter cCRE and its target gene.
+    source: promoter
+    target: gene
+    properties:
+      biological_context: str
+      taxon_id: str
+  enhancer accessible in cell type:
+    url: https://catlas.org/
+    input_label: enhancer_accessible_in_cell_type
+    output_label: accessible_in
+    description: An enhancer cCRE that is chromatin-accessible in a given cell type
+      (CL ontology term).
+    source: enhancer
+    target: cell_type
+    properties:
+      taxon_id: str
+  enhancer accessible in tissue:
+    url: https://catlas.org/
+    input_label: enhancer_accessible_in_tissue
+    output_label: accessible_in
+    description: An enhancer cCRE that is chromatin-accessible in a given tissue
+      (UBERON ontology term).
+    source: enhancer
+    target: anatomy
+    properties:
+      taxon_id: str
+  promoter accessible in cell type:
+    url: https://catlas.org/
+    input_label: promoter_accessible_in_cell_type
+    output_label: accessible_in
+    description: A promoter cCRE that is chromatin-accessible in a given cell type
+      (CL ontology term).
+    source: promoter
+    target: cell_type
+    properties:
+      taxon_id: str
+  promoter accessible in tissue:
+    url: https://catlas.org/
+    input_label: promoter_accessible_in_tissue
+    output_label: accessible_in
+    description: A promoter cCRE that is chromatin-accessible in a given tissue
+      (UBERON ontology term).
+    source: promoter
+    target: anatomy
+    properties:
+      taxon_id: str

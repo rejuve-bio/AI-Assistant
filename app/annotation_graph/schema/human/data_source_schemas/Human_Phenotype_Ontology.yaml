@@ -1,0 +1,27 @@
+name: Human Phenotype Ontology
+website: https://hpo.jax.org
+relationships:
+  gene to phenotype association:
+    url: https://hpo.jax.org/
+    input_label: gene_phenotype
+    output_label: involved_in
+    description: An association between a gene and a phenotype (HPO term).
+    source: gene
+    target: phenotype
+    properties:
+      gene_symbol: str
+      phenotype_name: str
+      frequency: str
+      disease_id: str
+  gene to disease association:
+    url: https://hpo.jax.org/
+    input_label: gene_disease
+    output_label: associated_with
+    description: An association between a gene and a disease identifier (e.g., OMIM,
+      ORPHA).
+    source: gene
+    target: disease
+    properties:
+      association_type: str
+      gene_symbol: str
+      source_ref: str

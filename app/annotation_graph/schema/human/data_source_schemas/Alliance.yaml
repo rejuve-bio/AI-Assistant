@@ -1,0 +1,68 @@
+name: Alliance of Genome Resources
+website: https://www.alliancegenome.org
+relationships:
+  gene biomarker via orthology disease:
+    url: https://www.alliancegenome.org/downloads
+    input_label: biomarker_via_orthology
+    output_label: biomarker_via_orthology
+    description: A gene is a biomarker for a disease via orthology relationship.
+    source: gene
+    target: disease
+    properties:
+      taxon_id: int
+      evidence_code: str
+      evidence_code_name: str
+      reference: str
+      date: str
+      species_name: str
+      gene_symbol: str
+      disease_name: str
+  gene implicated via orthology disease:
+    url: https://www.alliancegenome.org/downloads
+    input_label: implicated_via_orthology
+    output_label: implicated_via_orthology
+    description: A gene is implicated in a disease via orthology relationship.
+    source: gene
+    target: disease
+    properties:
+      taxon_id: int
+      evidence_code: str
+      evidence_code_name: str
+      reference: str
+      date: str
+      species_name: str
+      gene_symbol: str
+      disease_name: str
+  gene is implicated in disease:
+    url: https://www.alliancegenome.org/downloads
+    input_label: is_implicated_in
+    output_label: is_implicated_in
+    description: A gene is implicated in a disease.
+    source: gene
+    target: disease
+    properties:
+      taxon_id: int
+      evidence_code: str
+      evidence_code_name: str
+      reference: str
+      date: str
+      species_name: str
+      gene_symbol: str
+      disease_name: str
+  gene to disease marker association:
+    url: https://www.alliancegenome.org/downloads
+    input_label: is_marker_for
+    output_label: is_marker_for
+    description: A gene is a marker for a disease.
+    source: gene
+    target: disease
+    properties:
+      taxon_id: int
+      evidence_code: str
+      evidence_code_name: str
+      reference: str
+      date: str
+      data_source: str
+      with_ortholog: str
+      inferred_from_id: str
+      inferred_from_symbol: str
