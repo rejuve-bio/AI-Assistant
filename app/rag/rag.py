@@ -1,9 +1,9 @@
 from app.prompts.rag_prompts import RETRIEVE_PROMPT, URL_CONTENT_PROMPT
-from app.storage.memory_layer import MemoryManager
 import traceback
 import os
 import logging
 import uuid
+import hashlib
 from datetime import datetime
 import pymupdf
 from app.rag.utils.content_processor import ContentProcessor
@@ -16,10 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION")
-USER_COLLECTION = os.getenv("USER_COLLECTION", "CHAT_MEMORY")
-CONTENT_LIMIT = 10  # Total content limit (PDFs + web content)
-
-
+CONTENT_LIMIT = 10  
+MAX_FILE_SIZE_MB = 50 
 class RAG:
     def __init__(self, llm, qdrant_client):
         """
@@ -326,9 +324,6 @@ class RAG:
                     },
                 )
 
-            # Add memory for the upload
-            MemoryManager(self.llm, self.client).add_memory(f"pdf file : {file.filename}", user_id)
-
             # Add a history entry for the PDF upload
             mongo_db_manager.create_history(
                 user_id=user_id,
@@ -426,9 +421,6 @@ class RAG:
                         "suggested_questions": str(analysis.get("suggested_questions", [])),
                     },
                 )
-
-            # Add memory for the upload
-            MemoryManager(self.llm, self.client).add_memory(f"web content : {url}", user_id)
 
             # Add a history entry for the web content upload
             mongo_db_manager.create_history(
