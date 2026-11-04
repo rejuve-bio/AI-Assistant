@@ -1,0 +1,17 @@
+name: MotifDiff
+website: https://github.com/rezwanhosseini/MotifDiff
+relationships:
+  gene tf snp association:
+    url: https://github.com/rezwanhosseini/MotifDiff
+    input_label: tf_snp
+    output_label: tf_snp
+    description: >-
+      holds between a gene (acting as a transcription factor) and a SNP
+      where the SNP causes a gain or loss of transcription factor binding
+      affinity at that motif site
+    source: gene
+    target: snp
+    properties:
+      effect: str
+      score: float
+      motif_id: str

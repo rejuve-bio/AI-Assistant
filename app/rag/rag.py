@@ -92,7 +92,7 @@ class RAG:
 
                     self._chunk_and_store(
                         collection_name,
-                        [{"text": chunk, "summary": summary}],
+                        [chunk],
                         {
                             "content_id": url,
                             "chunk_index": index,
@@ -235,13 +235,26 @@ class RAG:
         try:
             return_response = {"text": None, "resource": {}}
 
-            # Check for duplicate files
+            file_bytes = file.file.read()
+            file_size_mb = len(file_bytes) / (1024 * 1024)
+            if file_size_mb > MAX_FILE_SIZE_MB:
+                return_response["text"] = (
+                    f"File is too large ({file_size_mb:.1f} MB). "
+                    f"Maximum allowed size is {MAX_FILE_SIZE_MB} MB."
+                )
+                return_response["resource"]["file_size_mb"] = round(file_size_mb, 1)
+                return return_response
+
+            content_hash = hashlib.sha256(file_bytes).hexdigest()
+
             logger.info("checking if user files is already saved")
             pdf_files = mongo_db_manager.get_user_content_files(user_id, "pdf")
-            if any(f.get("filename") == file.filename for f in pdf_files):
+            existing = next((f for f in pdf_files if f.get("content_hash") == content_hash), None)
+            if existing:
                 return_response["text"] = "PDF already exists."
-                return_response["resource"]["filename"] = file.filename
-                logger.info("file is found from the mongodb data")
+                return_response["resource"]["filename"] = existing.get("filename")
+                return_response["resource"]["content_id"] = existing.get("content_id")
+                logger.info("file is found from the mongodb data (matched by content hash)")
                 return return_response
 
             # Check quota
@@ -259,7 +272,7 @@ class RAG:
             os.makedirs(upload_folder, exist_ok=True)
             pdf_path = os.path.join(upload_folder, f"{content_id}.pdf")
             with open(pdf_path, "wb") as out_file:
-                out_file.write(file.file.read())
+                out_file.write(file_bytes)
 
             # Get number of pages
             try:
@@ -313,6 +326,7 @@ class RAG:
                     content_id=content_id,
                     content_type="pdf",
                     filename=file.filename,
+                    content_hash=content_hash,
                     num_pages=num_pages,
                     upload_time=upload_time,
                     summary=analysis.get("summary"),
@@ -340,6 +354,53 @@ class RAG:
 
             traceback.print_exc()
             return {"text": f"Error uploading PDF: {str(e)}"}
+
+    def save_raw_file(self, file, user_id):
+        """Step 1 only: accept and store a file, no text extraction, no
+        analysis, no embedding. Returns {content_id, name} so it can be
+        referenced from a 'files' part on /v1/query right away -- whether
+        it ever needs embedding (for RAG) is a separate, later decision,
+        not something this call makes. Used for files meant for external
+        API calls (hypothesis, Galaxy, etc.), not knowledge retrieval.
+        """
+        try:
+            file_bytes = file.file.read()
+            file_size_mb = len(file_bytes) / (1024 * 1024)
+            if file_size_mb > MAX_FILE_SIZE_MB:
+                return {"error": f"File is too large ({file_size_mb:.1f} MB). Maximum allowed size is {MAX_FILE_SIZE_MB} MB."}
+
+            content_hash = hashlib.sha256(file_bytes).hexdigest()
+            existing = next(
+                (f for f in mongo_db_manager.get_user_content_files(user_id) if f.get("content_hash") == content_hash),
+                None,
+            )
+            if existing:
+                return {"content_id": existing.get("content_id"), "name": existing.get("filename")}
+
+            if mongo_db_manager.get_content_count(user_id) >= CONTENT_LIMIT:
+                return {"error": "Your quota is full. Maximum 10 content items allowed."}
+
+            content_id = str(uuid.uuid4())
+            upload_folder = "pdfs_uploaded/raw"
+            os.makedirs(upload_folder, exist_ok=True)
+            ext = os.path.splitext(file.filename or "")[1] or ".bin"
+            file_path = os.path.join(upload_folder, f"{content_id}{ext}")
+            with open(file_path, "wb") as out_file:
+                out_file.write(file_bytes)
+
+            mongo_db_manager.add_content_file(
+                user_id=user_id,
+                content_id=content_id,
+                content_type="raw",
+                filename=file.filename,
+                content_hash=content_hash,
+                upload_time=datetime.now(),
+                metadata={"file_size_mb": round(file_size_mb, 2), "file_path": file_path, "embedded": False},
+            )
+            return {"content_id": content_id, "name": file.filename}
+        except Exception as e:
+            logger.error(f"Error saving raw file: {e}")
+            return {"error": f"Error uploading file: {e}"}
 
     def save_web_content(self, url, user_id):
         try:

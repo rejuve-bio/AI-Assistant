@@ -141,6 +141,25 @@ class RedisManager:
             return None
         return {"graph_id": graph_id, **data}
 
+    def acquire_thread_lock(self, thread_id: str, ttl_seconds: int = 300) -> bool:
+
+        if not self.is_available:
+            logger.warning("Redis not available, thread-lock check skipped (failing open)")
+            return True
+        try:
+            return bool(self._redis_client.set(f"thread_lock:{thread_id}", "1", nx=True, ex=ttl_seconds))
+        except Exception as e:
+            logger.warning(f"Thread-lock acquire failed for {thread_id}, failing open: {e}")
+            return True
+
+    def release_thread_lock(self, thread_id: str) -> None:
+        if not self.is_available:
+            return
+        try:
+            self._redis_client.delete(f"thread_lock:{thread_id}")
+        except Exception as e:
+            logger.warning(f"Thread-lock release failed for {thread_id}: {e}")
+
     def set_audio_cache(self, key, audio_bytes, expire_seconds=600):
         """Store audio bytes in Redis with a TTL (default 10 minutes)."""
         if not self.is_available or self._redis_binary_client is None:

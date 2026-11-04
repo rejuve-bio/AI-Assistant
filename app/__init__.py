@@ -5,8 +5,9 @@ import json
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -166,7 +167,6 @@ async def lifespan(app: FastAPI):
     )
     logger.info("AiAssistance initialized")
 
-    # Shared state for route/socket handlers -- replaces Flask's app.config[...] locator.
     app.state.qdrant_client = qdrant_client
     app.state.embedding_model = embedding_model
     app.state.embedding_vector_size = vector_size
@@ -218,6 +218,10 @@ def create_app():
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     app.add_middleware(SlowAPIMiddleware)
     logger.info("Rate limiter initialized")
+
+    @app.exception_handler(HTTPException)
+    async def _text_body_exception_handler(request, exc: HTTPException):
+        return JSONResponse(status_code=exc.status_code, content={"text": exc.detail}, headers=exc.headers)
 
     app.include_router(main_router)
     logger.info('Router "main_router" registered')

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Form, File, UploadFile, Query, Request
 from fastapi.responses import JSONResponse, Response
 from dotenv import load_dotenv
 import logging
+import re
 import traceback
 import json
 import os
@@ -17,6 +18,14 @@ main_router = APIRouter()
 logger = logging.getLogger(__name__)
 
 AUDIO_MIME = "audio/mpeg"
+
+_UUID4_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.IGNORECASE
+)
+
+
+def _is_uuid4(value) -> bool:
+    return isinstance(value, str) and bool(_UUID4_RE.match(value))
 
 
 def get_ai_assistant(request: Request):
@@ -37,16 +46,9 @@ def _handle_uploads(uploaded_files, ai_assistant, user_id, content_ids):
         if uploaded.filename and uploaded.filename.lower().endswith(".pdf"):
             response = ai_assistant.rag.save_retrievable_docs(uploaded, user_id)
             if isinstance(response, dict):
-                is_duplicate = response.get("text") == "PDF already exists."
-                if is_duplicate:
-                    pdf_files = mongo_db_manager.get_user_content_files(user_id, "pdf")
-                    existing = next((f for f in pdf_files if f.get("filename") == uploaded.filename), None)
-                    if existing:
-                        newly_uploaded_content_ids.append(existing.get("content_id"))
-                else:
-                    new_id = response.get("resource", {}).get("content_id")
-                    if new_id:
-                        newly_uploaded_content_ids.append(new_id)
+                new_id = response.get("resource", {}).get("content_id")
+                if new_id:
+                    newly_uploaded_content_ids.append(new_id)
                 upload_results.append({"filename": uploaded.filename, "response": response})
 
     if newly_uploaded_content_ids:
@@ -91,7 +93,7 @@ def _parse_context(data):
     return question, graph_id, resource, url, json_query, content_ids
 
 
-def _dispatch_query(ai_assistant, question, json_query, uploaded_files, upload_results, content_ids, user_id, auth_token, graph_id, resource, url, resume=None, thread_id=None):
+def _dispatch_query(ai_assistant, question, json_query, uploaded_files, upload_results, content_ids, user_id, auth_token, graph_id, resource, url, resume=None, thread_id=None, client_message_id=None):
     if uploaded_files and not question and not json_query:
         suggested_questions = []
         for r in upload_results:
@@ -130,7 +132,10 @@ def _dispatch_query(ai_assistant, question, json_query, uploaded_files, upload_r
         urls=url,
         resume=resume,
         thread_id=thread_id,
+        client_message_id=client_message_id,
     )
+    if response.get("status") == "busy":
+        return JSONResponse(status_code=409, content=response)
     return JSONResponse(content=response)
 
 
@@ -144,6 +149,7 @@ def process_query(
     json_query: Optional[str] = Form(None),
     resume: Optional[str] = Form(None),
     thread_id: Optional[str] = Form(None),
+    client_message_id: Optional[str] = Form(None),
     uploaded_files: Optional[List[UploadFile]] = File(None),
 ):
     """
@@ -171,11 +177,15 @@ def process_query(
           Scopes both the checkpointer (pause/resume state) and the durable
           conversation thread (messages + tool-call references).
     - For content queries (resource == 'content'), content_ids are extracted from context['id'].
-    - If content_ids are provided, answers are retrieved only from those content items; otherwise, answers are retrieved from all collections (user and general).
+    - If content_ids are provided, answers are retrieved only from those content items. If omitted, any content_ids this thread has already
+      uploaded or referenced are recalled automatically; only a thread with no such history falls back to the general collection.
     - Handles both user-uploaded content question answering and general knowledge queries.
     """
     try:
         user_id = auth.user_id
+
+        if thread_id and mongo_db_manager.thread_owner_conflict(thread_id, user_id):
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
 
         question_parsed, graph_id, resource, url, json_query_parsed, content_ids = _parse_context(
             {"context": context, "json_query": json_query, "question": question, "query": query}
@@ -185,11 +195,18 @@ def process_query(
         if uploaded_files:
             upload_results, content_ids = _handle_uploads(uploaded_files, ai_assistant, user_id, content_ids)
 
-        return _dispatch_query(ai_assistant, question_parsed, json_query_parsed, uploaded_files, upload_results, content_ids, user_id, auth.token, graph_id, resource, url, resume, thread_id)
+        if content_ids and thread_id:
+            mongo_db_manager.add_thread_content_ids(thread_id, user_id, content_ids)
+        elif thread_id:
+            remembered = mongo_db_manager.get_thread_content_ids(thread_id, user_id)
+            if remembered:
+                content_ids = remembered
+
+        return _dispatch_query(ai_assistant, question_parsed, json_query_parsed, uploaded_files, upload_results, content_ids, user_id, auth.token, graph_id, resource, url, resume, thread_id, client_message_id)
     except Exception as e:
         logger.error(f"Exception: {e}")
         traceback.print_exc()
-        return Response(content=f"Bad Response: {e}", status_code=400, media_type="text/html")
+        return JSONResponse(status_code=500, content={"text": f"Error processing request: {e}"})
 
 
 @main_router.get("/user_status/documents/")
@@ -649,6 +666,552 @@ def get_faq_answer(
         logger.error(f"Error in FAQ answer: {e}")
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@main_router.get("/v1/threads")
+def list_threads(
+    auth: AuthContext = Depends(token_required),
+):
+    """Thread summaries for the authenticated user, latest activity first.
+    Read-only -- exposes the existing conversation_threads data, no new
+    storage introduced. See the Threads API v1 proposal."""
+    try:
+        threads = mongo_db_manager.list_threads(auth.user_id)
+        return JSONResponse(status_code=200, content={
+            "items": threads,
+            "next_cursor": None,
+        })
+    except Exception as e:
+        logger.error(f"Error listing threads: {e}")
+        return JSONResponse(status_code=502, content={"text": f"Error listing threads: {e}"})
+
+
+@main_router.get("/v1/threads/{thread_id}")
+def get_thread(
+    thread_id: str,
+    auth: AuthContext = Depends(token_required),
+):
+    """A single thread's summary. 404 if it doesn't belong to this user --
+    another user's thread_id counts as missing, same as the v1 proposal's
+    error convention."""
+    try:
+        summary = mongo_db_manager.get_thread_summary(thread_id, auth.user_id)
+        if not summary:
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+        return JSONResponse(status_code=200, content=summary)
+    except Exception as e:
+        logger.error(f"Error getting thread {thread_id}: {e}")
+        return JSONResponse(status_code=502, content={"text": f"Error getting thread: {e}"})
+
+
+_VALID_SOURCES_DIR = {
+    "human": "app/annotation_graph/schema/human/data_source_schemas",
+    "fly": "app/annotation_graph/schema/fly/data_source_schemas",
+}
+
+
+def _valid_sources_for_species(species: str) -> Optional[set]:
+    """The real, recognized data sources for a species, read from the
+    actual annotation-query-backend schema files (not invented) --
+    used to validate context.sources instead of accepting anything.
+    Returns None if the species isn't recognized at all."""
+    directory = _VALID_SOURCES_DIR.get((species or "").lower())
+    if not directory or not os.path.isdir(directory):
+        return None
+    return {os.path.splitext(f)[0] for f in os.listdir(directory) if f.endswith(".yaml")}
+
+
+_DEFAULT_SOURCES = {
+    "human": ["GENCODE", "UniProt", "GTEx"],
+    "fly": ["FLYBASE"],
+}
+
+_DEFAULT_SPECIES = "human"
+
+
+def _resolve_sources(species: str, sources) -> tuple:
+    """Returns (resolved_sources, error_message). If sources is empty,
+    fills in the species' default. If sources is given, validates every
+    entry against the real schema files -- 400 if anything's unrecognized."""
+    if not sources:
+        return _DEFAULT_SOURCES.get((species or "").lower(), []), None
+
+    valid = _valid_sources_for_species(species)
+    if valid is None:
+        return sources, None
+    unknown = [s for s in sources if s not in valid]
+    if unknown:
+        return None, f"Unknown source(s) for {species}: {unknown}. Valid sources: {sorted(valid)}"
+    return sources, None
+
+
+def _generate_quick_replies(llm, question: str, summary: str) -> list:
+    """Two short, clickable follow-up suggestions for a proposal, per the
+    Threads API v1 example. Best-effort: any failure just means no chips,
+    never breaks the actual response."""
+    try:
+        prompt = (
+            f"A user asked: \"{question}\"\n\n"
+            f"The assistant proposed: \"{summary}\"\n\n"
+            "Suggest exactly 2 short, specific follow-up questions or refinements "
+            "the user might want next (e.g. narrowing scope, adding related data). "
+            "Return ONLY the 2 suggestions, one per line, no numbering, no extra text."
+        )
+        result = llm.generate(prompt)
+        text = result if isinstance(result, str) else str(result)
+        lines = [l.strip(" -\t") for l in text.strip().splitlines() if l.strip()]
+        return lines[:2] if lines else []
+    except Exception as e:
+        logger.warning(f"quick_replies generation failed, skipping: {e}")
+        return []
+
+
+def _build_proposal_title(data: dict, kind: Optional[str] = None) -> str:
+    """A short structural label like the doc's own example, "APOE →
+    transcripts → proteins" -- not a slice of the prose summary (which
+    was cutting off mid-word/mid-sentence at 80 chars). Walks the
+    predicate chain from a root node (one never a predicate's target),
+    labeling each node by a real property value when it has one (e.g.
+    the gene's name) or its type, pluralized, when it doesn't yet.
+
+    A hypothesis proposal's data is self-contained (project_id,
+    phenotype, variant, credible_set_id, ...), not a nodes/predicates
+    graph, so it gets its own short branch: "{variant} → {phenotype}"
+    once a credible set is actually matched, or "A locus in {phenotype}"
+    while that's still unresolved ("you choose")."""
+    if kind == "hypothesis":
+        phenotype = (data or {}).get("phenotype") or "a phenotype"
+        variant = (data or {}).get("variant")
+        if (data or {}).get("credible_set_id") and variant:
+            return f"{variant} → {phenotype.lower()}"
+        return f"A locus in {phenotype.lower()}"
+
+    nodes = {n.get("node_id"): n for n in (data or {}).get("nodes", []) if n.get("node_id")}
+    predicates = (data or {}).get("predicates", []) or []
+    if not nodes:
+        return "Annotation"
+
+    def label(node: dict) -> str:
+        for v in (node.get("properties") or {}).values():
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        node_type = (node.get("type") or "entity").strip() or "entity"
+        return f"{node_type}s"
+
+    targets = {p.get("target") for p in predicates}
+    roots = [nid for nid in nodes if nid not in targets]
+    current = roots[0] if roots else next(iter(nodes))
+
+    chain, seen = [], set()
+    while current in nodes and current not in seen:
+        seen.add(current)
+        chain.append(label(nodes[current]))
+        current = next((p.get("target") for p in predicates if p.get("source") == current), None)
+
+    return " → ".join(chain) if chain else "Annotation"
+
+
+def _format_v1_message(thread_id: str, m: dict, index: int) -> dict:
+    """Shared shaping of one stored message entry into the Threads API v1
+    {id, thread_id, role, created_at, client_message_id?, parts} shape --
+    used by both the messages-read endpoint and /v1/query's own response,
+    so the two can never drift apart.
+
+    The id uses the message's stable, stored `seq` (stamped once at
+    creation in append_message) rather than its array position, so
+    deleting an earlier message never changes a later message's id.
+    `index` is only a fallback for messages stored before `seq` existed.
+    """
+    msg_num = m.get("seq", index)
+    if m.get("context_part"):
+        parts = [{"type": "context", **m["context_part"]}]
+    elif m.get("run_part"):
+        parts = [{"type": "run", **m["run_part"]}]
+    else:
+        parts = [{"type": "text", "text": m.get("text", "")}]
+        if m.get("files_part"):
+            parts.append({"type": "files", "files": m["files_part"]})
+        if m.get("role") == "user" and m.get("graph_id"):
+            parts.append({"type": "about", "kind": m.get("resource_type") or "annotation", "id": m["graph_id"]})
+        if m.get("proposals"):
+            for i, prop in enumerate(m["proposals"]):
+                kind = prop.get("kind") or "annotation"
+                data = prop.get("data")
+                suffix = f"_{i}" if len(m["proposals"]) > 1 else ""
+                parts.append({"type": "proposal", "id": f"{thread_id}_msg_{msg_num}_prop{suffix}", "kind": kind,
+                              "title": _build_proposal_title(data, kind=kind), "data": data})
+        elif m.get("json_format"):
+            kind = m.get("resource_type") or "annotation"
+            parts.append({"type": "proposal", "id": f"{thread_id}_msg_{msg_num}_prop", "kind": kind,
+                          "title": _build_proposal_title(m["json_format"], kind=kind), "data": m["json_format"]})
+        if m.get("quick_replies"):
+            parts.append({"type": "quick_replies", "replies": m["quick_replies"]})
+    created_at = m.get("created_at")
+    return {
+        "id": f"{thread_id}_msg_{msg_num}",
+        "thread_id": thread_id,
+        "role": m.get("role"),
+        "created_at": mongo_db_manager._iso(created_at) if hasattr(created_at, "isoformat") else created_at,
+        "client_message_id": m.get("client_message_id"),
+        "parts": parts,
+    }
+
+
+@main_router.get("/v1/threads/{thread_id}/messages")
+def get_thread_messages(
+    thread_id: str,
+    auth: AuthContext = Depends(token_required),
+):
+    """A thread's messages, oldest first, read from the existing stored
+    turns. Each message's id is built from its stable, stored `seq`
+    (see _format_v1_message) -- read-only, no schema change."""
+    try:
+        doc = mongo_db_manager.get_thread(thread_id, auth.user_id)
+        if not doc.get("messages") and not mongo_db_manager.get_thread_summary(thread_id, auth.user_id):
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+
+        items = [_format_v1_message(thread_id, m, i) for i, m in enumerate(doc.get("messages", []))]
+        return JSONResponse(status_code=200, content={
+            "items": items,
+            "next_cursor": None,
+        })
+    except Exception as e:
+        logger.error(f"Error getting messages for thread {thread_id}: {e}")
+        return JSONResponse(status_code=502, content={"text": f"Error getting messages: {e}"})
+
+
+@main_router.post("/v1/files")
+async def post_v1_files(
+    files: List[UploadFile] = File(...),
+    auth: AuthContext = Depends(token_required),
+    ai_assistant=Depends(get_ai_assistant),
+):
+    """Accept and store one or more files, per-user, no embedding -- step 1
+    only (RAG embedding is a separate, later decision). Returns {id, name}
+    per file so the client can reference them in a 'files' part on
+    /v1/query right away."""
+    items = []
+    errors = []
+    for f in files:
+        result = ai_assistant.rag.save_raw_file(f, auth.user_id)
+        if isinstance(result, dict) and result.get("error"):
+            errors.append({"name": f.filename, "error": result["error"]})
+        elif isinstance(result, dict) and result.get("content_id"):
+            items.append({"id": result["content_id"], "name": result.get("name") or f.filename})
+        else:
+            errors.append({"name": f.filename, "error": "Upload failed."})
+
+    if not items:
+        return JSONResponse(status_code=400, content={"text": "No file could be uploaded.", "errors": errors})
+
+    body = {"items": items}
+    if errors:
+        body["errors"] = errors
+    return JSONResponse(status_code=201, content=body)
+
+
+@main_router.post("/v1/query")
+async def post_v1_query(
+    request: Request,
+    auth: AuthContext = Depends(token_required),
+    ai_assistant=Depends(get_ai_assistant),
+):
+    """Send a message. Unlike /query, this never executes anything -- it
+    only proposes (annotation only, in v1). Matches 'Send a message' in
+    the Threads API v1 proposal.
+
+    Accepts either application/json (unchanged), or multipart/form-data
+    with a "body" field holding the same JSON plus the actual file(s)
+    attached in the same request -- lets a client attach a brand-new file
+    and send the message in one round trip instead of always needing a
+    separate /v1/files upload first. A files part entry can still name an
+    already-uploaded file by "id" (unchanged) or, only in the multipart
+    case, by "name" to match one of the files attached to this request.
+    """
+    try:
+        content_type = request.headers.get("content-type", "")
+        uploaded_by_name = {}
+        if content_type.startswith("multipart/form-data"):
+            form = await request.form()
+            try:
+                body = json.loads(form.get("body") or "{}")
+            except (TypeError, ValueError):
+                return JSONResponse(status_code=400, content={"text": "'body' form field must be valid JSON."})
+            for value in form.values():
+                if getattr(value, "filename", None):
+                    uploaded_by_name[value.filename] = value
+        else:
+            body = await request.json()
+        thread_id = body.get("thread_id")
+        client_message_id = body.get("client_message_id")
+        context = body.get("context")
+        parts = body.get("parts") or []
+
+        if not thread_id:
+            return JSONResponse(status_code=400, content={"text": "thread_id is required."})
+        if not _is_uuid4(thread_id):
+            return JSONResponse(status_code=400, content={"text": "thread_id must be a UUIDv4."})
+
+        user_id = auth.user_id
+
+        if mongo_db_manager.thread_owner_conflict(thread_id, user_id):
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+
+        is_new_thread = mongo_db_manager.get_thread_summary(thread_id, user_id) is None
+
+        resolved_sources = None
+        if is_new_thread:
+            species = (context or {}).get("species") or _DEFAULT_SPECIES
+            resolved_sources, source_err = _resolve_sources(species, (context or {}).get("sources"))
+            if source_err:
+                return JSONResponse(status_code=400, content={"text": source_err})
+            context = {"species": species, "sources": resolved_sources}
+
+        allowed_part_types = {"text", "files", "about"}
+        if any(p.get("type") not in allowed_part_types for p in parts):
+            return JSONResponse(status_code=400, content={"text": "Only text, files and about parts are accepted here."})
+
+        question = " ".join(p.get("text", "") for p in parts if p.get("type") == "text").strip()
+        if not question:
+            return JSONResponse(status_code=400, content={"text": "A text part is required."})
+
+        about = next((p for p in parts if p.get("type") == "about"), None)
+        graph_id = about.get("id") if about else None
+        resource = about.get("kind") if about else None
+
+        files_part_raw = next((p for p in parts if p.get("type") == "files"), None)
+        resolved_files = None
+        if files_part_raw:
+            requested = files_part_raw.get("files") or []
+            resolved_files = []
+            for entry in requested:
+                if not isinstance(entry, dict):
+                    continue
+                file_id = entry.get("id")
+                if file_id:
+                    found = mongo_db_manager.get_content_file_by_id(user_id, file_id)
+                    if not found:
+                        return JSONResponse(status_code=400, content={"text": f"No such file '{file_id}' for this user."})
+                    resolved_files.append({"id": found["content_id"], "name": found.get("filename") or file_id})
+                    continue
+                name = entry.get("name")
+                attached = uploaded_by_name.get(name) if name else None
+                if not attached:
+                    return JSONResponse(status_code=400, content={"text": f"A files part entry must have either 'id' or a 'name' matching a file attached to this request (got: {entry})."})
+                upload_result = ai_assistant.rag.save_raw_file(attached, user_id)
+                if not isinstance(upload_result, dict) or not upload_result.get("content_id"):
+                    error = upload_result.get("error") if isinstance(upload_result, dict) else "Upload failed."
+                    return JSONResponse(status_code=400, content={"text": f"Could not store attached file '{name}': {error}"})
+                resolved_files.append({"id": upload_result["content_id"], "name": upload_result.get("name") or name})
+            if not resolved_files:
+                resolved_files = None
+
+        if client_message_id:
+            existing = mongo_db_manager.find_message_by_client_id(thread_id, user_id, client_message_id)
+            if existing:
+                doc = mongo_db_manager.get_thread(thread_id, user_id)
+                idx = next((i for i, m in enumerate(doc["messages"]) if m.get("client_message_id") == client_message_id), len(doc["messages"]) - 1)
+                return JSONResponse(status_code=200, content=_format_v1_message(thread_id, doc["messages"][idx], idx))
+
+        opening_context = None
+        if is_new_thread and context:
+            opening_context = mongo_db_manager.set_thread_context(
+                thread_id, user_id, context.get("species"), resolved_sources
+            )["context"]
+
+        if not redis_manager.acquire_thread_lock(thread_id):
+            return JSONResponse(status_code=409, content={"text": "A reply is already in progress in this thread."})
+
+        try:
+            agent_response = ai_assistant.agent(
+                question, user_id, auth.token,
+                graph_id=graph_id, resource=resource,
+                thread_id=thread_id, propose_only=True,
+                attached_files=resolved_files,
+            )
+        except Exception as e:
+            logger.error(f"/v1/query failed: {e}", exc_info=True)
+            return JSONResponse(status_code=502, content={"text": f"The model or a tool failed: {e}"})
+        finally:
+            redis_manager.release_thread_lock(thread_id)
+
+        quick_replies = None
+        if agent_response.get("json_format"):
+            quick_replies = _generate_quick_replies(
+                ai_assistant.basic_llm, question, agent_response.get("text", "")
+            ) or None
+
+        ai_assistant._record_thread_turn(
+            thread_id, user_id, question, agent_response,
+            graph_id=graph_id, resource=resource, client_message_id=client_message_id,
+            files_part=resolved_files, context_to_record=opening_context,
+            quick_replies=quick_replies,
+        )
+
+        doc = mongo_db_manager.get_thread(thread_id, user_id)
+        last_idx = len(doc["messages"]) - 1
+        formatted = _format_v1_message(thread_id, doc["messages"][last_idx], last_idx)
+
+        return JSONResponse(status_code=201, content=formatted)
+    except Exception as e:
+        logger.error(f"Error in /v1/query: {e}", exc_info=True)
+        return JSONResponse(status_code=502, content={"text": f"Error processing request: {e}"})
+
+
+@main_router.put("/v1/threads/{thread_id}/context")
+async def put_thread_context(
+    thread_id: str,
+    request: Request,
+    auth: AuthContext = Depends(token_required),
+):
+    """Sets a thread's species/sources. 201 with a divider message if it
+    actually changed, 204 if the new value matches what's already set --
+    matching the Threads API v1 proposal exactly."""
+    try:
+        if mongo_db_manager.thread_owner_conflict(thread_id, auth.user_id):
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+
+        body = await request.json()
+        species = body.get("species")
+        sources_in = body.get("sources")
+        if not species:
+            return JSONResponse(status_code=400, content={"text": "species is required."})
+        if sources_in is not None and not isinstance(sources_in, list):
+            return JSONResponse(status_code=400, content={"text": "sources must be a list."})
+
+        sources, err = _resolve_sources(species, sources_in)
+        if err:
+            return JSONResponse(status_code=400, content={"text": err})
+
+        result = mongo_db_manager.set_thread_context(thread_id, auth.user_id, species, sources)
+        if not result["changed"]:
+            return Response(status_code=204)
+
+        thread_doc = mongo_db_manager.append_message(
+            thread_id, auth.user_id, "system", "",
+            context_part=result["context"],
+        )
+        idx = thread_doc.get("message_count", 1) - 1
+        return JSONResponse(status_code=201, content=_format_v1_message(thread_id, thread_doc["messages"][-1], idx))
+    except Exception as e:
+        logger.error(f"Error setting context for thread {thread_id}: {e}")
+        return JSONResponse(status_code=502, content={"text": f"Error setting context: {e}"})
+
+
+@main_router.post("/v1/threads/{thread_id}/messages")
+async def record_thread_run(
+    thread_id: str,
+    request: Request,
+    auth: AuthContext = Depends(token_required),
+):
+    """Records that a run started elsewhere (the platform server's own
+    call to annotation/hypothesis), purely so the thread shows a live-status
+    card. No model call, no compute -- matches 'Record a run' in the
+    Threads API v1 proposal."""
+    try:
+        if mongo_db_manager.thread_owner_conflict(thread_id, auth.user_id):
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+
+        body = await request.json()
+        client_message_id = body.get("client_message_id")
+        parts = body.get("parts") or []
+        run_parts = [p for p in parts if p.get("type") == "run"]
+        if len(run_parts) != 1:
+            return JSONResponse(status_code=400, content={"text": "Exactly one 'run' part is required."})
+
+        if client_message_id:
+            existing = mongo_db_manager.find_message_by_client_id(thread_id, auth.user_id, client_message_id)
+            if existing:
+                return JSONResponse(status_code=200, content={"text": "Already recorded."})
+
+        run_part = {k: v for k, v in run_parts[0].items() if k != "type"}
+        thread_doc = mongo_db_manager.append_message(
+            thread_id, auth.user_id, "system", "",
+            client_message_id=client_message_id,
+            run_part=run_part,
+        )
+        idx = thread_doc.get("message_count", 1) - 1
+        return JSONResponse(status_code=201, content=_format_v1_message(thread_id, thread_doc["messages"][-1], idx))
+    except Exception as e:
+        logger.error(f"Error recording run for thread {thread_id}: {e}")
+        return JSONResponse(status_code=502, content={"text": f"Error recording run: {e}"})
+
+
+@main_router.patch("/v1/threads/{thread_id}")
+async def rename_thread(
+    thread_id: str,
+    request: Request,
+    auth: AuthContext = Depends(token_required),
+):
+    """Renames a thread. Clearing the title (empty string) falls back to the
+    first message's text again, so it's never empty -- matches 'The thread'
+    in the Threads API v1 proposal."""
+    try:
+        if mongo_db_manager.thread_owner_conflict(thread_id, auth.user_id):
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+
+        body = await request.json()
+        title = body.get("title")
+
+        summary = mongo_db_manager.get_thread_summary(thread_id, auth.user_id)
+        if not summary:
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+
+        mongo_db_manager.set_thread_title(thread_id, auth.user_id, title)
+        return JSONResponse(status_code=200, content=mongo_db_manager.get_thread_summary(thread_id, auth.user_id))
+    except Exception as e:
+        logger.error(f"Error renaming thread {thread_id}: {e}")
+        return JSONResponse(status_code=502, content={"text": f"Error renaming thread: {e}"})
+
+
+@main_router.delete("/v1/threads/{thread_id}")
+def delete_thread_route(
+    thread_id: str,
+    auth: AuthContext = Depends(token_required),
+):
+    """Deletes a thread. Never touches the annotations/hypotheses/galaxy
+    runs it referenced -- those live entirely in their own services."""
+    try:
+        if mongo_db_manager.thread_owner_conflict(thread_id, auth.user_id):
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+        deleted = mongo_db_manager.delete_thread(thread_id, auth.user_id)
+        if not deleted:
+            return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
+        return Response(status_code=204)
+    except Exception as e:
+        logger.error(f"Error deleting thread {thread_id}: {e}")
+        return JSONResponse(status_code=502, content={"text": f"Error deleting thread: {e}"})
+
+
+@main_router.delete("/v1/threads/{thread_id}/messages/{message_id}")
+def delete_thread_message(
+    thread_id: str,
+    message_id: str,
+    auth: AuthContext = Depends(token_required),
+):
+    """Deletes one message by its stable id (<thread_id>_msg_<seq>) -- e.g.
+    lets a user dismiss a run card without touching the real run. seq is
+    stamped once when the message is created, so this id never changes
+    even if an earlier message in the thread gets deleted."""
+    try:
+        if mongo_db_manager.thread_owner_conflict(thread_id, auth.user_id):
+            return JSONResponse(status_code=404, content={"text": "No such thread or message for this user."})
+
+        prefix = f"{thread_id}_msg_"
+        if not message_id.startswith(prefix):
+            return JSONResponse(status_code=404, content={"text": "No such thread or message for this user."})
+        try:
+            seq = int(message_id[len(prefix):])
+        except ValueError:
+            return JSONResponse(status_code=404, content={"text": "No such thread or message for this user."})
+
+        deleted = mongo_db_manager.delete_message(thread_id, auth.user_id, seq)
+        if not deleted:
+            return JSONResponse(status_code=404, content={"text": "No such thread or message for this user."})
+        return Response(status_code=204)
+    except Exception as e:
+        logger.error(f"Error deleting message {message_id} in thread {thread_id}: {e}")
+        return JSONResponse(status_code=502, content={"text": f"Error deleting message: {e}"})
 
 
 @main_router.get("/")

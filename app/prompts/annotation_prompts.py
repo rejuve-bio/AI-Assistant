@@ -273,8 +273,10 @@ Reply with only one word: confirm, reject, show_alternatives, or new_query."""
 
 DESCRIBE_ANNOTATION_PROMPT = """A user asked: "{query}"
 
+This structure was built against the {organism} schema.
+
 The following annotation structure was built from the database schema:
 
 {structure_summary}
 
-Write 1-3 sentences describing what this structure represents biologically and what query it will run. Be specific about the entities and relationships involved. Do NOT invent data, relationships, or biological facts not shown above. Do NOT mention the annotation system or technical details.{failure_instruction}"""
+Write 1-3 sentences describing what this structure represents biologically and what query it will run. Be specific about the entities and relationships involved, and about the organism ({organism}) this applies to. Do NOT invent data, relationships, or biological facts not shown above. Do NOT mention the annotation system or technical details.{failure_instruction}"""

@@ -1,0 +1,15 @@
+name: RefSeq Closest Gene
+website: https://forgedb.cancer.gov
+relationships:
+  closest gene to variant association:
+    url: https://forgedb.cancer.gov/api/closest_gene/v1.0/closest_gene.forgedb.csv.gz
+    input_label: closest_gene
+    output_label: closest_gene
+    description: holds between a sequence variant and a gene that is closest to the
+      variant
+    source: snp
+    target: gene
+    properties:
+      chr: str
+      pos: int
+      distance: int

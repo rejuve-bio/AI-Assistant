@@ -1,0 +1,23 @@
+name: Enhancer Atlas
+website: http://enhanceratlas.org
+nodes:
+  enhancer:
+    url: http://enhanceratlas.org/downloadv2.php
+    input_label: enhancer
+    output_label: enhancer
+    properties:
+      biological_context: str
+      end: int
+      start: int
+      chr: str
+relationships:
+  enhancer to gene association:
+    url: http://enhanceratlas.org/downloadv2.php
+    input_label: enhancer_gene
+    output_label: associated_with
+    description: An association between an enhancer and a gene
+    source: enhancer
+    target: gene
+    properties:
+      score: float
+      biological_context: str

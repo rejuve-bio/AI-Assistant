@@ -1,0 +1,12 @@
+name: CoXPresdb
+website: https://coxpresdb.jp
+relationships:
+  gene to gene coexpression association:
+    url: https://coxpresdb.jp/
+    input_label: coexpressed_with
+    description: Indicates that two genes are co-expressed, generally under the same
+      conditions.
+    source: gene
+    target: gene
+    properties:
+      score: float

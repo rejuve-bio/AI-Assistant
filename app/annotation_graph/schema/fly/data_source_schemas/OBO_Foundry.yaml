@@ -1,0 +1,168 @@
+name: OBO Foundry
+website: http://www.obofoundry.org
+nodes:
+  developmental stage:
+    url: http://www.obofoundry.org/
+    input_label: developmental_stage
+    properties:
+      id: str
+      term_name: str
+      alternative_ids: str[]
+      description: str
+      synonym: str[]
+  anatomy:
+    url: http://www.obofoundry.org/
+    input_label: anatomy
+    properties:
+      id: str
+      term_name: str
+      alternative_ids: str[]
+      description: str
+      synonym: str[]
+  phenotype:
+    url: http://www.obofoundry.org/
+    input_label: phenotype
+    properties:
+      id: str
+      term_name: str
+      alternative_ids: str[]
+      description: str
+      synonym: str[]
+  biological process:
+    url: http://www.obofoundry.org/
+    input_label: biological_process
+    properties:
+      id: str
+      term_name: str
+      description: str
+      alternative_ids: str[]
+      synonym: str[]
+  molecular function:
+    url: http://www.obofoundry.org/
+    input_label: molecular_function
+    properties:
+      id: str
+      term_name: str
+      description: str
+      alternative_ids: str[]
+      synonym: str[]
+  cellular component:
+    url: http://www.obofoundry.org/
+    input_label: cellular_component
+    properties:
+      id: str
+      term_name: str
+      description: str
+      alternative_ids: str[]
+      synonym: str[]
+  sequence type:
+    url: http://www.obofoundry.org/
+    input_label: sequence_type
+    properties:
+      id: str
+      term_name: str
+      description: str
+      alternative_ids: str[]
+      synonym: str[]
+  molecular interaction:
+    url: http://www.obofoundry.org/
+    input_label: molecular_interaction
+    properties:
+      id: str
+      term_name: str
+      description: str
+      alternative_ids: str[]
+      synonym: str[]
+  disease:
+    url: http://www.obofoundry.org/
+    input_label: disease
+    properties:
+      id: str
+      term_name: str
+      description: str
+      alternative_ids: str[]
+      synonym: str[]
+  small molecule:
+    url: http://www.obofoundry.org/
+    input_label: small_molecule
+    properties:
+      id: str
+      term_name: str
+      description: str
+      alternative_ids: str[]
+      synonym: str[]
+relationships:
+  anatomy subclass of:
+    url: http://www.obofoundry.org/
+    input_label: FBbt_subclass_of
+    output_label: is_a
+    source: anatomy
+    target: anatomy
+  developmental stage subclass of:
+    url: http://www.obofoundry.org/
+    input_label: FBdv_subclass_of
+    output_label: is_a
+    source: developmental stage
+    target: developmental stage
+  phenotype subclass of:
+    url: http://www.obofoundry.org/
+    input_label: FBcv_subclass_of
+    output_label: is_a
+    source: phenotype
+    target: phenotype
+  biological process subclass:
+    url: http://www.obofoundry.org/
+    input_label: biological_process_subclass_of
+    output_label: is_a
+    source: biological process
+    target: biological process
+    properties:
+      rel_type: str
+  molecular function subclass:
+    url: http://www.obofoundry.org/
+    input_label: molecular_function_subclass_of
+    output_label: is_a
+    source: molecular function
+    target: molecular function
+    properties:
+      rel_type: str
+  cellular component subclass:
+    url: http://www.obofoundry.org/
+    input_label: cellular_component_subclass_of
+    output_label: is_a
+    source: cellular component
+    target: cellular component
+    properties:
+      rel_type: str
+  so subclass of:
+    url: http://www.obofoundry.org/
+    input_label: so_subclass_of
+    output_label: is_a
+    source: sequence type
+    target: sequence type
+    properties:
+      rel_type: str
+  mi subclass of:
+    url: http://www.obofoundry.org/
+    input_label: mi_subclass_of
+    output_label: is_a
+    source: molecular interaction
+    target: molecular interaction
+    properties:
+      rel_type: str
+  do subclass of:
+    url: http://www.obofoundry.org/
+    input_label: do_subclass_of
+    output_label: is_a
+    source: disease
+    target: disease
+    properties:
+      rel_type: str
+  chebi subclass of:
+    url: http://www.obofoundry.org/
+    input_label: chebi_subclass_of
+    output_label: is_a
+    source: small_molecule
+    target: small_molecule
+    properties:
+      rel_type: str

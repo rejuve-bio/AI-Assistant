@@ -33,7 +33,9 @@ def search_pubmed(query: str, max_results: int = 10, min_year: int = None) -> di
             "email": "assistant@rejuve.bio",
         }
         if min_year:
+            from datetime import datetime
             search_params["mindate"] = f"{min_year}/01/01"
+            search_params["maxdate"] = datetime.now().strftime("%Y/%m/%d")
             search_params["datetype"] = "pdat"
 
         search = requests.get(f"{base}/esearch.fcgi", params=search_params, timeout=15)
