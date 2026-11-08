@@ -17,6 +17,8 @@ from app.agents.subgraphs.hypothesis import (
     build_hypothesis_subgraph,
 )
 from app.agents.subgraphs.literature import CLINICAL_TRIALS, PUBMED, RAG, build_literature_subgraph
+from app.Galaxy_integration.galaxy_proposal import propose_galaxy_run
+from app.prompts.rag_prompts import SEARCH_TERM_EXTRACTION_PROMPT
 from app.socket_manager import emit_to_user
 
 logger = logging.getLogger(__name__)
@@ -94,10 +96,31 @@ TOOL_SPECS = [
         ),
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "the full hypothesis request, in the user's own words, for context"},
-            "phenotype": {"type": "string", "description": "the phenotype/condition this is about -- carry forward anything implied by earlier turns (e.g. 'same phenotype' -> the actual phenotype named earlier in this thread). Required: never omit, never guess one that wasn't actually named or implied."},
+            "phenotype": {"type": "string", "description": "the phenotype/condition this is about. If the CURRENT message names one (even if it's the same word used before, e.g. 'arthritis' again), ALWAYS use that exact word -- never substitute a different phenotype/file name recorded in an earlier turn's proposal-summary note just because it's sitting in context. Only carry one forward from an earlier turn when the current message itself doesn't name one at all (e.g. 'same phenotype', 'try again'). Required: never omit, never guess one that wasn't actually named or implied."},
             "variant": {"type": "string", "description": "the lead variant (rsID) named, if any. Omit entirely if none was named -- never invent one."},
             "tissue": {"type": "string", "description": "ONLY set this if the user explicitly asked for a specific tissue instead of letting the strongest one be auto-picked (e.g. 'use adipose tissue instead', 'in CD8 T cells'). Omit entirely otherwise -- the tool auto-selects the project's strongest tissue by default. If the named tissue wasn't actually analyzed for the matched project, the tool falls back to the strongest one and says so."},
         }, "required": ["query", "phenotype"]},
+    },
+    {
+        "name": "list_lead_variants",
+        "description": (
+            "Get a GWAS project's REAL, analyzed credible-set lead variants "
+            "-- the only ones that will actually match when generating a "
+            "hypothesis from that project. Call this whenever the user asks "
+            "for an example/candidate/real lead variant for a project "
+            "already matched earlier in this thread (e.g. 'give me an "
+            "example lead variant I can use', 'what variants are available "
+            "for this project'). NEVER use search_literature or run_biogpt "
+            "to guess a variant for an existing project -- a variant from "
+            "general biomedical knowledge is very unlikely to be one of "
+            "this specific project's own analyzed credible sets, so it "
+            "would fail to match anyway. Only reach for search_literature/"
+            "run_biogpt afterward, to describe one of THESE real variants "
+            "in more depth once the user has picked one."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "project_id": {"type": "string", "description": "ONLY the project's real database id (e.g. a long hex/ObjectId string like '6a2ec66760333bb84216b4f6'), never a phenotype or project display name like 'obesity' -- that is NOT an id and will fail to look up. If you don't have that exact real id string memorized from an earlier tool result, OMIT this argument entirely; it then auto-resolves to whichever GWAS project was already matched earlier in this thread."},
+        }, "required": []},
     },
     {
         "name": "run_galaxy",
@@ -190,8 +213,46 @@ TOOL_SPECS = [
         }, "required": ["target_type", "target_id", "inputs"]},
     },
     {
+        "name": "propose_galaxy_run",
+        "description": (
+            "Build the actual Galaxy proposal card for a specific tool/"
+            "workflow -- a real, structured card (target, inputs, a plain-"
+            "words summary, and anything still unresolved) the user can "
+            "review and run, not just a text description. Call "
+            "galaxy_describe on this exact target FIRST if its real input "
+            "paths aren't already known from this conversation -- "
+            "requested_values must be keyed by those exact real paths "
+            "(e.g. 'filter_options|length_required'), never invented or "
+            "guessed names. Only include a value the user explicitly "
+            "named; leave everything else out so it either stays at "
+            "Galaxy's own default or is honestly asked for in the reply. "
+            "Call this once per turn, after enough is known to build a "
+            "useful card -- it already calls describe and validate "
+            "itself, so don't call those separately just to build this "
+            "same card."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "target_type": {"type": "string", "enum": ["tool", "workflow"]},
+            "target_id": {"type": "string", "description": "the target's real id, exactly as returned by galaxy_search or galaxy_describe"},
+            "target_version": {"type": "string", "description": "the target's version, if known"},
+            "requested_values": {
+                "type": "object",
+                "description": "settings the user explicitly named, keyed by their exact real path from galaxy_describe (e.g. {\"filter_options|length_required\": 30}). Omit anything not explicitly named -- never guess a value.",
+            },
+        }, "required": ["target_type", "target_id"]},
+    },
+    {
         "name": "run_biogpt",
-        "description": "Ask the fine-tuned BioGPT model a direct biomedical question.",
+        "description": (
+            "Ask the fine-tuned BioGPT model a direct biomedical question, "
+            "from its own general training -- never a source of the "
+            "assistant's own stored GWAS project data. Do NOT use this to "
+            "name a 'real'/'example' lead variant for one of the "
+            "assistant's own GWAS projects (use list_lead_variants for "
+            "that instead) -- a variant BioGPT names from general "
+            "knowledge is very unlikely to be one of that project's own "
+            "analyzed credible sets."
+        ),
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "the biomedical question"},
         }, "required": ["query"]},
@@ -239,11 +300,13 @@ TOOL_RUNNERS = {
     "annotate_gene": "run_annotate_gene",
     "search_literature": "run_search_literature",
     "generate_hypothesis": "run_generate_hypothesis",
+    "list_lead_variants": "run_list_lead_variants",
     "run_galaxy": "run_galaxy_tool",
     "galaxy_search": "run_galaxy_search",
     "galaxy_describe": "run_galaxy_describe",
     "galaxy_thread_files": "run_galaxy_thread_files",
     "galaxy_validate": "run_galaxy_validate",
+    "propose_galaxy_run": "run_propose_galaxy",
     "run_biogpt": "run_biogpt_tool",
     "retrieve_content": "run_retrieve_content",
     "kg_overview": "run_kg_overview",
@@ -384,7 +447,10 @@ class ToolsMixin:
         response = result.get("annotation_response") or {}
         state_update = {"annotation_response": response}
         if response.get("json_format"):
-            state_update["proposals"] = [{"kind": "annotation", "data": response["json_format"]}]
+            state_update["proposals"] = [{
+                "kind": "annotation", "data": response["json_format"],
+                "tool": "annotate_gene", "arguments": arguments,
+            }]
             data = response["json_format"]
             self._append_proposal_summary(
                 state,
@@ -466,37 +532,78 @@ class ToolsMixin:
 
         state_update = {"hypothesis_response": response}
         if response.get("json_format"):
-            state_update["proposals"] = [{"kind": "hypothesis", "data": response["json_format"]}]
+            kind = response.get("kind", "hypothesis")
+            state_update["proposals"] = [{
+                "kind": kind, "data": response["json_format"],
+                "tool": "generate_hypothesis", "arguments": arguments,
+            }]
             data = response["json_format"]
-            self._append_proposal_summary(
-                state,
-                f'[hypothesis] project="{data.get("project_name")}" (project_id={data.get("project_id")}) '
-                f'phenotype={data.get("phenotype")} credible_set={data.get("credible_set_id") or "none"} '
-                f'variant={data.get("variant") or "none"} tissue={data.get("tissue") or "none"}'
-            )
+            if kind == "hypothesis-project":
+                rf = response.get("recommended_file") or {}
+                self._append_proposal_summary(
+                    state,
+                    f'[hypothesis-project] recommended gwas_file={data.get("gwas_file")} '
+                    f'project_name="{data.get("project_name")}" source={rf.get("source", "?")} '
+                    f'sex={rf.get("sex", "?")} genome_build={rf.get("genome_build", "?")} '
+                    f'(catalog file\'s own condition label, NOT a phenotype the user searched for: {data.get("phenotype")})'
+                )
+            else:
+                self._append_proposal_summary(
+                    state,
+                    f'[hypothesis] project="{data.get("project_name")}" (project_id={data.get("project_id")}) '
+                    f'phenotype={data.get("phenotype")} credible_set={data.get("credible_set_id") or "none"} '
+                    f'variant={data.get("variant") or "none"} tissue={data.get("tissue") or "none"}'
+                )
         return {
             "content": response.get("text", ""),
             "state_update": state_update,
             "agent_name": "hypothesis_agent",
         }
 
-    def run_galaxy_tool(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
-        if getattr(self, "_galaxy_subgraph", None) is None:
-            self._galaxy_subgraph = build_galaxy_subgraph(self.galaxy_handler)
+    def run_list_lead_variants(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
+        auto_project_id = None
+        for entry in reversed(state.get("proposals") or []):
+            data = entry.get("data") or {}
+            if entry.get("kind") == "hypothesis" and data.get("project_id"):
+                auto_project_id = data["project_id"]
+                break
 
-        query = arguments.get("query") or state["user_query"]
-        emit_to_user(user=state["user_id"], message="Retrieving Galaxy tools information...", thread_id=state.get("thread_id"))
+        project_id = arguments.get("project_id") or auto_project_id
+        if not project_id:
+            return {"content": "No GWAS project has been matched in this thread yet -- call generate_hypothesis with a phenotype first."}
 
-        result = self._galaxy_subgraph.invoke({
-            "user_query": query, "user_id": state["user_id"], "token": state.get("token"),
-            "attached_files": state.get("attached_files"),
-        })
-        response = result.get("galaxy_response") or {}
+        emit_to_user(user=state["user_id"], message="Reading the project's real credible sets...", thread_id=state.get("thread_id"))
+        result = self.hypothesis_generation.list_credible_set_variants(state.get("token"), project_id)
+        if result.get("error") and auto_project_id and auto_project_id != project_id:
+            result = self.hypothesis_generation.list_credible_set_variants(state.get("token"), auto_project_id)
+            project_id = auto_project_id
+        if result.get("error"):
+            return {"content": result["error"]}
+
+        variants = result.get("variants") or []
+        if not variants:
+            return {"content": f"Project {project_id} doesn't have a lead variant recorded on any of its credible sets yet."}
+
+        total = len(variants)
+        top = variants[:10]
+        lines = "\n".join(
+            f"- {v['variant']} (credible_set_id={v['credible_set_id']}, "
+            f"-log10(p)={v['log_pvalue']:.1f})" if v.get("log_pvalue") is not None
+            else f"- {v['variant']} (credible_set_id={v['credible_set_id']})"
+            for v in top
+        )
+        more_note = f" (showing the {len(top)} most significant of {total} total)" if total > len(top) else ""
         return {
-            "content": response.get("text", ""),
-            "state_update": {"galaxy_response": response},
-            "agent_name": "galaxy_agent",
+            "content": (
+                f"Project {project_id}'s own analyzed credible sets have these real lead "
+                f"variants, most significant first{more_note} -- these are the only ones "
+                f"that will actually match when generating a hypothesis from this "
+                f"project:\n{lines}"
+            ),
         }
+
+    def run_galaxy_tool(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
+        return self.run_galaxy_search(arguments, state)
 
     @staticmethod
     def _galaxy_api_error(response: Dict[str, Any]) -> Optional[str]:
@@ -580,6 +687,29 @@ class ToolsMixin:
         errors = response.get("errors") or {}
         lines = [f"- {path}: {msg}" for path, msg in errors.items()] if isinstance(errors, dict) else [str(errors)]
         return {"content": "Galaxy rejected these inputs:\n" + "\n".join(lines)}
+
+    def run_propose_galaxy(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
+        emit_to_user(user=state["user_id"], message="Building the Galaxy proposal...", thread_id=state.get("thread_id"))
+
+        response = propose_galaxy_run(
+            self.galaxy_runs_api, state.get("token"), state.get("thread_id"),
+            arguments.get("target_type"), arguments.get("target_id"),
+            arguments.get("target_version"), arguments.get("requested_values") or {},
+        )
+
+        state_update = {}
+        if response.get("json_format"):
+            state_update["proposals"] = [{
+                "kind": "galaxy", "data": response["json_format"],
+                "tool": "propose_galaxy_run",
+                "arguments": {
+                    "target_type": arguments.get("target_type"),
+                    "target_id": arguments.get("target_id"),
+                    "target_version": arguments.get("target_version"),
+                    "requested_values": arguments.get("requested_values") or {},
+                },
+            }]
+        return {"content": response.get("text", ""), "state_update": state_update}
 
     def run_biogpt_tool(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
         if getattr(self, "_biogpt_subgraph", None) is None:
@@ -666,14 +796,7 @@ class ToolsMixin:
 
     def _extract_search_term(self, user_query: str, context: str = "") -> str:
         context_line = f"\nAdditional context: {context[:500]}" if context else ""
-        prompt = (
-            "Extract a short, keyword-based search term (3-7 words) suitable for searching "
-            "PubMed or ClinicalTrials.gov. Focus on the biological topic, gene, drug, or condition. "
-            "Do NOT include words like: clinical trials, studies, papers, literature, search, find, pubmed, research. "
-            "Do NOT use only a variant rs number — expand to the gene name and condition it is associated with. "
-            "Return ONLY the search term, no explanation, no punctuation.\n\n"
-            f"User question: {user_query}{context_line}\n\nSearch term:"
-        )
+        prompt = SEARCH_TERM_EXTRACTION_PROMPT.format(user_query=user_query, context_line=context_line)
         try:
             term = self.basic_llm.generate(prompt).strip().strip('"').strip("'")
             logger.info(f"Extracted search term: '{term}'")
