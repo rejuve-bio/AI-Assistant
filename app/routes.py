@@ -3,6 +3,7 @@ from typing import List, Optional
 from app.lib.auth import token_required, AuthContext
 from fastapi import APIRouter, Depends, Form, File, UploadFile, Query, Request
 from fastapi.responses import JSONResponse, Response
+from fastapi.concurrency import run_in_threadpool
 from dotenv import load_dotenv
 import logging
 import re
@@ -12,6 +13,8 @@ import os
 from app.rag.utils.tts_utils import tts_manager
 from app.storage.redis import redis_manager
 from app.storage.mongo_storage import mongo_db_manager
+from app.prompts.quick_reply_prompts import QUICK_REPLIES_PROMPT
+from app.prompts.hypothesis_prompt import EXAMPLE_QUESTIONS_PROMPT
 
 load_dotenv()
 main_router = APIRouter()
@@ -214,16 +217,13 @@ def user_status(
     auth: AuthContext = Depends(token_required),
     user_id: Optional[str] = Form(None),
 ):
-    # Get user's content status and limits (PDFs + web content)
     try:
         user_id = user_id or auth.user_id
         if not user_id:
             return JSONResponse(status_code=400, content={"error": "Missing user_id"})
 
-        # Get all content files using unified method
         all_content_files = mongo_db_manager.get_user_content_files(user_id)
 
-        # Separate PDF and web content
         pdf_files_data = []
         web_files_data = []
 
@@ -262,12 +262,10 @@ def user_status(
                     }
                 )
 
-        # Get counts using unified methods
         total_count = mongo_db_manager.get_content_count(user_id)
         pdf_count = mongo_db_manager.get_content_count(user_id, "pdf")
         web_count = mongo_db_manager.get_content_count(user_id, "web")
 
-        # Combine all content
         all_files = pdf_files_data + web_files_data
 
         return JSONResponse(status_code=200, content={
@@ -585,19 +583,7 @@ def handle_hypothesis_faq(auth_token, ai_assistant):
         logger.warning("No usable hypothesis data")
         return None
 
-    # LLM once with all info
-    llm_prompt = f"""
-                Here are hypothesis results grouped by project:
-
-                {json.dumps(project_map, indent=2)}
-
-                Generate 3 example research questions based on:
-                - project phenotypes
-                - causal genes
-                - tissues
-
-                Return JSON list of strings only.
-                """
+    llm_prompt = EXAMPLE_QUESTIONS_PROMPT.format(project_map_json=json.dumps(project_map, indent=2))
     llm_response = ai_assistant.advanced_llm.generate(llm_prompt)
     return JSONResponse(status_code=200, content={
         "text": "Here’s your hypothesis-based AI-generated questions:",
@@ -746,17 +732,8 @@ def _resolve_sources(species: str, sources) -> tuple:
 
 
 def _generate_quick_replies(llm, question: str, summary: str) -> list:
-    """Two short, clickable follow-up suggestions for a proposal, per the
-    Threads API v1 example. Best-effort: any failure just means no chips,
-    never breaks the actual response."""
     try:
-        prompt = (
-            f"A user asked: \"{question}\"\n\n"
-            f"The assistant proposed: \"{summary}\"\n\n"
-            "Suggest exactly 2 short, specific follow-up questions or refinements "
-            "the user might want next (e.g. narrowing scope, adding related data). "
-            "Return ONLY the 2 suggestions, one per line, no numbering, no extra text."
-        )
+        prompt = QUICK_REPLIES_PROMPT.format(question=question, summary=summary)
         result = llm.generate(prompt)
         text = result if isinstance(result, str) else str(result)
         lines = [l.strip(" -\t") for l in text.strip().splitlines() if l.strip()]
@@ -767,24 +744,19 @@ def _generate_quick_replies(llm, question: str, summary: str) -> list:
 
 
 def _build_proposal_title(data: dict, kind: Optional[str] = None) -> str:
-    """A short structural label like the doc's own example, "APOE →
-    transcripts → proteins" -- not a slice of the prose summary (which
-    was cutting off mid-word/mid-sentence at 80 chars). Walks the
-    predicate chain from a root node (one never a predicate's target),
-    labeling each node by a real property value when it has one (e.g.
-    the gene's name) or its type, pluralized, when it doesn't yet.
-
-    A hypothesis proposal's data is self-contained (project_id,
-    phenotype, variant, credible_set_id, ...), not a nodes/predicates
-    graph, so it gets its own short branch: "{variant} → {phenotype}"
-    once a credible set is actually matched, or "A locus in {phenotype}"
-    while that's still unresolved ("you choose")."""
     if kind == "hypothesis":
         phenotype = (data or {}).get("phenotype") or "a phenotype"
         variant = (data or {}).get("variant")
         if (data or {}).get("credible_set_id") and variant:
             return f"{variant} → {phenotype.lower()}"
         return f"A locus in {phenotype.lower()}"
+
+    if kind == "galaxy":
+        target = (data or {}).get("target") or {}
+        return target.get("name") or target.get("id") or "A Galaxy run"
+
+    if kind == "hypothesis-project":
+        return (data or {}).get("project_name") or (data or {}).get("phenotype") or "A new hypothesis project"
 
     nodes = {n.get("node_id"): n for n in (data or {}).get("nodes", []) if n.get("node_id")}
     predicates = (data or {}).get("predicates", []) or []
@@ -813,14 +785,7 @@ def _build_proposal_title(data: dict, kind: Optional[str] = None) -> str:
 
 def _format_v1_message(thread_id: str, m: dict, index: int) -> dict:
     """Shared shaping of one stored message entry into the Threads API v1
-    {id, thread_id, role, created_at, client_message_id?, parts} shape --
-    used by both the messages-read endpoint and /v1/query's own response,
-    so the two can never drift apart.
-
-    The id uses the message's stable, stored `seq` (stamped once at
-    creation in append_message) rather than its array position, so
-    deleting an earlier message never changes a later message's id.
-    `index` is only a fallback for messages stored before `seq` existed.
+    {id, thread_id, role, created_at, client_message_id?, parts}
     """
     msg_num = m.get("seq", index)
     if m.get("context_part"):
@@ -838,8 +803,11 @@ def _format_v1_message(thread_id: str, m: dict, index: int) -> dict:
                 kind = prop.get("kind") or "annotation"
                 data = prop.get("data")
                 suffix = f"_{i}" if len(m["proposals"]) > 1 else ""
-                parts.append({"type": "proposal", "id": f"{thread_id}_msg_{msg_num}_prop{suffix}", "kind": kind,
-                              "title": _build_proposal_title(data, kind=kind), "data": data})
+                part = {"type": "proposal", "id": f"{thread_id}_msg_{msg_num}_prop{suffix}", "kind": kind,
+                        "title": _build_proposal_title(data, kind=kind), "data": data}
+                if prop.get("replaces"):
+                    part["replaces"] = prop["replaces"]
+                parts.append(part)
         elif m.get("json_format"):
             kind = m.get("resource_type") or "annotation"
             parts.append({"type": "proposal", "id": f"{thread_id}_msg_{msg_num}_prop", "kind": kind,
@@ -1023,7 +991,8 @@ async def post_v1_query(
             return JSONResponse(status_code=409, content={"text": "A reply is already in progress in this thread."})
 
         try:
-            agent_response = ai_assistant.agent(
+            agent_response = await run_in_threadpool(
+                ai_assistant.agent,
                 question, user_id, auth.token,
                 graph_id=graph_id, resource=resource,
                 thread_id=thread_id, propose_only=True,

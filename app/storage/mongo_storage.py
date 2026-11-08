@@ -388,6 +388,21 @@ class MongoManager:
     def get_thread_content_ids(self, thread_id: str, user_id: str) -> list:
         return self.get_thread(thread_id, user_id).get("content_ids", [])
 
+    @staticmethod
+    def _find_prior_galaxy_proposal_id(thread_id: str, messages: list, target: dict) -> Optional[str]:
+        for m in reversed(messages or []):
+            props = m.get("proposals") or []
+            for i, p in enumerate(props):
+                if p.get("kind") != "galaxy":
+                    continue
+                old_target = (p.get("data") or {}).get("target") or {}
+                if (old_target.get("type") == target.get("type")
+                        and old_target.get("id") == target.get("id")
+                        and old_target.get("version") == target.get("version")):
+                    suffix = f"_{i}" if len(props) > 1 else ""
+                    return f"{thread_id}_msg_{m.get('seq')}_prop{suffix}"
+        return None
+
     def append_message(
         self,
         thread_id: str,
@@ -442,6 +457,14 @@ class MongoManager:
             if quick_replies:
                 entry["quick_replies"] = quick_replies
             if proposals:
+                for p in proposals:
+                    if p.get("kind") == "galaxy" and not p.get("replaces"):
+                        target = (p.get("data") or {}).get("target") or {}
+                        prior_id = self._find_prior_galaxy_proposal_id(
+                            thread_id, counter_doc.get("messages"), target
+                        )
+                        if prior_id:
+                            p["replaces"] = prior_id
                 entry["proposals"] = proposals
             doc = self.threads_collection.find_one_and_update(
                 {"thread_id": thread_id, "user_id": user_id},

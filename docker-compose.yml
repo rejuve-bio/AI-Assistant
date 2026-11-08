@@ -8,7 +8,7 @@ services:
       - hf_cache:/root/.cache/huggingface
     ports:
       - "127.0.0.1:${FASTAPI_PORT}:${FASTAPI_PORT}"
-    command: gunicorn -k uvicorn.workers.UvicornWorker -w 1 --preload --bind 0.0.0.0:$FASTAPI_PORT --timeout 600 --log-level debug run:asgi_app
+    command: gunicorn -k uvicorn.workers.UvicornWorker -w 3 --bind 0.0.0.0:$FASTAPI_PORT --timeout 600 --log-level debug run:asgi_app
     restart: always
     depends_on:
       - qdrant

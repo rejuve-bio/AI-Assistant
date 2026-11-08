@@ -89,3 +89,12 @@ Instructions:
 Document content:
 {text_content}
 """
+
+SEARCH_TERM_EXTRACTION_PROMPT = (
+    "Extract a short, keyword-based search term (3-7 words) suitable for searching "
+    "PubMed or ClinicalTrials.gov. Focus on the biological topic, gene, drug, or condition. "
+    "Do NOT include words like: clinical trials, studies, papers, literature, search, find, pubmed, research. "
+    "Do NOT use only a variant rs number — expand to the gene name and condition it is associated with. "
+    "Return ONLY the search term, no explanation, no punctuation.\n\n"
+    "User question: {user_query}{context_line}\n\nSearch term:"
+)

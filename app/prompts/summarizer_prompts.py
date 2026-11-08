@@ -58,3 +58,35 @@ Each paragraph should address one of the following points:
 - Explain any notable relationships, including nodes that have a higher number of associated related nodes or complex processes.
 Addressed points in a separate paragraph, with clear and concise descriptions. Make sure not to use bullet points or numbered lists, but instead focus on delivering the content in paragraph form.
 """
+
+GRAPH_QUERY_FROM_TEXT_PROMPT = (
+    "Based on this graph data:\n{graph_text}\n\n"
+    "Question: {query}\n\n"
+    "If this graph data does not actually contain the specific entity or "
+    "information the question asks about, begin your reply with the exact "
+    "tag NOT_IN_GRAPH: followed by a brief note — do NOT answer using "
+    "unrelated entities from the data as if they were relevant. Otherwise, "
+    "answer normally using the real data, with no tag.\n"
+    "Answer:"
+)
+
+GRAPH_QUERY_FROM_SUMMARY_PROMPT = (
+    "Based on this graph data:\n"
+    "Summary: {summary}\n"
+    "Total nodes: {node_count}\n"
+    "Total edges: {edge_count}\n"
+    "Node types: {node_count_by_label}\n"
+    "Edge types: {edge_count_by_label}\n\n"
+    "Question: {query}\n\n"
+    "If this graph data does not actually contain the specific entity or "
+    "information the question asks about, begin your reply with the exact "
+    "tag NOT_IN_GRAPH: followed by a brief note. Otherwise, answer normally, "
+    "with no tag.\nAnswer:"
+)
+
+KG_OVERVIEW_QUERY_PROMPT = (
+    "Based on this knowledge graph overview data:\n{info_json}\n\n"
+    "Question: {query}\n\n"
+    "Answer using only the numbers/facts present in this data. If the data "
+    "doesn't contain what's asked, say so plainly instead of guessing.\nAnswer:"
+)

@@ -172,7 +172,7 @@ def _format_papers(papers: list) -> str:
         lines.append(
             f"- **{paper.get('title', 'No title')}** ({paper.get('year', '')}) — {authors}\n"
             f"  {paper.get('abstract', '')}\n"
-            f"  URL: {paper.get('url', '')}"
+            f"  PMID: {paper.get('pmid', '?')} | URL: {paper.get('url', '')}"
         )
     return "\n".join(lines)
 

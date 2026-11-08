@@ -139,3 +139,16 @@ EXAMPLE TRANSFORMATIONS:
 
 NOTE: Generate concise, mechanistic answers that explain biological causation rather than just associations, and always reference the specific GO term/biological process that was analyzed.
 """
+
+EXAMPLE_QUESTIONS_PROMPT = """
+Here are hypothesis results grouped by project:
+
+{project_map_json}
+
+Generate 3 example research questions based on:
+- project phenotypes
+- causal genes
+- tissues
+
+Return JSON list of strings only.
+"""
