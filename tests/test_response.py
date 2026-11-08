@@ -30,6 +30,7 @@ def mock_external_services():
     mongo_client_mock.__getitem__.return_value = mongo_db_mock
     mongo_db_mock.__getitem__.return_value = mongo_collection_mock
     mongo_collection_mock.create_index = MagicMock()
+    mongo_collection_mock.find_one.return_value = None
     
     redis_mock = MagicMock()
     redis_mock.ping.return_value = True
