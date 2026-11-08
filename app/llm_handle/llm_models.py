@@ -4,7 +4,8 @@ import time
 import os
 import logging
 import json
-from typing import Any, Dict, List
+import re
+from typing import Any, Dict, List, Optional
 from sentence_transformers import SentenceTransformer
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 
@@ -149,16 +150,44 @@ def get_llm_model(model_provider, model_version=None):
         raise ValueError("Invalid model type in configuration")
 
 
+_CHANNEL_LEAK_RE = re.compile(r"<\|?channel\|?>.*?<\|?channel\|?>\s*", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_channel_leak(content: Optional[str]) -> Optional[str]:
+    if not content:
+        return content
+    return _CHANNEL_LEAK_RE.sub("", content, count=1)
+
+
+_SPECIAL_TOKEN_RE = re.compile(r"<\|[^|>]*\|>")
+
+
+def _sanitize_tool_arguments(value):
+    if isinstance(value, dict):
+        return {
+            _SPECIAL_TOKEN_RE.sub("", k).strip() if isinstance(k, str) else k: _sanitize_tool_arguments(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_tool_arguments(v) for v in value]
+    if isinstance(value, str):
+        cleaned = _SPECIAL_TOKEN_RE.sub("", value).strip()
+        if cleaned.startswith(":"):
+            cleaned = cleaned[1:].strip()
+        return cleaned
+    return value
+
+
 def _parse_openai_tool_calls(message) -> Dict[str, Any]:
 
     tool_calls = []
     for tc in (message.tool_calls or []):
         try:
-            arguments = json.loads(tc.function.arguments)
+            arguments = _sanitize_tool_arguments(json.loads(tc.function.arguments))
         except (json.JSONDecodeError, TypeError):
             arguments = {}
         tool_calls.append({"id": tc.id, "name": tc.function.name, "arguments": arguments})
-    return {"tool_calls": tool_calls, "content": message.content}
+    return {"tool_calls": tool_calls, "content": _strip_channel_leak(message.content)}
 
 
 class LLMInterface:

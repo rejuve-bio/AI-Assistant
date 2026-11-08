@@ -426,24 +426,19 @@ class CypherExecutor:
                 return f"I'm sorry, but I encountered an error while processing your query '{query}'."
 
     def _create_summarization_prompt(self, query, summary_data):
-        # Create a prompt for the LLM to generate user-friendly summaries.
-        # Build node summary
         node_summary = ""
         for node_type, nodes_list in summary_data["node_types"].items():
             node_summary += f"\n- {node_type.capitalize()} nodes: {len(nodes_list)}"
-            for node_info in nodes_list[:3]:  # Show first 3 nodes
+            for node_info in nodes_list[:3]:
                 node_summary += f"\n  • {node_type.capitalize()}: "
                 for prop, value in node_info.items():
                     node_summary += f"{prop}={value}, "
                 node_summary = node_summary.rstrip(", ") + "\n"
 
-        # Build relationship summary
         relationship_summary = ""
         if summary_data["relationships_found"] > 0:
             relationship_summary = f"\n**Relationships Found:**\n"
-            for rel in summary_data["relationships_info"][
-                :5
-            ]:  # Show first 5 relationships
+            for rel in summary_data["relationships_info"][:5]:
                 relationship_summary += f"- {rel['type']}: connects nodes {rel['start_node']} and {rel['end_node']}\n"
         else:
             relationship_summary = "No relationships found."
