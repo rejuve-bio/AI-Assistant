@@ -7,7 +7,11 @@ import logging
 import os
 import requests
 from dotenv import load_dotenv
-from app.prompts.summarizer_prompts import SUMMARY_PROMPT, SUMMARY_PROMPT_BASED_ON_USER_QUERY,SUMMARY_PROMPT_CHUNKING,SUMMARY_PROMPT_CHUNKING_USER_QUERY
+from app.prompts.summarizer_prompts import (
+    SUMMARY_PROMPT, SUMMARY_PROMPT_BASED_ON_USER_QUERY, SUMMARY_PROMPT_CHUNKING,
+    SUMMARY_PROMPT_CHUNKING_USER_QUERY, GRAPH_QUERY_FROM_TEXT_PROMPT,
+    GRAPH_QUERY_FROM_SUMMARY_PROMPT, KG_OVERVIEW_QUERY_PROMPT,
+)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
@@ -264,11 +268,6 @@ class GraphSummarizer:
                 "edge_count_by_label": edge_count_by_label
             }
 
-            # The service's own summary/count fields are unreliable — they can report
-            # 0 nodes/0 edges/"No summary available" even when the raw "nodes"/"edges"
-            # arrays elsewhere in this same response contain real graph data. Build the
-            # actual description straight from that raw data instead of trusting those
-            # top-level fields.
             batched_descriptions = self.graph_description({
                 "nodes": json_response.get("nodes", []),
                 "edges": json_response.get("edges", []),
@@ -281,14 +280,7 @@ class GraphSummarizer:
                 entity_found = None
                 if query:
                     raw = self.llm.generate(
-                        f"Based on this graph data:\n{graph_text}\n\n"
-                        f"Question: {query}\n\n"
-                        f"If this graph data does not actually contain the specific entity or "
-                        f"information the question asks about, begin your reply with the exact "
-                        f"tag NOT_IN_GRAPH: followed by a brief note — do NOT answer using "
-                        f"unrelated entities from the data as if they were relevant. Otherwise, "
-                        f"answer normally using the real data, with no tag.\n"
-                        f"Answer:"
+                        GRAPH_QUERY_FROM_TEXT_PROMPT.format(graph_text=graph_text, query=query)
                     )
                     entity_found = not raw.lstrip().startswith("NOT_IN_GRAPH:")
                     text = raw.split("NOT_IN_GRAPH:", 1)[-1].strip() if not entity_found else raw
@@ -298,17 +290,11 @@ class GraphSummarizer:
                 entity_found = None
                 if query:
                     raw = self.llm.generate(
-                        f"Based on this graph data:\n"
-                        f"Summary: {summary}\n"
-                        f"Total nodes: {node_count}\n"
-                        f"Total edges: {edge_count}\n"
-                        f"Node types: {node_count_by_label}\n"
-                        f"Edge types: {edge_count_by_label}\n\n"
-                        f"Question: {query}\n\n"
-                        f"If this graph data does not actually contain the specific entity or "
-                        f"information the question asks about, begin your reply with the exact "
-                        f"tag NOT_IN_GRAPH: followed by a brief note. Otherwise, answer normally, "
-                        f"with no tag.\nAnswer:"
+                        GRAPH_QUERY_FROM_SUMMARY_PROMPT.format(
+                            summary=summary, node_count=node_count, edge_count=edge_count,
+                            node_count_by_label=node_count_by_label, edge_count_by_label=edge_count_by_label,
+                            query=query,
+                        )
                     )
                     entity_found = not raw.lstrip().startswith("NOT_IN_GRAPH:")
                     text = raw.split("NOT_IN_GRAPH:", 1)[-1].strip() if not entity_found else raw
@@ -326,10 +312,6 @@ class GraphSummarizer:
     def get_graph_overview(self, token, query=None):
         """Whole-database stats (total nodes/edges, node/edge types) via
         the annotation service's own /kg-info endpoint.
-
-        Distinct from annotate_by_id: that answers from one already-executed
-        annotation graph (a specific graph_id); this answers "how big is the
-        knowledge graph overall" with nothing specific attached.
         """
         try:
             http_response = requests.get(
@@ -352,10 +334,7 @@ class GraphSummarizer:
 
         try:
             text = self.llm.generate(
-                f"Based on this knowledge graph overview data:\n{json.dumps(info, indent=2)}\n\n"
-                f"Question: {query}\n\n"
-                f"Answer using only the numbers/facts present in this data. If the data "
-                f"doesn't contain what's asked, say so plainly instead of guessing.\nAnswer:"
+                KG_OVERVIEW_QUERY_PROMPT.format(info_json=json.dumps(info, indent=2), query=query)
             )
         except Exception as e:
             logger.error(f"Failed to summarize kg-info via LLM: {e}")
@@ -366,7 +345,6 @@ class GraphSummarizer:
     def summary(self, graph=None, user_query=None, graph_id=None, token=None):
 
         try:
-            # send the query and the annotation id for the annotation endpoint for the answer
             if graph_id:
                 result = self.annotate_by_id(
                     graph_id=graph_id, query=user_query, token=token
