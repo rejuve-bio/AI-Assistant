@@ -4,6 +4,10 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1
 ENV POETRY_HTTP_TIMEOUT=600
 
+# patch zlib1g
+RUN apt-get update && apt-get upgrade -y zlib1g && \
+    rm -rf /var/lib/apt/lists/*
+
 # Set the working directory
 WORKDIR /AI-Assistant
 
