@@ -16,7 +16,7 @@ jobs:
   cache:
     uses: ./.github/workflows/ci-caching.yml
     with:
-      python-version: '3.10'
+      python-version: '3.12'
 
   # SonarQube Code Quality Analysis
   code-quality-analysis:
@@ -33,15 +33,15 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.10'
+        python-version: '3.12'
 
     - name: Restore pip cache
       uses: actions/cache@v4
       with:
         path: ~/.cache/pip
-        key: pip-${{ runner.os }}-py3.10-${{ hashFiles('**/pyproject.toml') }}
+        key: pip-${{ runner.os }}-py3.12-${{ hashFiles('**/pyproject.toml') }}
         restore-keys: |
-          pip-${{ runner.os }}-py3.10-
+          pip-${{ runner.os }}-py3.12-
           pip-${{ runner.os }}-
 
     - name: Install dependencies
@@ -142,15 +142,15 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.10'
+        python-version: '3.12'
 
     - name: Restore pip cache
       uses: actions/cache@v4
       with:
         path: ~/.cache/pip
-        key: pip-${{ runner.os }}-py3.10-${{ hashFiles('**/pyproject.toml') }}
+        key: pip-${{ runner.os }}-py3.12-${{ hashFiles('**/pyproject.toml') }}
         restore-keys: |
-          pip-${{ runner.os }}-py3.10-
+          pip-${{ runner.os }}-py3.12-
           pip-${{ runner.os }}-
 
     - name: Install dependencies

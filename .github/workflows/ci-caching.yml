@@ -6,7 +6,7 @@ on:
       python-version:
         required: false
         type: string
-        default: '3.10'
+        default: '3.12'
     outputs:
       pip-cache-hit:
         description: "Whether pip dependencies were restored from cache"
