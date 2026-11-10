@@ -536,6 +536,7 @@ class MongoManager:
             "id": doc["thread_id"],
             "title": title,
             "context": doc.get("context"),
+            "generated_resources": doc.get("generated_resources") or [],
             "created_at": self._iso(created_at),
             "updated_at": self._iso(doc.get("updated_at")),
             "message_count": doc.get("message_count", 0),
@@ -547,14 +548,17 @@ class MongoManager:
         doc = self.threads_collection.find_one({"thread_id": thread_id}, {"user_id": 1})
         return bool(doc and doc.get("user_id") != user_id)
 
-    def set_thread_context(self, thread_id: str, user_id: str, species: str, sources: list) -> dict:
-        """Sets a thread's species/sources, matching the Threads API v1
-        proposal's PUT .../context. Returns {"changed": bool, "context": {...}}
-        so the caller can tell a real change (201 + divider message) from a
-        no-op (204)."""
+    def set_thread_context(self, thread_id: str, user_id: str, species: str, sources: list,
+                            resources: Optional[list] = None) -> dict:
         existing = self.get_thread_summary(thread_id, user_id) or {}
-        new_context = {"species": species, "sources": sources}
-        if existing.get("context") == new_context:
+        existing_context = existing.get("context") or {}
+        new_context = {
+            "species": species,
+            "sources": sources,
+            "resources": resources if resources is not None else existing_context.get("resources", []),
+        }
+        if existing_context == new_context:
+            logger.info(f"Thread {thread_id}: set_thread_context no-op, context unchanged.")
             return {"changed": False, "context": new_context}
         self.threads_collection.update_one(
             {"thread_id": thread_id, "user_id": user_id},
@@ -567,12 +571,44 @@ class MongoManager:
             },
             upsert=True,
         )
+        logger.info(
+            f"Thread {thread_id}: set_thread_context changed -- "
+            f"species={new_context['species']!r}, sources={new_context['sources']!r}, "
+            f"resources={new_context['resources']!r}"
+        )
         return {"changed": True, "context": new_context}
 
+    def add_thread_resource(self, thread_id: str, user_id: str, kind: str, resource_id: str) -> None:
+        doc = self.threads_collection.find_one({"thread_id": thread_id, "user_id": user_id}, {"context": 1, "generated_resources": 1})
+        resources = ((doc or {}).get("context") or {}).get("resources") or []
+        generated = (doc or {}).get("generated_resources") or []
+        already_selected = any(r.get("kind") == kind and r.get("id") == resource_id for r in resources)
+        already_generated = any(r.get("kind") == kind and r.get("id") == resource_id for r in generated)
+        if already_selected and already_generated:
+            logger.info(f"Thread {thread_id}: resource {kind}/{resource_id} already attached, skipping.")
+            return
+        update = {"$set": {"updated_at": datetime.utcnow()}}
+        if not already_selected:
+            update["$set"]["context.resources"] = resources + [{"kind": kind, "id": resource_id}]
+        if not already_generated:
+            update["$set"]["generated_resources"] = generated + [{"kind": kind, "id": resource_id}]
+        self.threads_collection.update_one({"thread_id": thread_id, "user_id": user_id}, update)
+        logger.info(f"Thread {thread_id}: attached resource {kind}/{resource_id} to context.resources and generated_resources.")
+
+    def remove_thread_resource(self, thread_id: str, user_id: str, kind: str, resource_id: str) -> None:
+        doc = self.threads_collection.find_one({"thread_id": thread_id, "user_id": user_id}, {"context": 1})
+        resources = ((doc or {}).get("context") or {}).get("resources") or []
+        filtered = [r for r in resources if not (r.get("kind") == kind and r.get("id") == resource_id)]
+        if len(filtered) != len(resources):
+            self.threads_collection.update_one(
+                {"thread_id": thread_id, "user_id": user_id},
+                {"$set": {"context.resources": filtered, "updated_at": datetime.utcnow()}},
+            )
+            logger.info(f"Thread {thread_id}: removed resource {kind}/{resource_id} from context.resources.")
+        else:
+            logger.info(f"Thread {thread_id}: resource {kind}/{resource_id} not found, nothing to remove.")
+
     def set_thread_title(self, thread_id: str, user_id: str, title: Optional[str]) -> None:
-        """PATCH .../threads/{id}: an empty title clears the override, so the
-        summary falls back to the first message's text again -- 'clearing a
-        name sends the first message's text back, so it's never empty'."""
         if title:
             self.threads_collection.update_one(
                 {"thread_id": thread_id, "user_id": user_id},
@@ -585,22 +621,10 @@ class MongoManager:
             )
 
     def delete_thread(self, thread_id: str, user_id: str) -> bool:
-        """DELETE .../threads/{id}: removes only the thread record -- never
-        touches the annotations/hypotheses it referenced, since those live
-        in their own services entirely."""
         result = self.threads_collection.delete_one({"thread_id": thread_id, "user_id": user_id})
         return result.deleted_count > 0
 
     def delete_message(self, thread_id: str, user_id: str, seq: int) -> bool:
-        """DELETE .../threads/{id}/messages/{message_id}: removes one message
-        by its stable seq, matched directly -- not by array position, so
-        deleting one message never changes any other message's id.
-
-        Existence is checked separately before the update: the update's own
-        $set (updated_at) always matches and modifies the document even when
-        $pull finds nothing, so modified_count alone can't tell a real
-        delete from a no-op on an already-gone or bogus seq.
-        """
         exists = self.threads_collection.find_one(
             {"thread_id": thread_id, "user_id": user_id, "messages.seq": seq},
             {"_id": 1},
@@ -614,8 +638,6 @@ class MongoManager:
         return True
 
     def list_threads(self, user_id: str) -> list:
-        """Thread summaries for a user, latest activity first -- the data
-        backing a future GET /v1/threads read."""
         try:
             cursor = self.threads_collection.find(
                 {"user_id": user_id},
@@ -655,12 +677,6 @@ class MongoManager:
             logger.error(f"Error recording tool call for thread {thread_id}: {e}")
 
     def extend_running_summary(self, thread_id: str, user_id: str, new_summary: str, through_count: int) -> None:
-        """Extends the thread's running summary to cover its first
-        through_count messages. Unlike the old compact_thread this replaced,
-        the stored messages themselves are never touched or deleted -- every
-        one stays retrievable via GET /v1/threads/{id}/messages for the life
-        of the thread. This is purely an extra, lightweight aid for the
-        LLM's context on a long thread, not a replacement for full storage."""
         try:
             self.threads_collection.update_one(
                 {"thread_id": thread_id, "user_id": user_id},
@@ -859,12 +875,6 @@ class MongoManager:
             logger.error(f"Error seeding FAQ questions: {e}")
 
 
-    # ==================== HYPOTHESIS METHODS ====================
-
-    # Note: The methods below are currently "Dead Code" and not used by the AI Assistant.
-    # They were designed for local job tracking in MongoDB, but the current implementation 
-    # uses a direct API flow with the hypothesis server.
-
     def create_hypothesis_request(self, data: dict):
         """Create a new hypothesis request"""
         try:
@@ -900,7 +910,6 @@ class MongoManager:
             return False
 
 
-# Global instance
 mongo_db_manager = MongoManager()
 
 

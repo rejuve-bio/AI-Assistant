@@ -110,10 +110,6 @@ class GraphSummarizer:
             )
             descriptions.append(source_and_targets)
 
-            # If batch processing is required, we can break or yield after each batch
-            # if len(descriptions) >= batch_size:
-            #   break   Process the next batch in another iteration
-
         return descriptions
 
     def nodes_description(self, nodes):
@@ -125,7 +121,6 @@ class GraphSummarizer:
         return nodes_descriptions
 
     def num_tokens_from_string(self, encoding_name: str):
-        """Calculates the number of tokens in each description and groups them into batches under a token limit."""
         encoding = tiktoken.get_encoding(encoding_name)
         accumulated_tokens = 0
         grouped_batched_descriptions = []
@@ -142,6 +137,22 @@ class GraphSummarizer:
         if self.current_batch:
             grouped_batched_descriptions.append(self.current_batch)
         return grouped_batched_descriptions
+
+    @staticmethod
+    def _flatten_grouped_graph(json_response):
+        flat_nodes = []
+        for group in json_response.get("nodes") or []:
+            for node in (group.get("data") or {}).get("nodes") or []:
+                if node.get("id"):
+                    flat_nodes.append({"data": node})
+
+        flat_edges = []
+        for group in json_response.get("edges") or []:
+            for edge in (group.get("data") or {}).get("edges") or []:
+                if edge.get("source") and edge.get("target"):
+                    flat_edges.append({"data": edge})
+
+        return {"nodes": flat_nodes, "edges": flat_edges}
 
     def _build_limited_graph_descriptions(self, graph, limited_nodes):
         limited_node_ids = set()
@@ -174,7 +185,7 @@ class GraphSummarizer:
                 for edge in limited_graph["edges"]
             ]
 
-        self.description = self.generate_grouped_descriptions(edges, nodes)
+        self.description = self.generate_grouped_descriptions(edges, nodes) if edges else self.nodes_description(nodes)
         self.descriptions = self.num_tokens_from_string("cl100k_base")
 
     def graph_description(self, graph, limited_nodes=100):
@@ -190,51 +201,6 @@ class GraphSummarizer:
 
             return self.descriptions
 
-    # def annotate_by_id(self,graph_id, token, query=None):
-    #     try:
-    #         cached_graph = redis_manager.get_graph_by_id(graph_id)
-    #         if cached_graph and cached_graph.get("graph_summary"):
-    #             logger.info(f"Cache hit for graph_id={graph_id} {cached_graph}")
-    #             summary = cached_graph["graph_summary"]
-    #             return summary
-
-    #         params = {"source": "ai-assistant"}
-    #         logger.info("querying the graph without user question...")
-    #         response = requests.get(
-    #             self.kg_service_url + "/annotation/" + graph_id,
-    #             headers={"Authorization": token},
-    #         )
-            
-    #         response.raise_for_status()
-    #         json_response = response.json()
-            
-    #         if isinstance(json_response, str):
-    #             try:
-    #                 json_response = json.loads(json_response)
-    #             except json.JSONDecodeError:
-    #                 json_response = {"answer": json_response}
-
-    #         if not isinstance(json_response, dict):
-    #             json_response = {"answer": str(json_response)}
-            
-    #         response = {}
-    #         if json_response.get("summary"):
-    #             response["summary"] = json_response.get("summary")
-    #         else:
-    #             response["text"] = "Graph is too big, No summaries provided to answer your question"
-    #         summary = json_response.get("summary")
-    #         if summary:
-    #             redis_manager.create_graph(graph_id=graph_id, graph_summary=summary)
-    #             if query:
-    #                 response_data = self.llm.generate(f"Please answer the question based on the summary: {summary}.\nQuestion: {query}\nAnswer:")
-    #                 return {"summary": summary, "text": response_data}
-    #             else:
-    #                 return {"summary": summary}
-    #         else:
-    #             return {"text": "Graph is too big, No summaries provided to answer your question"}
-    #     except Exception as e:
-    #         logger.error(f"Error in annotate_by_id: {e}")
-    #         return {"text": "Graph is too big, No summaries provided to answer your question"}
     def annotate_by_id(self, graph_id, token, query=None):
         try:
             logger.info(f"Querying the graph service for graph_id={graph_id}")
@@ -268,10 +234,7 @@ class GraphSummarizer:
                 "edge_count_by_label": edge_count_by_label
             }
 
-            batched_descriptions = self.graph_description({
-                "nodes": json_response.get("nodes", []),
-                "edges": json_response.get("edges", []),
-            })
+            batched_descriptions = self.graph_description(self._flatten_grouped_graph(json_response))
             flat_descriptions = [d for batch in (batched_descriptions or []) for d in batch]
             graph_text = "\n\n".join(flat_descriptions) if flat_descriptions else None
 
@@ -310,9 +273,6 @@ class GraphSummarizer:
             return {"summary": None, "text": f"Unexpected error: {e}"}
 
     def get_graph_overview(self, token, query=None):
-        """Whole-database stats (total nodes/edges, node/edge types) via
-        the annotation service's own /kg-info endpoint.
-        """
         try:
             http_response = requests.get(
                 f"{self.kg_service_url}/kg-info",
