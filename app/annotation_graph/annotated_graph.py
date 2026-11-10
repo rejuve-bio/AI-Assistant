@@ -59,15 +59,7 @@ class Graph:
         }
 
     def query_knowledge_graph(self, json_query, token):
-        """
-        Query the knowledge graph service.
 
-        Args:
-            json_query (dict): The JSON query to be sent.
-
-        Returns:
-            dict: The JSON response from the knowledge graph service or an error message.
-        """
         if isinstance(json_query, str):
             logger.info("passed json is a string changing it to a dicitionary")
             json_query = json.loads(json_query)
@@ -91,7 +83,6 @@ class Graph:
             )
             response.raise_for_status()
             json_response = response.json()
-            # logger.info(f"Successfully queried the knowledge graph. 'nodes count': {len(json_response.get('nodes'))} 'edges count': {len(json_response.get('edges', []))}")
             return response.json()
         except requests.RequestException as e:
             logger.error(f"Error querying knowledge graph: {e}")
@@ -122,9 +113,7 @@ class Graph:
                 "resource": {"id": None, "type": "annotation"},
             }
 
-        # Use the updated JSON for subsequent steps
         validated_json = validation["updated_json"]
-        # validated_json["question"] = query
         """
             TODO
             add query along with job id to specifiy to what query is the json requested is related to.
@@ -145,9 +134,6 @@ class Graph:
                 "text": graph["answer"],
                 "resource": {"id": graph["annotation_id"], "type": "annotation"},
             }
-            # Store summary in Redis cache for 24 hours
-            # redis_manager.create_graph(graph_id=graph_id, graph_summary=summary_text)
-
             logger.info("Completed query processing.")
             return response
 
@@ -160,20 +146,15 @@ class Graph:
     def _detect_organism(self, query) -> str:
         q_lower = query.lower()
         fly_keywords = [
-            # organism names
             "drosophila", "melanogaster", "dmel", "fruit fly", "fly schema",
-            # flybase id prefixes
             "fbgn", "fbal", "fbtr", "fbbt", "fbdv", "fbrf",
-            # fly-exclusive gene names (absent in human)
             " wg ", " hh ", " dpp ", " arm ", " ci ", " nkd ", " ptc ", " smo ",
             " bsk ", " hep ", " yki ", " sd ", " eve ", " ftz ", " vg ",
             " en ", " sev ", " boss ", " cos2 ", " puc ", " lats ", " wts ",
-            # fly anatomy / tissue / cell terms
             "wing disc", "eye disc", "leg disc", "imaginal disc",
             "fat body", "hemocyte", "plasmatocyte", "crystal cell",
             "oenocyte", "malpighian", "salivary gland polytene",
             "dorsal vessel", "ring gland", "follicle cell", "nurse cell",
-            # fly cell lines
             "s2 cell",
         ]
         if any(kw in q_lower for kw in fly_keywords):
@@ -222,14 +203,7 @@ class Graph:
             raise
 
     def _resolve_unambiguous_ids(self, initial_json, neo4j):
-        """Fill a node's real database id when it's a cheap, unambiguous lookup.
 
-        Not validation: no fuzzy matching, no LLM disambiguation, no
-        confirmation flow -- a direct exact-match query only, and it fills
-        the id in only when exactly one row matches. Ambiguous or
-        not-found values are left exactly as drafted, same as before.
-        Safe to run during propose_only since it's a lookup, not a run.
-        """
         lookup_needed = {}
         for node in initial_json.get("nodes", []):
             if node.get("id"):
@@ -255,7 +229,7 @@ class Graph:
 
         return initial_json
 
-    def _validate_and_update(self, initial_json, neo4j=None, schema_handler=None):
+    def _validate_and_update(self, initial_json, neo4j=None, schema_handler=None, allowed_predicates=None):
         try:
             logger.info("Validating and updating the JSON structure.")
             _neo4j = neo4j if neo4j is not None else self.neo4j
@@ -269,13 +243,12 @@ class Graph:
                 "validation_status": "success",
             }
 
-            # Create a deep copy to track changes
             updated_json = copy.deepcopy(initial_json)
 
             if "nodes" not in updated_json:
                 raise ValueError("The input JSON must contain a 'nodes' key.")
 
-            lookup_needed = {}  # (node_type, property_key) -> set of string values
+            lookup_needed = {} 
             for node in updated_json.get("nodes"):
                 node_type = node.get("type")
                 properties = node.get("properties", {})
@@ -510,7 +483,13 @@ class Graph:
                                 {"node_id": node_id, "reason": node["validation_error"]}
                             )
 
-            # Validate edge direction — remove edges that don't exist in the schema
+            # Validate edge direction — remove edges that don't exist in the
+            # schema. When allowed_predicates is given (thread_sources was
+            # set), that's the real, narrower truth -- a relationship the
+            # full default schema supports but these specific sources don't
+            # must still be dropped, so it takes over entirely rather than
+            # falling back to the full schema.
+            _valid_schema = allowed_predicates if allowed_predicates is not None else _schema_handler.processed_schema
             valid_predicates = []
             for edge in updated_json.get("predicates", []):
                 s = node_types.get(edge["source"])
@@ -518,11 +497,11 @@ class Graph:
                 rel = edge["type"]
                 conn = f"{s}-{rel}-{t}"
 
-                if conn in _schema_handler.processed_schema:
+                if conn in _valid_schema:
                     valid_predicates.append(edge)
                 else:
                     rev = f"{t}-{rel}-{s}"
-                    if rev in _schema_handler.processed_schema:
+                    if rev in _valid_schema:
                         # Swap direction and keep
                         validation_report["direction_changes"].append(
                             {"relation_type": rel, "original": f"{s} → {t}", "corrected": f"{t} → {s}"}
@@ -957,21 +936,56 @@ class Graph:
         "fly": "app/annotation_graph/schema/fly/data_source_schemas",
     }
 
+    def _sources_covering_predicate(self, organism: str, source: str, rel_type: str, target: str) -> list:
+        """Which real data sources (for this organism) actually define this
+        exact {source}-{rel_type}-{target} relationship -- scans EVERY
+        per-source yaml file, not just the thread's currently selected
+        ones, so a dropped predicate's note can tell the user exactly which
+        source would need to be added instead of just saying it's missing."""
+        directory = self._SOURCE_SCHEMA_DIRS.get(organism)
+        if not directory or not os.path.isdir(directory):
+            return []
+        matches = []
+        for fname in sorted(os.listdir(directory)):
+            if not fname.endswith(".yaml"):
+                continue
+            try:
+                with open(os.path.join(directory, fname)) as f:
+                    data = yaml.safe_load(f) or {}
+            except Exception:
+                continue
+            for rel_def in (data.get("relationships") or {}).values():
+                rel_def = rel_def or {}
+                src = (rel_def.get("source") or "").replace(" ", "_")
+                tgt = (rel_def.get("target") or "").replace(" ", "_")
+                label = rel_def.get("output_label") or rel_def.get("input_label") or ""
+                if src == source and tgt == target and label == rel_type:
+                    matches.append(fname[:-5])
+                    break
+        return matches
+
     def _build_schema_from_sources(self, organism: str, sources: list):
         """Dynamically assembles a schema restricted to only the named
         sources, read from the real per-source yaml files -- so choosing a
         source actually changes which node/relationship types extraction
         can see, instead of 'sources' being pure unused metadata. Returns
         None if no sources were given (caller falls back to the full
-        default schema in that case, same as today's behavior)."""
+        default schema in that case, same as today's behavior).
+
+        Also returns the same source/relationship/target facts as a flat
+        set of "{source}-{label}-{target}" strings -- the same shape
+        _validate_and_update checks predicates against -- so a caller can
+        validate against exactly what these sources actually support,
+        not just use this for the LLM-facing prompt text."""
         if not sources:
-            return None
+            return None, None
         directory = self._SOURCE_SCHEMA_DIRS.get(organism)
         if not directory:
-            return None
+            return None, None
 
         node_props = {}
         rel_lines = []
+        allowed_predicates = set()
         for source_name in sources:
             path = os.path.join(directory, f"{source_name}.yaml")
             if not os.path.exists(path):
@@ -995,6 +1009,7 @@ class Graph:
                 label = rel_def.get("output_label") or rel_def.get("input_label") or rel_name.replace(" ", "_")
                 if src and tgt:
                     rel_lines.append(f"(:{src})-[:{label}]->(:{tgt})")
+                    allowed_predicates.add(f"{src}-{label}-{tgt}")
 
         if not node_props and not rel_lines:
             logger.warning(f"No schema content found for sources={sources} (organism={organism})")
@@ -1013,17 +1028,17 @@ class Graph:
         if rules_marker in full_schema:
             lines.append("\n" + full_schema[full_schema.index(rules_marker):])
 
-        return "\n".join(lines)
+        return "\n".join(lines), allowed_predicates
 
     def _organism_context(self, query, organism_override=None, organism_hint_text=None, thread_species=None, thread_sources=None):
         organism, schema, schema_handler, neo4j = self._resolve_organism(
             query, organism_override, organism_hint_text, thread_species
         )
-        restricted = self._build_schema_from_sources(organism, thread_sources)
+        restricted, allowed_predicates = self._build_schema_from_sources(organism, thread_sources)
         if restricted is not None:
             logger.info(f"Restricting schema to sources={thread_sources} for organism={organism}")
             schema = restricted
-        return organism, schema, schema_handler, neo4j
+        return organism, schema, schema_handler, neo4j, allowed_predicates
 
     def _resolve_organism(self, query, organism_override=None, organism_hint_text=None, thread_species=None):
         for source, value in (("explicitly requested", organism_override), ("thread context", thread_species)):
@@ -1099,7 +1114,7 @@ class Graph:
 
         initial_json = None
         try:
-            organism, schema, schema_handler, neo4j = self._organism_context(
+            organism, schema, schema_handler, neo4j, allowed_predicates = self._organism_context(
                 query, organism_override, organism_hint_text, thread_species=thread_species, thread_sources=thread_sources
             )
 
@@ -1124,18 +1139,44 @@ class Graph:
                     except SimilarityLookupError as e:
                         logger.warning(f"Cheap id resolution unavailable, returning the draft marked unverified: {e}")
                         unverified = True
+
+                    # A proposal still needs its predicates checked against
+                    # the real schema (restricted to thread_sources when
+                    # set) -- otherwise an invented relationship (e.g. the
+                    # LLM echoing the user's own wording instead of a real
+                    # schema term) ends up on screen in the card with no
+                    # one ever having validated it.
+                    validation = self._validate_and_update(
+                        initial_json, neo4j=neo4j, schema_handler=schema_handler,
+                        allowed_predicates=allowed_predicates,
+                    )
+                    if validation["validation_report"].get("validation_status") != "failed":
+                        initial_json = validation["updated_json"]
+                    dropped = validation["validation_report"].get("removed_predicates") or []
+                    summary = self._describe_annotation_result(query, initial_json, organism=organism, thread_sources=thread_sources, unverified=unverified)
+                    if dropped:
+                        parts = []
+                        for d in dropped:
+                            triple = f"{d['source']}-{d['type']}-{d['target']}"
+                            covering = self._sources_covering_predicate(organism, d['source'], d['type'], d['target']) if thread_sources else []
+                            parts.append(f"{triple} (add source: {', '.join(covering)})" if covering else triple)
+                        summary += (
+                            f"\n\n(Dropped {len(dropped)} relationship(s) not supported by the real schema"
+                            f"{' for your selected sources' if thread_sources else ''}: {'; '.join(parts)}.)"
+                        )
                     return {
                         "success": True,
                         "proposal": True,
                         "unverified": unverified,
-                        "summary": self._describe_annotation_result(query, initial_json, organism=organism, thread_sources=thread_sources, unverified=unverified),
+                        "summary": summary,
                         "json_format": initial_json,
                         "organism": organism,
                         "resource": {"id": None, "type": "annotation"},
                     }
 
                 validation = self._validate_and_update(
-                    initial_json, neo4j=neo4j, schema_handler=schema_handler
+                    initial_json, neo4j=neo4j, schema_handler=schema_handler,
+                    allowed_predicates=allowed_predicates,
                 )
                 if validation["validation_report"].get("validation_status") == "failed":
                     error_message = validation["validation_report"].get("error_message", "Unknown error")
