@@ -529,17 +529,15 @@ jobs:
         sudo apt-get update
         sudo apt-get install trivy -y
 
-        IMAGE_ID=$(docker compose -f docker-compose.ci.yml images -q assistant)
-
-        trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed $IMAGE_ID
+        # Scan by name:tag — newer Docker rejects bare 64-hex image IDs on export
+        trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed ai-assistant:staging
 
         echo "[SUCCESS] No fixable vulnerabilities found"
 
     - name: Generate Trivy report
       if: always() && steps.validate-container.outcome == 'success'
       run: |
-        IMAGE_ID=$(docker compose -f docker-compose.ci.yml images -q assistant)
-        trivy image --format sarif --output trivy-results.sarif $IMAGE_ID
+        trivy image --format sarif --output trivy-results.sarif ai-assistant:staging
 
     - name: Upload Trivy results to GitHub Security
       if: always() && steps.validate-container.outcome == 'success'
