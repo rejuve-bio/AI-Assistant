@@ -97,6 +97,15 @@ class AiAssistance(
             thread_context = (thread_summary or {}).get("context") or {}
             thread_species = thread_context.get("species")
             thread_sources = thread_context.get("sources")
+            selected_resources = thread_context.get("resources") or []
+            generated_resources = (thread_summary or {}).get("generated_resources") or []
+            seen = set()
+            thread_resources = []
+            for r in generated_resources + selected_resources:
+                key = (r.get("kind"), r.get("id"))
+                if key not in seen:
+                    seen.add(key)
+                    thread_resources.append(r)
             initial_state = {
                 "messages": [],
                 "user_query": message,
@@ -105,6 +114,7 @@ class AiAssistance(
                 "propose_only": propose_only,
                 "thread_species": thread_species,
                 "thread_sources": thread_sources,
+                "thread_resources": thread_resources,
                 "token": token,
                 "response": {"text": "", "json_format": None},
                 "error": "",
@@ -159,19 +169,6 @@ class AiAssistance(
 
 
     def _extract_response_or_interrupt(self, result: Dict[str, Any], config: dict, resumed: bool = False) -> Dict[str, Any]:
-        """Build the response dict from an invoke() result, whether the graph
-        finished normally or paused on any agent's confirmation interrupt().
-
-        `resumed` is True only when this invoke() was itself resuming a
-        previously-paused confirmation (Command(resume=...), from
-        confirmation.py). Only then does a now-resolved turn reset the
-        thread's checkpoint -- cleaning up the dangling interrupt state,
-        not the whole conversation. An ordinary turn (resumed=False, the
-        default -- every call from agent()) must never reset: that's the
-        orchestrator's actual cross-turn memory, and wiping it after every
-        single turn left the assistant unable to remember anything it was
-        just told.
-        """
         state = self.app.get_state(config)
         if state.next:
             question = self._pending_question(state)

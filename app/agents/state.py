@@ -31,6 +31,7 @@ class AgentState(TypedDict):
     propose_only: Optional[bool]
     thread_species: Optional[str]
     thread_sources: Optional[list]
+    thread_resources: Optional[list]
     token: str
     response: Dict[str, Any]
     error: Annotated[str, merge_errors]

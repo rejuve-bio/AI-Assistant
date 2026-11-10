@@ -1043,17 +1043,29 @@ async def put_thread_context(
         body = await request.json()
         species = body.get("species")
         sources_in = body.get("sources")
+        resources_in = body.get("resources")
         if not species:
             return JSONResponse(status_code=400, content={"text": "species is required."})
         if sources_in is not None and not isinstance(sources_in, list):
             return JSONResponse(status_code=400, content={"text": "sources must be a list."})
+        if resources_in is not None:
+            if not isinstance(resources_in, list):
+                return JSONResponse(status_code=400, content={"text": "resources must be a list."})
+            for r in resources_in:
+                if not isinstance(r, dict) or r.get("kind") not in ("annotation", "hypothesis") or not r.get("id"):
+                    return JSONResponse(status_code=400, content={"text": "Each resource needs a kind ('annotation' or 'hypothesis') and an id."})
 
         sources, err = _resolve_sources(species, sources_in)
         if err:
             return JSONResponse(status_code=400, content={"text": err})
 
-        result = mongo_db_manager.set_thread_context(thread_id, auth.user_id, species, sources)
+        logger.info(
+            f"PUT /v1/threads/{thread_id}/context -- user={auth.user_id}, species={species!r}, "
+            f"sources={sources_in!r}, resources={resources_in!r}"
+        )
+        result = mongo_db_manager.set_thread_context(thread_id, auth.user_id, species, sources, resources_in)
         if not result["changed"]:
+            logger.info(f"PUT /v1/threads/{thread_id}/context -- no change, returning 204.")
             return Response(status_code=204)
 
         thread_doc = mongo_db_manager.append_message(
@@ -1094,6 +1106,9 @@ async def record_thread_run(
                 return JSONResponse(status_code=200, content={"text": "Already recorded."})
 
         run_part = {k: v for k, v in run_parts[0].items() if k != "type"}
+        logger.info(f"POST /v1/threads/{thread_id}/messages -- user={auth.user_id}, run_part={run_part!r}")
+        if run_part.get("kind") in ("annotation", "hypothesis") and run_part.get("id"):
+            mongo_db_manager.add_thread_resource(thread_id, auth.user_id, run_part["kind"], run_part["id"])
         thread_doc = mongo_db_manager.append_message(
             thread_id, auth.user_id, "system", "",
             client_message_id=client_message_id,

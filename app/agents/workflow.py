@@ -48,6 +48,47 @@ class WorkflowMixin:
         workflow.add_edge("finalizer", END)
         return workflow
 
+    def _thread_resource_summaries(self, resources: list, token, user_id, thread_id) -> list:
+        lines = []
+        for r in resources:
+            kind, rid = r.get("kind"), r.get("id")
+            if not kind or not rid:
+                continue
+            try:
+                if kind == "hypothesis":
+                    result = self.hypothesis_generation.get_by_hypothesis_id(token, rid, user_id, thread_id=thread_id)
+                elif kind == "annotation":
+                    result = self.graph_summarizer.summary(graph_id=rid, token=token)
+                else:
+                    continue
+            except Exception as e:
+                logger.warning(f"Couldn't summarize thread resource {kind}:{rid}: {e}")
+                continue
+
+            text = result.get("text", "") if isinstance(result, dict) else str(result or "")
+            if not text and isinstance(result, dict):
+                summary = result.get("summary")
+                if isinstance(summary, dict):
+                    parts = []
+                    if summary.get("summary"):
+                        parts.append(summary["summary"])
+                    node_labels = summary.get("node_count_by_label") or []
+                    edge_labels = summary.get("edge_count_by_label") or []
+                    if summary.get("node_count") is not None:
+                        by_label = ", ".join(f"{n.get('count')} {n.get('label')}" for n in node_labels) if node_labels else None
+                        parts.append(f"{summary['node_count']} nodes" + (f" ({by_label})" if by_label else ""))
+                    if summary.get("edge_count") is not None:
+                        by_label = ", ".join(f"{e.get('count')} {e.get('label')}" for e in edge_labels) if edge_labels else None
+                        parts.append(f"{summary['edge_count']} edges" + (f" ({by_label})" if by_label else ""))
+                    text = ", ".join(parts)
+                elif isinstance(summary, str):
+                    text = summary
+            if not text or text == "NO summaries provided":
+                continue
+            short = text.strip().splitlines()[0][:200]
+            lines.append(f"- {kind} {rid}: {short}")
+        return lines
+
     def _seed(self, state: AgentState) -> Dict[str, Any]:
 
         query = state["user_query"]
@@ -79,6 +120,18 @@ class WorkflowMixin:
                 "data, so don't restate them as if freshly generated:\n"
                 + "\n".join(summary_lines) + ")"
             )
+
+        thread_resources = state.get("thread_resources") or []
+        if thread_resources:
+            resource_lines = self._thread_resource_summaries(
+                thread_resources, state.get("token"), state.get("user_id"), state.get("thread_id")
+            )
+            if resource_lines:
+                notes.append(
+                    "(Note: resources chosen for this thread's context -- short summaries "
+                    "only, call the matching tool for the full result if a question needs "
+                    "more detail:\n" + "\n".join(resource_lines) + ")"
+                )
 
         attached_files = state.get("attached_files") or []
 

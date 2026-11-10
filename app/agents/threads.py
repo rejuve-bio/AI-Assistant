@@ -56,6 +56,8 @@ class ThreadMemoryMixin:
             label = (resp.get("text") or "")[:80]
             if isinstance(resource, dict) and resource.get("id"):
                 self.store.record_tool_call(thread_id, user_id, resource.get("type", "unknown"), resource["id"], label)
+                if resource.get("type") in ("annotation", "hypothesis"):
+                    self.store.add_thread_resource(thread_id, user_id, resource["type"], resource["id"])
             elif graph_id and resp.get("text"):
                 agents = resp.get("agents_completed") or []
                 agent = "content_retrieval" if "content_retrieval_agent" in agents else (agents[0] if agents else "unknown")
@@ -68,12 +70,6 @@ class ThreadMemoryMixin:
             logger.warning(f"Failed to record thread turn for {thread_id}: {e}")
 
     def _extend_thread_summary(self, thread_id: str, user_id: str, thread_doc: Dict[str, Any], watermark: int) -> None:
-        """Folds the messages since the last watermark into the thread's
-        running summary -- never deletes or replaces the stored messages
-        themselves (see _THREAD_SUMMARY_CHUNK's comment). Storing
-        everything doesn't hurt; this summary exists only to give the LLM a
-        compact digest of a long thread without it having to re-read every
-        message every turn."""
         messages = thread_doc.get("messages", [])
         new_messages = messages[watermark:]
         if not new_messages:
