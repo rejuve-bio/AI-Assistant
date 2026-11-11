@@ -265,6 +265,22 @@ TOOL_SPECS = [
         }, "required": ["query"]},
     },
     {
+        "name": "explain_resource",
+        "description": (
+            "Get a real, grounded answer about an EXISTING annotation or hypothesis "
+            "already chosen for this thread (listed in a 'resources chosen for this "
+            "thread's context' note) -- e.g. 'explain this graph', 'what does the "
+            "selected annotation say', 'summarize the hypothesis I picked'. Never "
+            "call annotate_gene or generate_hypothesis for this -- those build a NEW "
+            "proposal, and the resource already exists."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "kind": {"type": "string", "enum": ["annotation", "hypothesis"]},
+            "id": {"type": "string", "description": "the resource's real id, exactly as given in the thread's resources context note"},
+            "question": {"type": "string", "description": "what the user actually asked about it"},
+        }, "required": ["kind", "id", "question"]},
+    },
+    {
         "name": "kg_overview",
         "description": (
             "Get overall statistics for the WHOLE knowledge graph database -- total "
@@ -310,6 +326,7 @@ TOOL_RUNNERS = {
     "run_biogpt": "run_biogpt_tool",
     "retrieve_content": "run_retrieve_content",
     "kg_overview": "run_kg_overview",
+    "explain_resource": "run_explain_resource",
     "ask_human": "run_ask_human",
 }
 
@@ -834,6 +851,43 @@ class ToolsMixin:
         except Exception as e:
             logger.error("Error in answer_from_graph_summaries", exc_info=True)
             return {"text": f"Error processing query: {str(e)}", "json_format": None}
+
+    def run_explain_resource(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
+        kind = arguments.get("kind")
+        rid = arguments.get("id")
+        question = arguments.get("question") or state["user_query"]
+        token = state.get("token")
+        user_id = state["user_id"]
+        thread_id = state.get("thread_id")
+        if not kind or not rid:
+            return {"content": "I don't have a real id for that resource -- name it or pick it from the thread's context panel."}
+
+        known_resources = state.get("thread_resources") or []
+        if not any(r.get("kind") == kind and r.get("id") == rid for r in known_resources):
+            return {
+                "content": (
+                    f"I don't see a real {kind} graph in this thread matching that -- "
+                    "it may only be a proposed, not-yet-run card with no real graph behind "
+                    "it yet. Want me to run it for real first, or pick a real one from the "
+                    "context panel?"
+                )
+            }
+
+        emit_to_user(user=user_id, message="Looking up the selected resource...", thread_id=thread_id)
+
+        if kind == "hypothesis":
+            result = self.hypothesis_generation.get_by_hypothesis_id(token, rid, user_id, question, thread_id=thread_id)
+            text = result.get("text") if isinstance(result, dict) else str(result or "")
+        elif kind == "annotation":
+            result = self.graph_summarizer.summary(graph_id=rid, token=token, user_query=question)
+            text = result.get("text") if isinstance(result, dict) else str(result or "")
+            if not text and isinstance(result, dict):
+                summary = result.get("summary")
+                text = summary.get("summary") if isinstance(summary, dict) else summary
+        else:
+            return {"content": f"'{kind}' isn't a resource type I can explain -- only annotation or hypothesis."}
+
+        return {"content": text or f"Couldn't find anything for {kind} {rid}."}
 
     def run_kg_overview(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
         query = arguments.get("query") or state["user_query"]
