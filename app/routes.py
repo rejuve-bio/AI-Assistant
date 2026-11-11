@@ -11,6 +11,7 @@ import traceback
 import json
 import os
 from app.rag.utils.tts_utils import tts_manager
+from app.rag.rag import ALLOWED_FILE_EXTENSIONS
 from app.storage.redis import redis_manager
 from app.storage.mongo_storage import mongo_db_manager
 from app.prompts.quick_reply_prompts import QUICK_REPLIES_PROMPT
@@ -878,6 +879,31 @@ async def post_v1_files(
     return JSONResponse(status_code=201, content=body)
 
 
+@main_router.get("/v1/files/supported-types")
+def get_supported_file_types():
+    """Return accepted file extensions grouped by category so the client
+    can filter its file picker and show a help tooltip."""
+    categories = {
+        "gwas_summary_stats": [e for e in sorted(ALLOWED_FILE_EXTENSIONS)
+                               if e in {".tsv", ".txt", ".csv", ".gz", ".bgz"}],
+        "sequence_data":      [e for e in sorted(ALLOWED_FILE_EXTENSIONS)
+                               if "fastq" in e or "fq" in e],
+        "reference_sequences": [e for e in sorted(ALLOWED_FILE_EXTENSIONS)
+                                if "fasta" in e or e in {".fa", ".fa.gz"}],
+        "genomics":           [e for e in sorted(ALLOWED_FILE_EXTENSIONS)
+                               if e in {".vcf", ".vcf.gz", ".bed", ".bam", ".sam"}],
+        "gene_annotations":   [e for e in sorted(ALLOWED_FILE_EXTENSIONS)
+                               if e in {".gff", ".gff3", ".gtf"}],
+        "documents":          [e for e in sorted(ALLOWED_FILE_EXTENSIONS)
+                               if e in {".pdf"}],
+    }
+    return JSONResponse(status_code=200, content={
+        "supported_extensions": sorted(ALLOWED_FILE_EXTENSIONS),
+        "categories": categories,
+        "max_file_size_mb": 50,
+    })
+
+
 @main_router.post("/v1/query")
 async def post_v1_query(
     request: Request,
@@ -974,6 +1000,13 @@ async def post_v1_query(
             if not resolved_files:
                 resolved_files = None
 
+        # Auto-attach uploaded files to the thread's context resources and content_ids
+        if resolved_files and thread_id:
+            content_ids = [f["id"] for f in resolved_files]
+            mongo_db_manager.add_thread_content_ids(thread_id, user_id, content_ids)
+            for f in resolved_files:
+                mongo_db_manager.add_thread_resource(thread_id, user_id, "file", f["id"])
+
         if client_message_id:
             existing = mongo_db_manager.find_message_by_client_id(thread_id, user_id, client_message_id)
             if existing:
@@ -1021,6 +1054,11 @@ async def post_v1_query(
         last_idx = len(doc["messages"]) - 1
         formatted = _format_v1_message(thread_id, doc["messages"][last_idx], last_idx)
 
+        # Include attached files summary at the top level so the client
+        # can update its file-context UI without re-fetching the thread.
+        if resolved_files:
+            formatted["attached_files"] = resolved_files
+
         return JSONResponse(status_code=201, content=formatted)
     except Exception as e:
         logger.error(f"Error in /v1/query: {e}", exc_info=True)
@@ -1052,8 +1090,8 @@ async def put_thread_context(
             if not isinstance(resources_in, list):
                 return JSONResponse(status_code=400, content={"text": "resources must be a list."})
             for r in resources_in:
-                if not isinstance(r, dict) or r.get("kind") not in ("annotation", "hypothesis") or not r.get("id"):
-                    return JSONResponse(status_code=400, content={"text": "Each resource needs a kind ('annotation' or 'hypothesis') and an id."})
+                if not isinstance(r, dict) or r.get("kind") not in ("annotation", "hypothesis", "file") or not r.get("id"):
+                    return JSONResponse(status_code=400, content={"text": "Each resource needs a kind ('annotation', 'hypothesis', or 'file') and an id."})
 
         sources, err = _resolve_sources(species, sources_in)
         if err:

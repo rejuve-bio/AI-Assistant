@@ -59,6 +59,15 @@ class WorkflowMixin:
                     result = self.hypothesis_generation.get_by_hypothesis_id(token, rid, user_id, thread_id=thread_id)
                 elif kind == "annotation":
                     result = self.graph_summarizer.summary(graph_id=rid, token=token)
+                elif kind == "file":
+                    file_info = self.store.get_content_file_by_id(user_id, rid) if self.store else None
+                    if not file_info:
+                        continue
+                    fname = file_info.get("filename", rid)
+                    fsize = (file_info.get("metadata") or {}).get("file_size_mb")
+                    size_str = f" ({fsize} MB)" if fsize is not None else ""
+                    lines.append(f"- file {rid}: {fname}{size_str}")
+                    continue
                 else:
                     continue
             except Exception as e:
