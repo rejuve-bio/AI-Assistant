@@ -1,18 +1,14 @@
+import json
+import logging
 import os
 import time
-import logging
-from typing import Dict, List
-import json
 
-from bioblend.galaxy.toolshed import ToolShedClient
 from bioblend.galaxy.objects import GalaxyInstance
-from bioblend.galaxy.objects.wrappers import History, Dataset
+from bioblend.galaxy.objects.wrappers import Dataset, History
+from bioblend.galaxy.toolshed import ToolShedClient
 from dotenv import load_dotenv
-import time
-from sys import path
-path.append('.')
 
-from tool_info import extract_tool_info  # TO be removed with improvements.
+from app.galaxy.tool_schema import ToolSchemaResolver
 
 load_dotenv()
 
@@ -24,8 +20,9 @@ class GalaxyExecutor:
     
     def __init__(self, galaxy_url: str = galaxy_url, api_key: str = api_key):
         self.logger = self._setup_logger()
-        self.gi, self.gi_client= self._connect_galaxy(galaxy_url, api_key)
+        self.gi, self.gi_client = self._connect_galaxy(galaxy_url, api_key)
         self.toolshed = ToolShedClient(self.gi_client)
+        self.schema_resolver = ToolSchemaResolver(self.gi_client)
 
     def _setup_logger(self) -> logging.Logger:
         """Configure and return logger instance."""
@@ -41,11 +38,12 @@ class GalaxyExecutor:
         """Establish connection to Galaxy instance."""
         try:
             gi = GalaxyInstance(url=url, api_key=key)
-            gi_client=gi.gi
+            gi_client = gi.gi
             self.logger.info(f"Connected to Galaxy: {url}")
             return gi, gi_client
         except Exception as e:
-            self.logger.info(f"Connection failed: {e}")
+            self.logger.error(f"Galaxy connection failed: {e}")
+            raise ConnectionError(f"Cannot connect to Galaxy at {url}: {e}") from e
 
 
     def _get_history(self, history_id: str = None) -> History:
@@ -70,15 +68,15 @@ class GalaxyExecutor:
             )
         except Exception as e:
             self.logger.error("File upload error")
-            raise RuntimeError(f"Upload failed: {str(e)}") from e
+            raise RuntimeError(f"Upload failed: {e!s}") from e
 
     def run_tool(
         self,
         tool_id: str,
-        inputs: Dict,
+        inputs: dict,
         history_id: str = None,
         keep_history: bool = False
-    ) -> Dict:
+    ) -> dict:
         """
         Execute a Galaxy tool with flexible inputs.
         
@@ -105,7 +103,7 @@ class GalaxyExecutor:
             return self._prepare_result(history, outputs, start_time, created_history, keep_history)
             
         except Exception as e:
-            self.logger.error(f"Tool execution failed: {str(e)}")
+            self.logger.error(f"Tool execution failed: {e!s}")
             raise
         finally:
             if created_history and not keep_history:
@@ -174,11 +172,11 @@ class GalaxyExecutor:
 
     def invoke_workflow(
         self,
-        inputs: Dict,
-        workflow_params: Dict,
+        inputs: dict,
+        workflow_params: dict,
         history_id: str = None,
         keep_history: bool = False
-    ) -> Dict:
+    ) -> dict:
         """
         Invoke a Galaxy workflow with specified inputs.
         
@@ -244,7 +242,7 @@ class GalaxyExecutor:
                 raise RuntimeError("Tools missing in instance, Workflow is not runnable")
             invocation.wait()
             invocation_outputs = []
-            previous_states: Dict[str, str] = {}
+            previous_states: dict[str, str] = {}
             completed_steps = set()
             error_occurred = False
 
@@ -305,7 +303,7 @@ class GalaxyExecutor:
             return self._prepare_result(history=history, outputs=invocation_outputs, start_time=start_time, created_history=created_history, keep_history=keep_history)
             
         except Exception as e:
-            self.logger.error(f"Workflow invocation failed: {str(e)}")
+            self.logger.error(f"Workflow invocation failed: {e!s}")
             raise
         finally:
             if created_history and not keep_history:
@@ -316,7 +314,7 @@ class GalaxyExecutor:
                 workflow.delete()
                 
 
-    def _download_outputs(self, outputs: List[Dataset], output_path: str, output_type: str = None) -> None:
+    def _download_outputs(self, outputs: list[Dataset], output_path: str, output_type: str = None) -> None:
         """Download Galaxy datasets to local filesystem."""
         if not outputs:
             raise RuntimeError("No outputs available for download")
@@ -344,11 +342,11 @@ class GalaxyExecutor:
     def _prepare_result(
         self,
         history: History,
-        outputs: List[Dataset],
+        outputs: list[Dataset],
         start_time: float,
         created_history: bool,
         keep_history: bool
-    ) -> Dict:
+    ) -> dict:
         """Prepare standardized result dictionary."""
         elapsed_time = time.time() - start_time
         result = {
@@ -368,7 +366,7 @@ class GalaxyExecutor:
             history.delete(purge=True)
             self.logger.info(f"Purged history: {history.id}")
         except Exception as e:
-            self.logger.warning(f"History purge failed: {str(e)}")
+            self.logger.warning(f"History purge failed: {e!s}")
 
 
 
@@ -377,13 +375,13 @@ def Execute (
     galaxy: GalaxyExecutor,
     output_path: str,
     input: dict,
-    tool_name: Dict=None,
-    workflow_params: Dict=None,
+    tool_name: dict=None,
+    workflow_params: dict=None,
     history_id: str = None,
     file_type: str = "auto",
     output_type: str = None,
     keep_history: bool = False
-    ) -> Dict:
+    ) -> dict:
     """
     Convert files using Galaxy tools with automatic input handling.
     
@@ -429,16 +427,16 @@ def Execute (
     try:
 
         if tool_name:
-            # If tool_params are provided, use them directly 
-            inputs = extract_tool_info( 
-                tool_name=tool_name, 
+            # Dynamically resolve tool input schema from the Galaxy API
+            tool_inputs = galaxy.schema_resolver.build_tool_inputs(
+                tool_id=tool_name,
                 dataset_id=dataset.id if dataset else None,
-                other_input=other_input if other_input else None
+                user_params=None,
             )
-            
+
             result = galaxy.run_tool(
-                tool_id=inputs['tool_id'],
-                inputs=inputs['tool_input'],
+                tool_id=tool_name,
+                inputs=tool_inputs,
                 history_id=history.id,
                 keep_history=True  # Keep history until final cleanup
             )

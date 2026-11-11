@@ -1,22 +1,25 @@
+import ast
+import json
+import logging
 import os
 import re
-import ast
-from rapidfuzz import process, fuzz 
+
+import numpy as np
+import redis
 from bioblend.galaxy import GalaxyInstance
 from dotenv import load_dotenv
-import json
-import numpy as np
-import logging
-import redis
+from rapidfuzz import fuzz, process
 
-from sys import path
-path.append('.')
-
-from app.storage.qdrant import Qdrant
-from app.rag.rag import RAG
 from app.llm_handle.llm_models import GeminiModel, gemini_embedding_model
-from app.prompts.galaxy_prompts import TOOL_PROMPT, WORKFLOW_PROMPT, DATASET_PROMPT, SELECTION_PROMPT
+from app.prompts.galaxy_prompts import (
+    DATASET_PROMPT,
+    SELECTION_PROMPT,
+    TOOL_PROMPT,
+    WORKFLOW_PROMPT,
+)
 from app.prompts.rag_prompts import RETRIEVE_PROMPT
+from app.rag.rag import RAG
+from app.storage.qdrant import Qdrant
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -39,7 +42,7 @@ class GalaxyInformer:
             },
             'tool': {
                 'get_method': self._get_tools,
-                'search_fields': ['name'],
+                'search_fields': ['name', 'description'],
                 'summary_prompt': TOOL_PROMPT
             },
             'workflow': {
@@ -51,14 +54,14 @@ class GalaxyInformer:
 
     def extract_filename(self, path):
         """Extracts filename from full path (dataset specific)"""
-        logger.info(f'Extracting file name from path.')
+        logger.info('Extracting file name from path.')
         match = re.search(r'([^/]+)$', path)
         return match.group(1) if match else path
 
     def _get_datasets(self):
         """Combined dataset retrieval from libraries and histories"""
         dataset_list = []
-        logger.info(f'Gathering datsets from library')
+        logger.info('Gathering datsets from library')
         # Library datasets
         libraries = self.gi.libraries.get_libraries()
         for library in libraries:
@@ -103,7 +106,7 @@ class GalaxyInformer:
             'owner': wf['owner'],
             'workflow_id': wf['id'],
             'name': wf['name'],
-            'content': f"A workflow with id '{wf['id']}' owned by '{wf['owner']}' named '{wf['name']}' with description '{str(wf.get('annotations', '') or wf.get('description', '') or '')}'"
+            'content': f"A workflow with id '{wf['id']}' owned by '{wf['owner']}' named '{wf['name']}' with description '{wf.get('annotations', '') or wf.get('description', '') or ''!s}'"
         } for wf in self.gi.workflows.get_workflows(published=True)]
 
     def get_entities(self):
@@ -157,6 +160,13 @@ class GalaxyInformer:
                 return keywords
         except Exception as e:
             logger.error(f"Failed to parse keywords list: {e}")
+
+    def _extract_json(self, text: str) -> str:
+        """Extract JSON from LLM response that may include markdown code fences."""
+        match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
+        if match:
+            return match.group(1)
+        return text.strip()
 
     def fuzzy_search(self, query, entities, config, threshold):
         """Fuzzy search with priority fields, improved for efficiency and clarity."""
@@ -264,7 +274,15 @@ class GalaxyInformer:
         result= self.llm.generate(prompt = prompt)
         logger.info('Retrieving search results')
 
-        return result
+        # Parse LLM output into a dict — the LLM may return JSON inside markdown fences
+        if isinstance(result, str):
+            try:
+                result = json.loads(self._extract_json(result))
+            except (json.JSONDecodeError, ValueError):
+                logger.error(f"Failed to parse LLM selection result: {result[:200]}")
+                return {}
+
+        return result if isinstance(result, dict) else {}
 
     def invocation_check(self,search_query):
         """Check if the query is asking about invocations of a workflow"""
@@ -275,11 +293,11 @@ class GalaxyInformer:
          **Input query**: {input}
         """
         response= self.llm.generate(prompt=prompt.format(input=search_query)).strip().lower()
-        logger.info(f'Checked invocation, state: {repr(response)}')
+        logger.info(f'Checked invocation, state: {response!r}')
         if response in ['general', 'specific', 'not_invocation']:
             return response
-        else:
-            logger.info('failed to identify invocation')
+        logger.warning(f'Unrecognized invocation classification: {response!r}, defaulting to not_invocation')
+        return 'not_invocation'
 
     def get_entity_info(self, search_query, user_id, entity_id=None):
         """Unified info retrieval with LLM summary"""
@@ -288,7 +306,7 @@ class GalaxyInformer:
         search_bool = False
 
         if entity_id:
-            logger.info(f'Direct ID inputted, Retrieving information')
+            logger.info('Direct ID inputted, Retrieving information')
             retrived_entity = next((e for e in self.get_entities() if e['id'] == entity_id), None)
             if retrived_entity != None:
                 # Result found
@@ -358,7 +376,7 @@ class GalaxyInformer:
 
             response_dict[str(i)] = details
 
-        logger.info(f'Generating response for the query')
+        logger.info('Generating response for the query')
         response_text= self.llm.generate(prompt=RETRIEVE_PROMPT.format(query=search_query, retrieved_content=response_dict) )
         response={
             'query': search_query,
