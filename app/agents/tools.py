@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 from langgraph.errors import GraphBubbleUp
 from langgraph.types import interrupt
 
-from app.agents.state import AgentState, ANALYZING_MSG, UNRESOLVED_MARKER
+from app.agents.state import AgentState, ANALYZING_MSG, KNOWLEDGE_BASE, UNRESOLVED_MARKER
 from app.agents.subgraphs.annotation import ABANDONED, build_annotation_subgraph
 from app.agents.subgraphs.biogpt import build_biogpt_subgraph
 from app.agents.subgraphs.content_retrieval import build_content_retrieval_subgraph
@@ -16,7 +16,7 @@ from app.agents.subgraphs.hypothesis import (
     UNAVAILABLE_TEXT,
     build_hypothesis_subgraph,
 )
-from app.agents.subgraphs.literature import CLINICAL_TRIALS, PUBMED, RAG, build_literature_subgraph
+from app.agents.subgraphs.literature import RAG, build_literature_subgraph
 from app.Galaxy_integration.galaxy_proposal import propose_galaxy_run
 from app.prompts.rag_prompts import SEARCH_TERM_EXTRACTION_PROMPT
 from app.socket_manager import emit_to_user
@@ -65,6 +65,26 @@ TOOL_SPECS = [
         "description": "Search the knowledge base, PubMed, and ClinicalTrials.gov for papers and trials matching a topic.",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "the search topic"},
+        }, "required": ["query"]},
+    },
+    {
+        "name": "rejuvebio_info",
+        "description": (
+            "Answer a question about Rejuve.Bio itself -- the company/platform "
+            "(what it is, its mission, team, products, history, partnerships), "
+            "NOT a biomedical research topic. Uses the platform's own knowledge "
+            "base, scraped from the real rejuve.bio website. Call this for "
+            "ANY question about what Rejuve.Bio/this platform is or does (e.g. "
+            "'what is rejuve.bio', 'who founded this company', 'what does this "
+            "platform do'), even if the wording sounds biology-related just "
+            "because of the name. NEVER answer such a question directly from "
+            "your own general knowledge -- always call this first, and never "
+            "use search_literature/run_biogpt for this (they search PubMed/"
+            "ClinicalTrials/general biomedical knowledge, not this platform's "
+            "own information, and will return irrelevant results)."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "the question about Rejuve.Bio, in the user's own words"},
         }, "required": ["query"]},
     },
     {
@@ -315,6 +335,7 @@ TOOL_SPECS = [
 TOOL_RUNNERS = {
     "annotate_gene": "run_annotate_gene",
     "search_literature": "run_search_literature",
+    "rejuvebio_info": "run_rejuvebio_info",
     "generate_hypothesis": "run_generate_hypothesis",
     "list_lead_variants": "run_list_lead_variants",
     "run_galaxy": "run_galaxy_tool",
@@ -492,7 +513,7 @@ class ToolsMixin:
             "user_id": state["user_id"],
             "thread_id": state.get("thread_id"),
             "content_ids": state.get("content_ids"),
-            "sources": [RAG, PUBMED, CLINICAL_TRIALS],
+            "sources": [RAG],
             "search_context": context,
             "min_year": min_year,
             "attached_files": state.get("attached_files"),
@@ -510,6 +531,27 @@ class ToolsMixin:
             "content": "\n\n".join(parts) if parts else "No relevant literature found.",
             "state_update": state_update,
             "agent_name": "literature",
+        }
+
+    def run_rejuvebio_info(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
+        """Answers questions about Rejuve.Bio the company/platform from its own
+        scraped-website knowledge base (the general SITE_INFORMATION_gemini
+        collection) -- never the per-user uploaded-content collection, and
+        never PubMed/ClinicalTrials (those are search_literature's job)."""
+        user_id = state["user_id"]
+        query = arguments.get("query") or state["user_query"]
+        emit_to_user(user=user_id, message="Checking Rejuve.Bio's knowledge base...", thread_id=state.get("thread_id"))
+        try:
+            result = self.rag.get_result_from_rag(query, user_id)
+            text = result["text"] if isinstance(result, dict) and result.get("text") else ""
+        except Exception as e:
+            logger.error("Error in rejuvebio_info", exc_info=True)
+            text = ""
+
+        return {
+            "content": text or "I couldn't find anything relevant about Rejuve.Bio for that question.",
+            "state_update": {"rag_response": {"text": text, "json_format": None, "source": KNOWLEDGE_BASE}} if text else {},
+            "agent_name": "rejuvebio_info",
         }
 
     def run_generate_hypothesis(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
@@ -811,13 +853,15 @@ class ToolsMixin:
 
         return None
 
-    def _extract_search_term(self, user_query: str, context: str = "") -> str:
+    def _extract_search_term(self, user_query: str, context: str = "") -> Optional[str]:
         context_line = f"\nAdditional context: {context[:500]}" if context else ""
         prompt = SEARCH_TERM_EXTRACTION_PROMPT.format(user_query=user_query, context_line=context_line)
         try:
             term = self.basic_llm.generate(prompt).strip().strip('"').strip("'")
             logger.info(f"Extracted search term: '{term}'")
-            return term if term else user_query
+            if not term or term.strip().upper() == "NONE":
+                return None
+            return term
         except Exception:
             return user_query
 
