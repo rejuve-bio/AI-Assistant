@@ -91,7 +91,7 @@ jobs:
           type=gha
         cache-to: |
           type=local,dest=/tmp/.buildx-cache-new,mode=max
-          type=gha,mode=max
+          type=gha,mode=max,ignore-error=true
 
     - name: Rotate local cache
       run: |
