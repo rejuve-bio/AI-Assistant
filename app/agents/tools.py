@@ -99,6 +99,7 @@ TOOL_SPECS = [
             "phenotype": {"type": "string", "description": "the phenotype/condition this is about. If the CURRENT message names one (even if it's the same word used before, e.g. 'arthritis' again), ALWAYS use that exact word -- never substitute a different phenotype/file name recorded in an earlier turn's proposal-summary note just because it's sitting in context. Only carry one forward from an earlier turn when the current message itself doesn't name one at all (e.g. 'same phenotype', 'try again'). Required: never omit, never guess one that wasn't actually named or implied."},
             "variant": {"type": "string", "description": "the lead variant (rsID) named, if any. Omit entirely if none was named -- never invent one."},
             "tissue": {"type": "string", "description": "ONLY set this if the user explicitly asked for a specific tissue instead of letting the strongest one be auto-picked (e.g. 'use adipose tissue instead', 'in CD8 T cells'). Omit entirely otherwise -- the tool auto-selects the project's strongest tissue by default. If the named tissue wasn't actually analyzed for the matched project, the tool falls back to the strongest one and says so."},
+            "file_id": {"type": "string", "description": "content_id of an uploaded GWAS summary-statistics file to use for this hypothesis. If the user attached a file (.tsv, .txt, .csv, .gz, .bgz) with this message or earlier in the thread, pass its content_id here. Omit if no file was uploaded."},
         }, "required": ["query", "phenotype"]},
     },
     {
@@ -527,6 +528,7 @@ class ToolsMixin:
                 "requested_tissue": arguments.get("tissue"),
                 "requested_phenotype": arguments.get("phenotype"),
                 "requested_variant": arguments.get("variant"),
+                "requested_file_id": arguments.get("file_id"),
                 "attached_files": state.get("attached_files"),
             })
         except GraphBubbleUp:
