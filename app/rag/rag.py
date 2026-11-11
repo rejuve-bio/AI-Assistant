@@ -18,6 +18,17 @@ logger = logging.getLogger(__name__)
 VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION")
 CONTENT_LIMIT = 10  
 MAX_FILE_SIZE_MB = 50 
+
+# Accepted file extensions for raw uploads (GWAS summary stats, genomics, documents)
+ALLOWED_FILE_EXTENSIONS = {
+    ".tsv", ".txt", ".csv", ".gz", ".bgz",        # GWAS summary statistics
+    ".fastq", ".fq", ".fastq.gz", ".fq.gz",       # Sequence data
+    ".fasta", ".fa", ".fasta.gz", ".fa.gz",        # Reference sequences
+    ".vcf", ".vcf.gz", ".bed", ".bam", ".sam",     # Genomics / variant data
+    ".gff", ".gff3", ".gtf",                       # Gene annotations
+    ".pdf",                                         # Documents
+}
+
 class RAG:
     def __init__(self, llm, qdrant_client):
         """
@@ -364,6 +375,18 @@ class RAG:
         API calls (hypothesis, Galaxy, etc.), not knowledge retrieval.
         """
         try:
+            # Validate file extension
+            filename = file.filename or ""
+            ext = os.path.splitext(filename)[1].lower()
+            # Handle double extensions like .fastq.gz, .vcf.gz
+            if ext == ".gz" and "." in os.path.splitext(filename[:-3])[1]:
+                ext = os.path.splitext(filename[:-3])[1].lower() + ext
+            if ext not in ALLOWED_FILE_EXTENSIONS:
+                return {
+                    "error": f"File type '{ext or '(none)'}' is not supported. "
+                             f"Accepted types: {', '.join(sorted(ALLOWED_FILE_EXTENSIONS))}"
+                }
+
             file_bytes = file.file.read()
             file_size_mb = len(file_bytes) / (1024 * 1024)
             if file_size_mb > MAX_FILE_SIZE_MB:

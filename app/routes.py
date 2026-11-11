@@ -974,6 +974,13 @@ async def post_v1_query(
             if not resolved_files:
                 resolved_files = None
 
+        # Auto-attach uploaded files to the thread's context resources and content_ids
+        if resolved_files and thread_id:
+            content_ids = [f["id"] for f in resolved_files]
+            mongo_db_manager.add_thread_content_ids(thread_id, user_id, content_ids)
+            for f in resolved_files:
+                mongo_db_manager.add_thread_resource(thread_id, user_id, "file", f["id"])
+
         if client_message_id:
             existing = mongo_db_manager.find_message_by_client_id(thread_id, user_id, client_message_id)
             if existing:
@@ -1052,8 +1059,8 @@ async def put_thread_context(
             if not isinstance(resources_in, list):
                 return JSONResponse(status_code=400, content={"text": "resources must be a list."})
             for r in resources_in:
-                if not isinstance(r, dict) or r.get("kind") not in ("annotation", "hypothesis") or not r.get("id"):
-                    return JSONResponse(status_code=400, content={"text": "Each resource needs a kind ('annotation' or 'hypothesis') and an id."})
+                if not isinstance(r, dict) or r.get("kind") not in ("annotation", "hypothesis", "file") or not r.get("id"):
+                    return JSONResponse(status_code=400, content={"text": "Each resource needs a kind ('annotation', 'hypothesis', or 'file') and an id."})
 
         sources, err = _resolve_sources(species, sources_in)
         if err:
