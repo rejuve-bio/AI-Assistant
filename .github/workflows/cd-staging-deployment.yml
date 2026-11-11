@@ -20,12 +20,13 @@ jobs:
       - name: Checkout current repository
         uses: actions/checkout@v4
 
-      - name: Setup kubectl
+      - name: Setup kubectl (job-temp kubeconfig)
+        env:
+          KCFG_DATA: ${{ secrets.KUBECONFIG_STAGING }}
         run: |
-          mkdir -p ~/.kube
-          echo "${{ secrets.KUBECONFIG_STAGING }}" > ~/.kube/config
-          chmod 600 ~/.kube/config
-          echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
+          umask 077
+          printf '%s\n' "$KCFG_DATA" > "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> $GITHUB_ENV
 
       - name: Deploy to Kubernetes
         run: |
@@ -54,6 +55,10 @@ jobs:
       - name: Verify pods
         run: |
           kubectl get pods -n ai-assistant-staging
+
+      - name: Remove kubeconfig
+        if: always()
+        run: rm -f "$RUNNER_TEMP/kubeconfig"
 
       - name: Send success email
         if: success()
@@ -105,12 +110,13 @@ jobs:
       - name: Checkout current repository
         uses: actions/checkout@v4
 
-      - name: Setup kubectl
+      - name: Setup kubectl (job-temp kubeconfig)
+        env:
+          KCFG_DATA: ${{ secrets.KUBECONFIG_STAGING }}
         run: |
-          mkdir -p ~/.kube
-          echo "${{ secrets.KUBECONFIG_STAGING }}" > ~/.kube/config
-          chmod 600 ~/.kube/config
-          echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
+          umask 077
+          printf '%s\n' "$KCFG_DATA" > "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> $GITHUB_ENV
 
       - name: Deploy to Kubernetes
         run: |
@@ -139,6 +145,10 @@ jobs:
       - name: Verify pods
         run: |
           kubectl get pods -n ai-assistant-staging
+
+      - name: Remove kubeconfig
+        if: always()
+        run: rm -f "$RUNNER_TEMP/kubeconfig"
 
       - name: Send success email
         if: success()
