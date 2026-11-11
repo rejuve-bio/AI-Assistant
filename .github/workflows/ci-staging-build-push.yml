@@ -215,6 +215,10 @@ jobs:
       (github.event_name == 'pull_request') ||
       (github.event_name == 'push')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
 
     outputs:
       validation-status: ${{ steps.validate-container.outcome }}
