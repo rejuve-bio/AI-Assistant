@@ -29,20 +29,23 @@ jobs:
           echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> $GITHUB_ENV
 
       - name: Deploy to Kubernetes
+        env:
+          IMAGE_TAG: ${{ github.event.client_payload.image_tag }}
         run: |
           set -euo pipefail
 
           NAMESPACE="ai-assistant-staging"
-          IMAGE="${{ github.event.client_payload.image_tag }}"
+          # Strip any whitespace (e.g. from a padded secret) so kubectl gets one argument
+          IMAGE="$(printf '%s' "${IMAGE_TAG:-}" | tr -d '[:space:]')"
 
           if [ -z "$IMAGE" ]; then
-            IMAGE="${{ env.DOCKER_HUB_ORG }}/ai-assistant:staging"
+            IMAGE="${DOCKER_HUB_ORG}/ai-assistant:staging"
           fi
 
           echo "Using image: $IMAGE"
 
           kubectl set image deployment/assistant-staging \
-            assistant-staging=${IMAGE} \
+            "assistant-staging=${IMAGE}" \
             -n "$NAMESPACE"
 
           kubectl rollout restart deployment/assistant-staging -n "$NAMESPACE"
@@ -119,20 +122,23 @@ jobs:
           echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> $GITHUB_ENV
 
       - name: Deploy to Kubernetes
+        env:
+          IMAGE_TAG: ${{ github.event.client_payload.image_tag }}
         run: |
           set -euo pipefail
 
           NAMESPACE="ai-assistant-staging"
-          IMAGE="${{ github.event.client_payload.image_tag }}"
+          # Strip any whitespace (e.g. from a padded secret) so kubectl gets one argument
+          IMAGE="$(printf '%s' "${IMAGE_TAG:-}" | tr -d '[:space:]')"
 
           if [ -z "$IMAGE" ]; then
-            IMAGE="${{ env.DOCKER_HUB_ORG }}/ai-assistant:staging"
+            IMAGE="${DOCKER_HUB_ORG}/ai-assistant:staging"
           fi
 
           echo "Using image: $IMAGE"
 
           kubectl set image deployment/assistant-staging \
-            assistant-staging=${IMAGE} \
+            "assistant-staging=${IMAGE}" \
             -n "$NAMESPACE"
 
           kubectl rollout restart deployment/assistant-staging -n "$NAMESPACE"
