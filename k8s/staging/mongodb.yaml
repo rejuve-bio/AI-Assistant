@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb-staging
+  namespace: ai-assistant-staging
+spec:
+  selector:
+    matchLabels:
+      app: mongodb-staging
+  serviceName: mongodb-staging
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: mongodb-staging
+    spec:
+      containers:
+        - name: mongodb-staging
+          image: mongo:7.0
+          resources:
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+          ports:
+            - containerPort: 27017
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: ai-assistant-secrets
+                  key: MONGO_USERNAME
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ai-assistant-secrets
+                  key: MONGO_PASSWORD
+            - name: MONGO_INITDB_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: ai-assistant-secrets
+                  key: MONGO_DATABASE
+          volumeMounts:
+            - name: mongodb-data
+              mountPath: /data/db
+  volumeClaimTemplates:
+    - metadata:
+        name: mongodb-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: ai-assistant-staging
+spec:
+  selector:
+    app: mongodb-staging
+  ports:
+    - port: 27017
+      targetPort: 27017

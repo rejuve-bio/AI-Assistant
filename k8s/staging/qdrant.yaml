@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qdrant-staging
+  namespace: ai-assistant-staging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qdrant-staging
+  template:
+    metadata:
+      labels:
+        app: qdrant-staging
+    spec:
+      containers:
+        - name: qdrant-staging
+          image: qdrant/qdrant:latest
+          resources:
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+          ports:
+            - containerPort: 6333
+            - containerPort: 9876
+          volumeMounts:
+            - name: qdrant-data
+              mountPath: /qdrant/storage
+      volumes:
+        - name: qdrant-data
+          hostPath:
+            path: /mnt/hdd_1/abdu_md/k8s/staging/ai-assistant/qdrant-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+  namespace: ai-assistant-staging
+spec:
+  selector:
+    app: qdrant-staging
+  ports:
+    - name: http
+      port: 6333
+      targetPort: 6333
+    - name: grpc
+      port: 9876
+      targetPort: 9876

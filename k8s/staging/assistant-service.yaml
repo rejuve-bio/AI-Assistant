@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: assistant-staging
+  namespace: ai-assistant-staging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: assistant-staging
+  template:
+    metadata:
+      labels:
+        app: assistant-staging
+    spec:
+      imagePullSecrets:
+        - name: dockerhub-creds
+      containers:
+        - name: assistant-staging
+          image: rejuvebio/ai-assistant:staging
+          imagePullPolicy: Always
+          resources:
+            limits:
+              cpu: "4"
+              memory: "16Gi"
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+          ports:
+            - containerPort: 5002
+          command:
+            - "sh"
+            - "-c"
+            - "gunicorn -w 4 --bind 0.0.0.0:5002 --timeout 180 --log-level debug run:app"
+          envFrom:
+            - secretRef:
+                name: ai-assistant-secrets
+          volumeMounts:
+            - name: static
+              mountPath: /static 
+              
+      volumes:
+        - name: static
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: assistant-staging
+  namespace: ai-assistant-staging
+spec:
+  type: NodePort
+  selector:
+    app: assistant-staging
+  ports:
+    - port: 5002
+      targetPort: 5002
+      nodePort: 30503
