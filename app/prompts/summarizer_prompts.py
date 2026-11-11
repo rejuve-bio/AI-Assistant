@@ -66,7 +66,16 @@ GRAPH_QUERY_FROM_TEXT_PROMPT = (
     "information the question asks about, begin your reply with the exact "
     "tag NOT_IN_GRAPH: followed by a brief note — do NOT answer using "
     "unrelated entities from the data as if they were relevant. Otherwise, "
-    "answer normally using the real data, with no tag.\n"
+    "answer the question using the real data -- but don't stop at just "
+    "restating node/edge counts and names. Point out what's actually "
+    "notable: a hub node with unusually many connections, an irregular "
+    "structure (e.g. one transcript with far more exons than the others), "
+    "or a real pattern worth flagging. If you genuinely recognize the "
+    "specific gene/entity from your own general knowledge, you may add a "
+    "brief, clearly-labeled note on why it's biologically relevant (e.g. "
+    "known family, function, disease association) -- but label it plainly "
+    "as general background, never as something the graph itself showed, "
+    "and only state it if you're actually confident, not a guess.\n"
     "Answer:"
 )
 
@@ -80,7 +89,14 @@ GRAPH_QUERY_FROM_SUMMARY_PROMPT = (
     "Question: {query}\n\n"
     "If this graph data does not actually contain the specific entity or "
     "information the question asks about, begin your reply with the exact "
-    "tag NOT_IN_GRAPH: followed by a brief note. Otherwise, answer normally, "
+    "tag NOT_IN_GRAPH: followed by a brief note. Otherwise, answer the "
+    "question using the real data -- but don't stop at just restating the "
+    "counts above. Point out what's actually notable (a dominant node type, "
+    "an unusual ratio of nodes to edges, etc.). If you genuinely recognize "
+    "a specific gene/entity from your own general knowledge, you may add a "
+    "brief, clearly-labeled note on why it's biologically relevant -- but "
+    "label it plainly as general background, never as something this graph "
+    "itself showed, and only state it if you're actually confident.\n"
     "with no tag.\nAnswer:"
 )
 

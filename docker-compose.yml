@@ -8,28 +8,35 @@ services:
       - hf_cache:/root/.cache/huggingface
     ports:
       - "127.0.0.1:${FASTAPI_PORT}:${FASTAPI_PORT}"
-    command: gunicorn -k uvicorn.workers.UvicornWorker -w 3 --bind 0.0.0.0:$FASTAPI_PORT --timeout 600 --log-level debug run:asgi_app
+    command: gunicorn -k uvicorn.workers.UvicornWorker -w 3 --bind 0.0.0.0:${FASTAPI_PORT} --timeout 600 --log-level debug run:asgi_app
     restart: always
     depends_on:
       - qdrant
       - redis
       - mongodb
-    environment:
+    env_file:
       - .env
+    networks:
+      - default
+      - rejuve-network
 
   qdrant:
     image: qdrant/qdrant
     ports:
-      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6335:6333"
       - "127.0.0.1:6334:6334"
     volumes:
       - vectordata:/qdrant/storage
+    networks:
+      - default
 
   redis:
     image: redis:6-alpine
     restart: always
     ports:
       - "127.0.0.1:6378:6379"
+    networks:
+      - default
 
   mongodb:
     image: mongo:6.0
@@ -42,15 +49,27 @@ services:
       MONGO_INITDB_DATABASE: ${MONGO_DATABASE}
     volumes:
       - mongodb_data:/data/db
+    networks:
+      - default
 
 volumes:
   vectordata:
+    external: true
+    name: ai-assistant-threads-api-v1_vectordata
   static:
+    external: true
+    name: ai-assistant-threads-api-v1_static
   mongodb_data:
+    external: true
+    name: ai-assistant-threads-api-v1_mongodb_data
   hf_cache:
+    external: true
+    name: ai-assistant-threads-api-v1_hf_cache
 
 networks:
   default:
     ipam:
       config:
         - subnet: 10.200.0.0/24
+  rejuve-network:
+    external: true

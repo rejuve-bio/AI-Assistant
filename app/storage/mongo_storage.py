@@ -595,19 +595,6 @@ class MongoManager:
         self.threads_collection.update_one({"thread_id": thread_id, "user_id": user_id}, update)
         logger.info(f"Thread {thread_id}: attached resource {kind}/{resource_id} to context.resources and generated_resources.")
 
-    def remove_thread_resource(self, thread_id: str, user_id: str, kind: str, resource_id: str) -> None:
-        doc = self.threads_collection.find_one({"thread_id": thread_id, "user_id": user_id}, {"context": 1})
-        resources = ((doc or {}).get("context") or {}).get("resources") or []
-        filtered = [r for r in resources if not (r.get("kind") == kind and r.get("id") == resource_id)]
-        if len(filtered) != len(resources):
-            self.threads_collection.update_one(
-                {"thread_id": thread_id, "user_id": user_id},
-                {"$set": {"context.resources": filtered, "updated_at": datetime.utcnow()}},
-            )
-            logger.info(f"Thread {thread_id}: removed resource {kind}/{resource_id} from context.resources.")
-        else:
-            logger.info(f"Thread {thread_id}: resource {kind}/{resource_id} not found, nothing to remove.")
-
     def set_thread_title(self, thread_id: str, user_id: str, title: Optional[str]) -> None:
         if title:
             self.threads_collection.update_one(
