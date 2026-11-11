@@ -26,6 +26,4 @@ RUN poetry config virtualenvs.create false && \
     pip uninstall -y poetry && \
     python -m pip uninstall -y pip && \
     rm -rf /root/.cache/pypoetry /root/.cache/pip
-
-# Run the application
-CMD ["uvicorn", "run:asgi_app", "--host", "0.0.0.0", "--port", "$FASTAPI_PORT", "--workers", "4"]
+CMD gunicorn -k uvicorn.workers.UvicornWorker -w 4 --bind 0.0.0.0:${FASTAPI_PORT:-5053} --timeout 600 --log-level info run:asgi_app
