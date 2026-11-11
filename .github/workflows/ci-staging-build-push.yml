@@ -660,15 +660,20 @@ jobs:
 
     - name: Sign Docker image
       if: github.event_name == 'push' && steps.check-merge.outputs.is_merge == 'true' && steps.validate-container.outcome == 'success'
+      continue-on-error: true
       env:
         COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
         COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
       run: |
         echo "=== Signing Docker image ==="
+        if [ -z "$COSIGN_PRIVATE_KEY" ]; then
+          echo "::warning::COSIGN_PRIVATE_KEY not set - skipping image signing"
+          exit 0
+        fi
         IMAGE_TAG="${{ secrets.DOCKER_HUB_USERNAME }}/ai-assistant:staging"
+        trap 'rm -f /tmp/cosign.key' EXIT
         echo "$COSIGN_PRIVATE_KEY" > /tmp/cosign.key
         cosign sign --key /tmp/cosign.key $IMAGE_TAG -y
-        rm /tmp/cosign.key
         echo "[SUCCESS] Image signed successfully"
 
     - name: Set deployment trigger
