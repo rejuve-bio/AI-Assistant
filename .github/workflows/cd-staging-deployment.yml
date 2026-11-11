@@ -22,7 +22,7 @@ jobs:
 
       - name: Setup kubectl (job-temp kubeconfig)
         env:
-          KCFG_DATA: ${{ secrets.KUBECONFIG_STAGING }}
+          KCFG_DATA: ${{ secrets.KUBECONFIG_DEV }}
         run: |
           umask 077
           printf '%s\n' "$KCFG_DATA" > "$RUNNER_TEMP/kubeconfig"
