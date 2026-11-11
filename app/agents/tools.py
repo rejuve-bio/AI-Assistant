@@ -276,7 +276,7 @@ TOOL_SPECS = [
             "proposal, and the resource already exists."
         ),
         "parameters": {"type": "object", "properties": {
-            "kind": {"type": "string", "enum": ["annotation", "hypothesis"]},
+            "kind": {"type": "string", "enum": ["annotation", "hypothesis", "file"]},
             "id": {"type": "string", "description": "the resource's real id, exactly as given in the thread's resources context note"},
             "question": {"type": "string", "description": "what the user actually asked about it"},
         }, "required": ["kind", "id", "question"]},
@@ -886,8 +886,16 @@ class ToolsMixin:
             if not text and isinstance(result, dict):
                 summary = result.get("summary")
                 text = summary.get("summary") if isinstance(summary, dict) else summary
+        elif kind == "file":
+            file_info = self.store.get_content_file_by_id(user_id, rid) if self.store else None
+            if not file_info:
+                return {"content": f"No uploaded file found with id '{rid}'."}
+            fname = file_info.get("filename", rid)
+            fsize = (file_info.get("metadata") or {}).get("file_size_mb")
+            size_str = f" ({fsize} MB)" if fsize is not None else ""
+            text = f"Uploaded file: {fname}{size_str}. This file is stored and available for use with tools like generate_hypothesis."
         else:
-            return {"content": f"'{kind}' isn't a resource type I can explain -- only annotation or hypothesis."}
+            return {"content": f"'{kind}' isn't a resource type I can explain -- only annotation, hypothesis, or file."}
 
         return {"content": text or f"Couldn't find anything for {kind} {rid}."}
 
