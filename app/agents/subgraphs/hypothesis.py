@@ -36,6 +36,7 @@ class HypothesisState(TypedDict, total=False):
     requested_tissue: Optional[str]
     requested_phenotype: Optional[str]
     requested_variant: Optional[str]
+    requested_file_id: Optional[str]
 
 
 def _go_term_options(go_terms: List[Dict[str, Any]]) -> List[Dict[str, str]]:
@@ -124,6 +125,7 @@ def build_hypothesis_subgraph(hypothesis_generation):
                     requested_phenotype=state.get("requested_phenotype"),
                     requested_variant=state.get("requested_variant"),
                     attached_file_note=attached_note,
+                    requested_file_id=state.get("requested_file_id"),
                 )
             except Exception as e:
                 logger.error("Error in hypothesis propose", exc_info=True)
