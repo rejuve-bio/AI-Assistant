@@ -17,32 +17,16 @@ _GENERIC_QUERY_TERMS = {
 }
 
 
-def _matches_actual_query(paper: dict, query: str) -> bool:
-    """NCBI's esearch can fall back to a loose keyword match and still return
-    something even when nothing in the query really matches -- so a hit is
-    only treated as real if at least one SPECIFIC term from the query (not a
-    generic word like 'gene' or 'disease') actually appears in the paper's
-    own title/abstract. With no specific terms to check, nothing is filtered
-    (avoids over-filtering a genuinely generic query)."""
+def _matches_actual_query(haystack_text: str, query: str) -> bool:
     terms = [t for t in re.findall(r"[A-Za-z0-9\-]+", query) if len(t) > 2 and t.lower() not in _GENERIC_QUERY_TERMS]
     if not terms:
         return True
-    haystack = f"{paper.get('title', '')} {paper.get('abstract', '')}".lower()
+    haystack = haystack_text.lower()
     return any(t.lower() in haystack for t in terms)
 
 
 def search_pubmed(query: str, max_results: int = 10, min_year: int = None) -> dict:
-    """
-    Search PubMed for scientific papers and return abstracts with citations.
 
-    Args:
-        query: Search terms (e.g. 'BRCA1 breast cancer GWAS', 'mTOR aging longevity')
-        max_results: Number of papers to return (default 10)
-        min_year: Filter to papers from this year onward (e.g. 2020)
-
-    Returns:
-        dict with keys: query, papers (list of {pmid, title, authors, year, abstract, url}), count, source
-    """
     try:
         base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
         search_params = {
@@ -113,7 +97,10 @@ def search_pubmed(query: str, max_results: int = 10, min_year: int = None) -> di
                 "abstract": abstract,
                 "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
             })
-        relevant_papers = [p for p in papers if _matches_actual_query(p, query)]
+        relevant_papers = [
+            p for p in papers
+            if _matches_actual_query(f"{p.get('title', '')} {p.get('abstract', '')}", query)
+        ]
         if papers and not relevant_papers:
             logger.warning(
                 f"PubMed: esearch returned {len(papers)} result(s) for {query!r} but none actually "
@@ -130,17 +117,6 @@ def search_pubmed(query: str, max_results: int = 10, min_year: int = None) -> di
 def search_clinical_trials(
     query: str, status: str = "RECRUITING", max_results: int = 10
 ) -> dict:
-    """
-    Search ClinicalTrials.gov for clinical studies.
-
-    Args:
-        query: Search terms (e.g. 'FOXO3 aging', 'rapamycin longevity', 'Alzheimer APOE')
-        status: Trial status filter: 'RECRUITING', 'COMPLETED', 'ACTIVE_NOT_RECRUITING', or '' for all
-        max_results: Number of trials to return
-
-    Returns:
-        dict with keys: query, trials (list of {nct_id, title, phase, status, conditions, interventions, url}), count, source
-    """
     try:
         api_url = os.getenv("CLINICAL_TRIALS_API_URL", "https://clinicaltrials.gov/api/v2/studies")
         params = {
@@ -179,10 +155,21 @@ def search_clinical_trials(
                 "start_date": status_mod.get("startDateStruct", {}).get("date", ""),
                 "url": f"https://clinicaltrials.gov/study/{nct_id}",
             })
+        relevant_trials = [
+            t for t in trials
+            if _matches_actual_query(
+                f"{t['title']} {' '.join(t['conditions'])} {' '.join(t['interventions'])}", query
+            )
+        ]
+        if trials and not relevant_trials:
+            logger.warning(
+                f"ClinicalTrials.gov returned {len(trials)} result(s) for {query!r} but none actually "
+                "mention its specific terms -- treating as no relevant results found."
+            )
         return {
             "query": query,
-            "trials": trials,
-            "count": len(trials),
+            "trials": relevant_trials,
+            "count": len(relevant_trials),
             "source": "ClinicalTrials.gov",
         }
 

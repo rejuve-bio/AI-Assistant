@@ -11,32 +11,6 @@ logger = logging.getLogger(__name__)
 
 
 class AggregationMixin:
-    def _build_sources_footer(self, state: dict) -> str:
-        """Build a markdown Sources section with clickable links from PubMed and ClinicalTrials."""
-        sections = []
-
-        pubmed_resp = state.get("pubmed_response")
-        if pubmed_resp:
-            papers = pubmed_resp.get("items", [])
-            links = [
-                f"- [{p.get('title', p.get('pmid', 'Article'))}]({p['url']})"
-                for p in papers if p.get("url")
-            ]
-            if links:
-                sections.append("**PubMed Sources:**\n" + "\n".join(links))
-
-        clinical_resp = state.get("clinical_trials_response")
-        if clinical_resp:
-            trials = clinical_resp.get("items", [])
-            links = [
-                f"- [{t.get('title', t.get('nct_id', 'Trial'))} ({t.get('nct_id', '')})]({t['url']})"
-                for t in trials if t.get("url")
-            ]
-            if links:
-                sections.append("**ClinicalTrials.gov Sources:**\n" + "\n".join(links))
-
-        return "\n\n".join(sections)
-
     def _finalize_response(self, state: AgentState) -> Dict[str, Any]:
         user_id = state.get("user_id")
         messages = state.get("messages", [])
@@ -69,10 +43,6 @@ class AggregationMixin:
             response["resource"] = hypothesis_resp["resource"]
         elif state.get("resource"):
             response["resource"] = state.get("resource")
-
-        footer = self._build_sources_footer(state)
-        if footer:
-            response["text"] = response["text"].rstrip() + "\n\n" + footer
 
         if state.get("error"):
             response.setdefault("status", "error")

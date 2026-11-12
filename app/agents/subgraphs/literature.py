@@ -74,15 +74,19 @@ def build_literature_subgraph(rag, extract_search_term):
 
         user_id = state["user_id"]
         term = extract_search_term(state["user_query"], context=state.get("search_context", ""))
-        min_year = state.get("min_year")
-        logger.info(f"PubMed searching for: {term} (min_year={min_year})")
-        emit_to_user(user=user_id, message="Searching PubMed literature...", thread_id=state.get("thread_id"))
-        try:
-            papers = search_pubmed(term, max_results=8, min_year=min_year).get("papers", [])
-            text = _format_papers(papers)
-        except Exception as e:
-            logger.error(f"PubMed error: {e}", exc_info=True)
-            papers, text = [], f"PubMed search unavailable: {e}"
+        if not term:
+            logger.info("Query isn't a biomedical/literature topic -- skipping PubMed")
+            papers, text = [], ""
+        else:
+            min_year = state.get("min_year")
+            logger.info(f"PubMed searching for: {term} (min_year={min_year})")
+            emit_to_user(user=user_id, message="Searching PubMed literature...", thread_id=state.get("thread_id"))
+            try:
+                papers = search_pubmed(term, max_results=8, min_year=min_year).get("papers", [])
+                text = _format_papers(papers)
+            except Exception as e:
+                logger.error(f"PubMed error: {e}", exc_info=True)
+                papers, text = [], f"PubMed search unavailable: {e}"
 
         return {
             "pubmed_response": {"text": text, "source": "PubMed", "items": papers},
@@ -95,18 +99,22 @@ def build_literature_subgraph(rag, extract_search_term):
 
         user_id = state["user_id"]
         term = extract_search_term(state["user_query"], context=state.get("search_context", ""))
-        logger.info(f"ClinicalTrials searching for: {term}")
-        emit_to_user(user=user_id, message="Searching ClinicalTrials.gov...", thread_id=state.get("thread_id"))
-        try:
-            trials = search_clinical_trials(term, status="RECRUITING", max_results=5).get("trials", [])
-            if not trials:
-                trials = search_clinical_trials(term, status="", max_results=5).get("trials", [])
-            pubmed = state.get("pubmed_response")
-            standing_in = pubmed is not None and not pubmed.get("items")
-            text = _format_trials(trials, standing_in=standing_in)
-        except Exception as e:
-            logger.error(f"ClinicalTrials error: {e}", exc_info=True)
-            trials, text = [], f"ClinicalTrials search unavailable: {e}"
+        if not term:
+            logger.info("Query isn't a biomedical/literature topic -- skipping ClinicalTrials")
+            trials, text = [], ""
+        else:
+            logger.info(f"ClinicalTrials searching for: {term}")
+            emit_to_user(user=user_id, message="Searching ClinicalTrials.gov...", thread_id=state.get("thread_id"))
+            try:
+                trials = search_clinical_trials(term, status="RECRUITING", max_results=5).get("trials", [])
+                if not trials:
+                    trials = search_clinical_trials(term, status="", max_results=5).get("trials", [])
+                pubmed = state.get("pubmed_response")
+                standing_in = pubmed is not None and not pubmed.get("items")
+                text = _format_trials(trials, standing_in=standing_in)
+            except Exception as e:
+                logger.error(f"ClinicalTrials error: {e}", exc_info=True)
+                trials, text = [], f"ClinicalTrials search unavailable: {e}"
 
         return {
             "clinical_trials_response": {

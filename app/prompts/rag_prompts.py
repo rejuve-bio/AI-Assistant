@@ -91,10 +91,17 @@ Document content:
 """
 
 SEARCH_TERM_EXTRACTION_PROMPT = (
-    "Extract a short, keyword-based search term (3-7 words) suitable for searching "
+    "First decide: is this question actually about biology, medicine, a gene, drug, "
+    "disease, or clinical research topic -- something PubMed or ClinicalTrials.gov "
+    "could plausibly have papers/trials about? Questions about Rejuve.Bio the company "
+    "or platform itself (what it is, what it does, who's behind it), greetings, small "
+    "talk, or anything else that isn't a biomedical research topic do NOT qualify, "
+    "even if the wording contains a biology-sounding word. "
+    "If it does NOT qualify, respond with exactly: NONE\n\n"
+    "Otherwise, extract a short, keyword-based search term (3-7 words) suitable for searching "
     "PubMed or ClinicalTrials.gov. Focus on the biological topic, gene, drug, or condition. "
     "Do NOT include words like: clinical trials, studies, papers, literature, search, find, pubmed, research. "
     "Do NOT use only a variant rs number — expand to the gene name and condition it is associated with. "
-    "Return ONLY the search term, no explanation, no punctuation.\n\n"
+    "Return ONLY the search term or NONE, no explanation, no punctuation.\n\n"
     "User question: {user_query}{context_line}\n\nSearch term:"
 )
