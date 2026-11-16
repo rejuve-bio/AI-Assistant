@@ -958,9 +958,21 @@ async def post_v1_query(
                 file_id = entry.get("id")
                 if file_id:
                     found = mongo_db_manager.get_content_file_by_id(user_id, file_id)
-                    if not found:
+                    if found:
+                        resolved_files.append({
+                            "id": found["content_id"], "name": found.get("filename") or file_id,
+                            "content_type": None, "size": (found.get("metadata") or {}).get("file_size"),
+                        })
+                        continue
+                    remote = ai_assistant.file_service.get_file(auth.token, file_id)
+                    if not remote:
                         return JSONResponse(status_code=400, content={"text": f"No such file '{file_id}' for this user."})
-                    resolved_files.append({"id": found["content_id"], "name": found.get("filename") or file_id})
+                    summary = ai_assistant.file_service.get_summary(auth.token, file_id)
+                    resolved_files.append({
+                        "id": file_id, "name": remote.get("name") or file_id,
+                        "content_type": remote.get("content_type"), "size": remote.get("size"),
+                        "summary": summary,
+                    })
                     continue
                 name = entry.get("name")
                 attached = uploaded_by_name.get(name) if name else None
@@ -970,9 +982,18 @@ async def post_v1_query(
                 if not isinstance(upload_result, dict) or not upload_result.get("content_id"):
                     error = upload_result.get("error") if isinstance(upload_result, dict) else "Upload failed."
                     return JSONResponse(status_code=400, content={"text": f"Could not store attached file '{name}': {error}"})
-                resolved_files.append({"id": upload_result["content_id"], "name": upload_result.get("name") or name})
+                resolved_files.append({
+                    "id": upload_result["content_id"], "name": upload_result.get("name") or name,
+                    "content_type": None, "size": None,
+                })
             if not resolved_files:
                 resolved_files = None
+            else:
+                for f in resolved_files:
+                    mongo_db_manager.add_context_resource(
+                        thread_id, user_id, "file", f["id"],
+                        extra={"name": f.get("name"), "content_type": f.get("content_type"), "size": f.get("size")},
+                    )
 
         if client_message_id:
             existing = mongo_db_manager.find_message_by_client_id(thread_id, user_id, client_message_id)
@@ -1032,10 +1053,8 @@ async def put_thread_context(
     thread_id: str,
     request: Request,
     auth: AuthContext = Depends(token_required),
+    ai_assistant=Depends(get_ai_assistant),
 ):
-    """Sets a thread's species/sources. 201 with a divider message if it
-    actually changed, 204 if the new value matches what's already set --
-    matching the Threads API v1 proposal exactly."""
     try:
         if mongo_db_manager.thread_owner_conflict(thread_id, auth.user_id):
             return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
@@ -1052,8 +1071,15 @@ async def put_thread_context(
             if not isinstance(resources_in, list):
                 return JSONResponse(status_code=400, content={"text": "resources must be a list."})
             for r in resources_in:
-                if not isinstance(r, dict) or r.get("kind") not in ("annotation", "hypothesis") or not r.get("id"):
-                    return JSONResponse(status_code=400, content={"text": "Each resource needs a kind ('annotation' or 'hypothesis') and an id."})
+                if not isinstance(r, dict) or r.get("kind") not in ("annotation", "hypothesis", "file") or not r.get("id"):
+                    return JSONResponse(status_code=400, content={"text": "Each resource needs a kind ('annotation', 'hypothesis' or 'file') and an id."})
+
+            for r in resources_in:
+                if r.get("kind") == "file":
+                    for key in ("name", "url", "content_type", "size"):
+                        r.setdefault(key, None)
+                    if "summary" not in r:
+                        r["summary"] = ai_assistant.file_service.get_summary(auth.token, r["id"])
 
         sources, err = _resolve_sources(species, sources_in)
         if err:
@@ -1085,10 +1111,6 @@ async def record_thread_run(
     request: Request,
     auth: AuthContext = Depends(token_required),
 ):
-    """Records that a run started elsewhere (the platform server's own
-    call to annotation/hypothesis), purely so the thread shows a live-status
-    card. No model call, no compute -- matches 'Record a run' in the
-    Threads API v1 proposal."""
     try:
         if mongo_db_manager.thread_owner_conflict(thread_id, auth.user_id):
             return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
@@ -1127,9 +1149,6 @@ async def rename_thread(
     request: Request,
     auth: AuthContext = Depends(token_required),
 ):
-    """Renames a thread. Clearing the title (empty string) falls back to the
-    first message's text again, so it's never empty -- matches 'The thread'
-    in the Threads API v1 proposal."""
     try:
         if mongo_db_manager.thread_owner_conflict(thread_id, auth.user_id):
             return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
@@ -1153,8 +1172,6 @@ def delete_thread_route(
     thread_id: str,
     auth: AuthContext = Depends(token_required),
 ):
-    """Deletes a thread. Never touches the annotations/hypotheses/galaxy
-    runs it referenced -- those live entirely in their own services."""
     try:
         if mongo_db_manager.thread_owner_conflict(thread_id, auth.user_id):
             return JSONResponse(status_code=404, content={"text": "No such thread for this user."})
@@ -1173,10 +1190,6 @@ def delete_thread_message(
     message_id: str,
     auth: AuthContext = Depends(token_required),
 ):
-    """Deletes one message by its stable id (<thread_id>_msg_<seq>) -- e.g.
-    lets a user dismiss a run card without touching the real run. seq is
-    stamped once when the message is created, so this id never changes
-    even if an earlier message in the thread gets deleted."""
     try:
         if mongo_db_manager.thread_owner_conflict(thread_id, auth.user_id):
             return JSONResponse(status_code=404, content={"text": "No such thread or message for this user."})

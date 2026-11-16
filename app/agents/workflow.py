@@ -54,6 +54,70 @@ class WorkflowMixin:
             kind, rid = r.get("kind"), r.get("id")
             if not kind or not rid:
                 continue
+
+            if kind == "file":
+                looks_like_file_service = (
+                    "summary" in r or r.get("content_type") is not None or r.get("size") is not None
+                )
+                if looks_like_file_service:
+                    summary = r.get("summary") or self.file_service.get_summary(token, rid)
+                    name = r.get("name") or (summary or {}).get("name") or rid
+                    if summary and summary.get("first_lines"):
+                        cols = ", ".join(summary.get("columns") or []) or "none detected"
+                        preview_lines = summary["first_lines"]
+                        line_estimate = summary.get("line_estimate")
+                        size = r.get("size")
+                        incomplete = isinstance(line_estimate, int) and line_estimate > len(preview_lines)
+                        full_text = None
+                        if incomplete and isinstance(size, (int, float)) and size <= 60000:
+                            full_text = self.file_service.get_content(token, rid)
+                        if full_text:
+                            lines.append(
+                                f"- file {rid} ({name}), columns: {cols}, "
+                                f"{line_estimate} lines, full content:\n{full_text}"
+                            )
+                        else:
+                            trunc = (
+                                f" -- PREVIEW ONLY, showing {len(preview_lines)} of "
+                                f"{line_estimate} lines, don't treat an aggregate/extreme "
+                                "value computed from this as complete or accurate"
+                                if incomplete else ""
+                            )
+                            preview_text = "\n".join(preview_lines)
+                            lines.append(
+                                f"- file {rid} ({name}), columns: {cols}, "
+                                f"~{line_estimate} lines{trunc}, content:\n{preview_text}"
+                            )
+                    else:
+                        size = r.get("size")
+                        size_str = f"{size / 1024:.1f} KB" if isinstance(size, (int, float)) else "unknown size"
+                        lines.append(
+                            f"- file {rid} ({name}, {r.get('content_type') or 'unknown type'}, "
+                            f"{size_str}): not a readable text format here, name/size only"
+                        )
+                    continue
+                try:
+                    preview = self.rag.read_raw_file_preview(rid, user_id)
+                except Exception as e:
+                    logger.warning(f"Couldn't read thread resource file:{rid}: {e}")
+                    continue
+                if not preview:
+                    continue
+                if preview.get("text"):
+                    suffix = " (truncated)" if preview.get("truncated") else ""
+                    lines.append(
+                        f"- file {rid} ({preview['name']}){suffix}, content:\n"
+                        + preview["text"].strip()
+                    )
+                else:
+                    size = preview.get("size_bytes")
+                    size_str = f"{size / 1024:.1f} KB" if size else "unknown size"
+                    lines.append(
+                        f"- file {rid} ({preview['name']}, {size_str}): "
+                        "not a readable text format here, name/size only"
+                    )
+                continue
+
             try:
                 if kind == "hypothesis":
                     result = self.hypothesis_generation.get_by_hypothesis_id(token, rid, user_id, thread_id=thread_id)
@@ -130,7 +194,10 @@ class WorkflowMixin:
                 notes.append(
                     "(Note: resources chosen for this thread's context -- short summaries "
                     "only, call the matching tool for the full result if a question needs "
-                    "more detail:\n" + "\n".join(resource_lines) + ")"
+                    "more detail. A 'file' entry's content (when shown) is already complete "
+                    "for what's readable here -- don't call retrieve_content for it, that "
+                    "tool only searches embedded/searchable documents and will find nothing "
+                    "for a raw file like this:\n" + "\n".join(resource_lines) + ")"
                 )
 
         attached_files = state.get("attached_files") or []
@@ -138,12 +205,8 @@ class WorkflowMixin:
         if attached_files:
             names = ", ".join(f.get("name") or f.get("id", "") for f in attached_files)
             notes.append(
-                f"(Note: file(s) attached in this conversation: {names}. They are stored but "
-                "not yet parsed or searchable -- you can acknowledge them by name, but you "
-                "cannot read their contents or answer questions about what's inside them. If "
-                "more than one file could plausibly fill the same role and it isn't clear "
-                "which one the user means, ask them to say which one rather than guessing or "
-                "ignoring the ambiguity.)"
+                f"(Note: file(s) attached in this message: {names} -- see the thread's "
+                "resources note above for their actual content/summary.)"
             )
 
             hyp_formats = FILE_FORMAT_REQUIREMENTS.get("hypothesis", {})
@@ -159,16 +222,16 @@ class WorkflowMixin:
                         f"(Note: this looks like a GWAS/hypothesis-related request, but the "
                         f"attached file(s) {', '.join(mismatched)} don't match the formats the "
                         f"real hypothesis service accepts for a GWAS file ({formats_str}). Tell "
-                        "the user this plainly rather than assuming the file will work -- "
-                        "generating a hypothesis from it isn't built yet regardless, but the "
-                        "file format matters once it is.)"
+                        "the user this plainly rather than assuming the file will work.)"
                     )
                 else:
                     notes.append(
                         f"(Note: this looks like a GWAS/hypothesis-related request. The real "
                         f"hypothesis service accepts {formats_str} for a GWAS file -- the "
-                        "attached file's extension matches. Generating a hypothesis from it "
-                        "isn't built yet, so say so, but confirm the format is right.)"
+                        "attached file's extension matches. Call generate_hypothesis with the "
+                        "file's id if the user wants a hypothesis from it -- it can create a new "
+                        "hypothesis project from an attached file that isn't one of the existing "
+                        "ones.)"
                     )
 
         attached_urls = set(state.get("urls") or [])
@@ -276,7 +339,10 @@ class WorkflowMixin:
             }]
 
         ai_message = AIMessage(content=content, tool_calls=tool_calls)
-        return {"messages": [ai_message], "loop_iterations": iterations}
+        return {
+            "messages": [ai_message], "loop_iterations": iterations,
+            "proposals_before_round": len(state.get("proposals") or []),
+        }
 
     def _route_from_orchestrator(self, state: AgentState):
         last = state["messages"][-1]
@@ -351,5 +417,10 @@ class WorkflowMixin:
 
     def _route_after_tool(self, state: AgentState) -> str:
         if state.get("one_round_only") and state.get("loop_iterations", 0) <= 1:
+            return "finalizer"
+        before = state.get("proposals_before_round")
+        if before is not None and len(state.get("proposals") or []) > before:
+            # A new proposal just came back -- that's the answer, stop looping.
+            logger.info("[STEP] a new proposal just came back -- finalizing instead of looping")
             return "finalizer"
         return "orchestrator"

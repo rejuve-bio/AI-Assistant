@@ -578,7 +578,29 @@ class MongoManager:
         )
         return {"changed": True, "context": new_context}
 
-    def add_thread_resource(self, thread_id: str, user_id: str, kind: str, resource_id: str) -> None:
+    def add_context_resource(self, thread_id: str, user_id: str, kind: str, resource_id: str,
+                              extra: Optional[dict] = None) -> None:
+        doc = self.threads_collection.find_one({"thread_id": thread_id, "user_id": user_id}, {"context": 1})
+        resources = ((doc or {}).get("context") or {}).get("resources") or []
+        if any(r.get("kind") == kind and r.get("id") == resource_id for r in resources):
+            logger.info(f"Thread {thread_id}: context resource {kind}/{resource_id} already present, skipping.")
+            return
+        entry = {"kind": kind, "id": resource_id, **(extra or {})}
+        self.threads_collection.update_one(
+            {"thread_id": thread_id, "user_id": user_id},
+            {
+                "$set": {"context.resources": resources + [entry], "updated_at": datetime.utcnow()},
+                "$setOnInsert": {
+                    "thread_id": thread_id, "user_id": user_id,
+                    "messages": [], "tool_calls": [], "running_summary": "",
+                },
+            },
+            upsert=True,
+        )
+        logger.info(f"Thread {thread_id}: added {kind}/{resource_id} to context.resources.")
+
+    def add_thread_resource(self, thread_id: str, user_id: str, kind: str, resource_id: str,
+                             extra: Optional[dict] = None) -> None:
         doc = self.threads_collection.find_one({"thread_id": thread_id, "user_id": user_id}, {"context": 1, "generated_resources": 1})
         resources = ((doc or {}).get("context") or {}).get("resources") or []
         generated = (doc or {}).get("generated_resources") or []
@@ -587,12 +609,19 @@ class MongoManager:
         if already_selected and already_generated:
             logger.info(f"Thread {thread_id}: resource {kind}/{resource_id} already attached, skipping.")
             return
-        update = {"$set": {"updated_at": datetime.utcnow()}}
+        entry = {"kind": kind, "id": resource_id, **(extra or {})}
+        update = {
+            "$set": {"updated_at": datetime.utcnow()},
+            "$setOnInsert": {
+                "thread_id": thread_id, "user_id": user_id,
+                "messages": [], "tool_calls": [], "running_summary": "",
+            },
+        }
         if not already_selected:
-            update["$set"]["context.resources"] = resources + [{"kind": kind, "id": resource_id}]
+            update["$set"]["context.resources"] = resources + [entry]
         if not already_generated:
-            update["$set"]["generated_resources"] = generated + [{"kind": kind, "id": resource_id}]
-        self.threads_collection.update_one({"thread_id": thread_id, "user_id": user_id}, update)
+            update["$set"]["generated_resources"] = generated + [entry]
+        self.threads_collection.update_one({"thread_id": thread_id, "user_id": user_id}, update, upsert=True)
         logger.info(f"Thread {thread_id}: attached resource {kind}/{resource_id} to context.resources and generated_resources.")
 
     def set_thread_title(self, thread_id: str, user_id: str, title: Optional[str]) -> None:
@@ -708,6 +737,7 @@ class MongoManager:
                 "author": author,
                 "publish_date": meta.get("publish_date"),
                 "file_size": meta.get("file_size"),
+                "file_path": meta.get("file_path"),
                 "upload_time": upload_time or datetime.utcnow(),
                 "summary": summary,
                 "keywords": keywords,

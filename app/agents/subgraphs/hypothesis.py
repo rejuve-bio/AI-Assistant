@@ -32,6 +32,7 @@ class HypothesisState(TypedDict, total=False):
     handoff_query: Optional[str]
     error: Optional[str]
     attached_files: Optional[List[Dict[str, str]]]
+    thread_resources: Optional[List[Dict[str, Any]]]
     propose_only: Optional[bool]
     requested_tissue: Optional[str]
     requested_phenotype: Optional[str]
@@ -76,44 +77,49 @@ def _named_go_term_in_reply(user_reply: Any, go_terms: List[Dict[str, Any]]) -> 
     return scored[0][1]
 
 
-def _resolve_attached_gwas(attached_files: Optional[List[Dict[str, str]]]) -> Optional[str]:
-    """Checks any attached file(s) against the hypothesis service's real,
-    confirmed GWAS-file format requirement. Never silently drops a
-    mismatched file and never guesses at using one -- actually generating a
-    hypothesis from a user's own uploaded data isn't built yet regardless,
-    so every attached file here is only ever acknowledged honestly. No
-    per-file bookkeeping beyond that: attached_files is itself a
-    checkpointed, accumulating field (state.py), so the orchestrator already
-    sees it alongside the full conversation history and can tell from
-    context what's already been addressed."""
-    if not attached_files:
-        return None
+def _resolve_attached_gwas(
+    attached_files: Optional[List[Dict[str, str]]],
+    thread_resources: Optional[List[Dict[str, Any]]] = None,
+) -> tuple:
+    pool = list(attached_files or [])
+    seen_ids = {f.get("id") for f in pool}
+    for r in (thread_resources or []):
+        if r.get("kind") == "file" and r.get("name") and r.get("id") not in seen_ids:
+            pool.append({"id": r["id"], "name": r["name"]})
+            seen_ids.add(r.get("id"))
+
+    if not pool:
+        return [], None
 
     accepted = FILE_FORMAT_REQUIREMENTS.get("hypothesis", {}).get("accepted_extensions") or []
+    candidates = [
+        f for f in pool
+        if f.get("name") and accepted and any(f["name"].lower().endswith(ext) for ext in accepted)
+    ]
     mismatched = [
-        f.get("name", "") for f in attached_files
+        f.get("name", "") for f in pool
         if f.get("name") and accepted and not any(f["name"].lower().endswith(ext) for ext in accepted)
     ]
 
+    note = None
     if mismatched:
         formats_str = ", ".join(accepted)
-        return (
+        note = (
             f"The attached file(s) ({', '.join(mismatched)}) aren't in a format the "
-            f"hypothesis service accepts for a GWAS file ({formats_str}) -- matching "
-            "against the existing sample project data below instead."
+            f"hypothesis service accepts for a GWAS file ({formats_str}) -- "
+            + ("checking your other attached file(s) and the project library instead."
+               if candidates else "matching against the existing sample project data below instead.")
         )
-    return (
-        "The attached file is in a format the hypothesis service accepts for a GWAS "
-        "file, but generating a hypothesis from your own uploaded data isn't built yet "
-        "-- matching against the existing sample project data below instead."
-    )
+    return candidates, note
 
 
 def build_hypothesis_subgraph(hypothesis_generation):
 
     def generate_node(state: HypothesisState) -> Dict[str, Any]:
         if state.get("propose_only"):
-            attached_note = _resolve_attached_gwas(state.get("attached_files"))
+            attached_candidates, attached_note = _resolve_attached_gwas(
+                state.get("attached_files"), state.get("thread_resources")
+            )
             try:
                 response = hypothesis_generation.propose_hypothesis(
                     token=state.get("token"),
@@ -124,6 +130,7 @@ def build_hypothesis_subgraph(hypothesis_generation):
                     requested_phenotype=state.get("requested_phenotype"),
                     requested_variant=state.get("requested_variant"),
                     attached_file_note=attached_note,
+                    attached_gwas_files=attached_candidates,
                 )
             except Exception as e:
                 logger.error("Error in hypothesis propose", exc_info=True)

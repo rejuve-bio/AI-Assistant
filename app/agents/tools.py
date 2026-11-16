@@ -279,7 +279,14 @@ TOOL_SPECS = [
     },
     {
         "name": "retrieve_content",
-        "description": "Retrieve content already attached to this conversation -- an existing annotation/hypothesis graph, uploaded files, or URLs.",
+        "description": (
+            "Retrieve content already attached to this conversation -- an existing "
+            "annotation/hypothesis graph, embedded/searchable uploaded documents (PDFs "
+            "processed for retrieval), or URLs. Do NOT call this for a plain attached or "
+            "ticked file whose content already appears directly in a context note (e.g. "
+            "a CSV/TXT/JSON file) -- answer from that note instead, this tool finds "
+            "nothing for those and will just waste a round."
+        ),
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "what's being asked about the attached content"},
         }, "required": ["query"]},
@@ -570,6 +577,7 @@ class ToolsMixin:
                 "requested_phenotype": arguments.get("phenotype"),
                 "requested_variant": arguments.get("variant"),
                 "attached_files": state.get("attached_files"),
+                "thread_resources": state.get("thread_resources"),
             })
         except GraphBubbleUp:
             raise
@@ -601,7 +609,7 @@ class ToolsMixin:
                 rf = response.get("recommended_file") or {}
                 self._append_proposal_summary(
                     state,
-                    f'[hypothesis-project] recommended gwas_file={data.get("gwas_file")} '
+                    f'[hypothesis-project] recommended file_id={data.get("file_id") or data.get("gwas_file")} '
                     f'project_name="{data.get("project_name")}" source={rf.get("source", "?")} '
                     f'sex={rf.get("sex", "?")} genome_build={rf.get("genome_build", "?")} '
                     f'(catalog file\'s own condition label, NOT a phenotype the user searched for: {data.get("phenotype")})'

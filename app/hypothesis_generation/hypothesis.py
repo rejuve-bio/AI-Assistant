@@ -325,11 +325,31 @@ class HypothesisGeneration:
             "phenotype, population, and reference genome, through the platform UI."
         )
 
+    @staticmethod
+    def _match_uploaded_file_by_name(query: str, files: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
+        query_lower = (query or "").lower()
+        query_words = set(re.findall(r"[a-z0-9]+", query_lower))
+        best, best_score = None, 0.0
+        for f in files:
+            name = (f.get("name") or "").lower()
+            if not name:
+                continue
+            if query_lower and query_lower in name:
+                return f
+            name_words = set(re.findall(r"[a-z0-9]+", name))
+            overlap = len(name_words & query_words) / len(name_words) if name_words else 0.0
+            ratio = difflib.SequenceMatcher(None, name, query_lower).ratio()
+            score = max(overlap, ratio)
+            if score > best_score:
+                best, best_score = f, score
+        return best if best_score >= 0.5 else None
+
     def propose_hypothesis(self, token: str, user_query: str, user_id: str, thread_id=None,
                             requested_tissue: Optional[str] = None,
                             requested_phenotype: Optional[str] = None,
                             requested_variant: Optional[str] = None,
-                            attached_file_note: Optional[str] = None) -> Dict[str, Any]:
+                            attached_file_note: Optional[str] = None,
+                            attached_gwas_files: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
         if not HYPOTHESIS_SERVICE_BASE_URL:
             logger.error("HYPOTHESIS_SERVICE_BASE_URL is not set")
             return {"text": "The hypothesis service isn't configured right now, so I can't look up GWAS projects.", "json_format": None}
@@ -348,6 +368,37 @@ class HypothesisGeneration:
         searched_phenotype = requested_phenotype or user_query
         project = self._match_project_by_phenotype(searched_phenotype, projects)
         if not project:
+            if attached_gwas_files:
+                chosen = (
+                    attached_gwas_files[0] if len(attached_gwas_files) == 1
+                    else self._match_uploaded_file_by_name(searched_phenotype, attached_gwas_files)
+                )
+                if chosen:
+                    return {
+                        "text": (f"'{searched_phenotype}' isn't one of your existing projects, but "
+                                 f"you attached **{chosen.get('name')}** -- I can create a new "
+                                 f"hypothesis project from that file instead.") + attached_suffix,
+                        "kind": "hypothesis-project",
+                        "json_format": {
+                            "file_id": chosen.get("id"),
+                            "project_name": self._trim_phenotype_for_name(searched_phenotype) if searched_phenotype else None,
+                            "phenotype": searched_phenotype,
+                        },
+                        "recommended_file": {
+                            "filename": chosen.get("name"),
+                            "id": chosen.get("id"),
+                            "source": "user_upload",
+                        },
+                    }
+                names_attached = ", ".join(f.get("name", "?") for f in attached_gwas_files)
+                return {
+                    "text": (f"You attached {len(attached_gwas_files)} files that look like GWAS "
+                             f"data ({names_attached}), but I can't tell which one is for "
+                             f"'{searched_phenotype}' from the names alone. Which one should I "
+                             "use?") + attached_suffix,
+                    "json_format": None,
+                }
+
             names = ", ".join(p.get("phenotype", "?") for p in projects)
             base_phenotype, requested_sex = self._extract_requested_sex(searched_phenotype)
             search_result = self._search_gwas_files_raw(

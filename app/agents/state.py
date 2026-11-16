@@ -50,6 +50,7 @@ class AgentState(TypedDict):
     clinical_trials_response: Annotated[Optional[Dict[str, Any]], keep_latest]
     proposals: Annotated[List[Dict[str, Any]], operator.add]
     proposals_baseline: Optional[int]
+    proposals_before_round: Annotated[Optional[int], keep_latest]
     agents_completed: Annotated[List[str], operator.add]
     loop_iterations: int
     one_round_only: Optional[bool]
