@@ -1,6 +1,7 @@
 from app.prompts.rag_prompts import RETRIEVE_PROMPT, URL_CONTENT_PROMPT
 import traceback
 import os
+import gzip
 import logging
 import uuid
 import hashlib
@@ -16,8 +17,10 @@ logger = logging.getLogger(__name__)
 
 
 VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION")
-CONTENT_LIMIT = 10  
-MAX_FILE_SIZE_MB = 50 
+CONTENT_LIMIT = 10
+MAX_FILE_SIZE_MB = 50
+RAW_FILE_TEXT_EXTENSIONS = {".txt", ".csv", ".tsv", ".json"}
+RAW_FILE_PREVIEW_MAX_CHARS = 4000
 class RAG:
     def __init__(self, llm, qdrant_client):
         """
@@ -401,6 +404,40 @@ class RAG:
         except Exception as e:
             logger.error(f"Error saving raw file: {e}")
             return {"error": f"Error uploading file: {e}"}
+
+    def read_raw_file_preview(self, content_id, user_id):
+        record = mongo_db_manager.get_content_file_by_id(user_id, content_id)
+        if not record:
+            return None
+
+        filename = record.get("filename") or content_id
+        file_path = record.get("file_path")
+        if not file_path or not os.path.exists(file_path):
+            return {"name": filename, "text": None, "size_bytes": None}
+
+        size_bytes = os.path.getsize(file_path)
+        base, ext = os.path.splitext(filename.lower())
+        gzipped = ext == ".gz"
+        real_ext = os.path.splitext(base)[1] if gzipped else ext
+
+        if real_ext not in RAW_FILE_TEXT_EXTENSIONS:
+            return {"name": filename, "text": None, "size_bytes": size_bytes}
+
+        try:
+            opener = gzip.open if gzipped else open
+            with opener(file_path, "rt", encoding="utf-8", errors="replace") as f:
+                text = f.read(RAW_FILE_PREVIEW_MAX_CHARS + 1)
+        except Exception as e:
+            logger.warning(f"Could not read raw file {content_id} for preview: {e}")
+            return {"name": filename, "text": None, "size_bytes": size_bytes}
+
+        truncated = len(text) > RAW_FILE_PREVIEW_MAX_CHARS
+        return {
+            "name": filename,
+            "text": text[:RAW_FILE_PREVIEW_MAX_CHARS],
+            "size_bytes": size_bytes,
+            "truncated": truncated,
+        }
 
     def save_web_content(self, url, user_id):
         try:
