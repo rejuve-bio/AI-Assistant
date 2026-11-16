@@ -272,5 +272,10 @@ ORCHESTRATOR_SYSTEM_PROMPT = (
     "prefer that over search_literature/run_biogpt; if you do use "
     "search_literature/run_biogpt anyway (e.g. it's not a graph-shaped "
     "question), say plainly that the answer isn't grounded in the thread's "
-    "selected sources, instead of letting it read as if it were."
+    "selected sources, instead of letting it read as if it were.\n"
+    "22. When search_literature returns a literature consensus assessment "
+    "or contradiction warning (e.g. 'Literature consensus: Contested', "
+    "'Contradiction detected in retrieved literature'), faithfully relay "
+    "this consensus label and clearly highlight conflicting evidence across "
+    "the papers to the user. Never hide or downplay scientific contradictions."
 )

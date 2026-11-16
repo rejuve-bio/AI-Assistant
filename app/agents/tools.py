@@ -19,6 +19,7 @@ from app.agents.subgraphs.hypothesis import (
 from app.agents.subgraphs.literature import RAG, build_literature_subgraph
 from app.Galaxy_integration.galaxy_proposal import propose_galaxy_run
 from app.prompts.rag_prompts import SEARCH_TERM_EXTRACTION_PROMPT
+from app.rag.literature_consensus import LiteratureConsensusAnalyzer, format_consensus_block
 from app.socket_manager import emit_to_user
 
 logger = logging.getLogger(__name__)
@@ -62,9 +63,9 @@ TOOL_SPECS = [
     },
     {
         "name": "search_literature",
-        "description": "Search the knowledge base, PubMed, and ClinicalTrials.gov for papers and trials matching a topic.",
+        "description": "Search the knowledge base, PubMed, and ClinicalTrials.gov for papers and trials matching a topic, and analyze scientific consensus and contradictions across retrieved literature.",
         "parameters": {"type": "object", "properties": {
-            "query": {"type": "string", "description": "the search topic"},
+            "query": {"type": "string", "description": "the search topic or scientific claim to evaluate"},
         }, "required": ["query"]},
     },
     {
@@ -548,6 +549,36 @@ class ToolsMixin:
                 text = result[key].get("text", "")
                 if text:
                     parts.append(text)
+
+        pubmed_papers = (result.get("pubmed_response") or {}).get("items") or []
+        consensus_analyzer = getattr(self, "consensus_analyzer", None)
+        if pubmed_papers and consensus_analyzer:
+            claim = ""
+            hypothesis = state.get("hypothesis_response") or {}
+            annotation = state.get("annotation_response") or {}
+            if hypothesis.get("text"):
+                claim = hypothesis["text"]
+            elif annotation:
+                claim = LiteratureConsensusAnalyzer.extract_claim_from_annotation(annotation) or ""
+            if not claim:
+                claim = query
+
+            try:
+                emit_to_user(user=state["user_id"], message="Analyzing literature consensus...", thread_id=state.get("thread_id"))
+                consensus_result = consensus_analyzer.analyze_consensus(claim, pubmed_papers)
+                logger.info(
+                    "Consensus analysis: %s (support=%d, oppose=%d, inconclusive=%d)",
+                    consensus_result.get("consensus_label"),
+                    consensus_result.get("support_count", 0),
+                    consensus_result.get("oppose_count", 0),
+                    consensus_result.get("inconclusive_count", 0),
+                )
+                state_update["consensus_result"] = consensus_result
+                consensus_block = format_consensus_block(consensus_result)
+                if consensus_block:
+                    parts.append(consensus_block)
+            except Exception as ce:
+                logger.error("Consensus analysis failed (non-fatal): %s", ce, exc_info=True)
 
         return {
             "content": "\n\n".join(parts) if parts else "No relevant literature found.",
