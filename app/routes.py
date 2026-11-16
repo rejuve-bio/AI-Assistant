@@ -11,7 +11,7 @@ import traceback
 import json
 import os
 from app.rag.utils.tts_utils import tts_manager
-from app.rag.rag import ALLOWED_FILE_EXTENSIONS
+from app.rag.file_types import ALLOWED_FILE_EXTENSIONS, FILE_TYPE_CATEGORIES, MAX_FILE_SIZE_MB
 from app.storage.redis import redis_manager
 from app.storage.mongo_storage import mongo_db_manager
 from app.prompts.quick_reply_prompts import QUICK_REPLIES_PROMPT
@@ -883,24 +883,10 @@ async def post_v1_files(
 def get_supported_file_types():
     """Return accepted file extensions grouped by category so the client
     can filter its file picker and show a help tooltip."""
-    categories = {
-        "gwas_summary_stats": [e for e in sorted(ALLOWED_FILE_EXTENSIONS)
-                               if e in {".tsv", ".txt", ".csv", ".gz", ".bgz"}],
-        "sequence_data":      [e for e in sorted(ALLOWED_FILE_EXTENSIONS)
-                               if "fastq" in e or "fq" in e],
-        "reference_sequences": [e for e in sorted(ALLOWED_FILE_EXTENSIONS)
-                                if "fasta" in e or e in {".fa", ".fa.gz"}],
-        "genomics":           [e for e in sorted(ALLOWED_FILE_EXTENSIONS)
-                               if e in {".vcf", ".vcf.gz", ".bed", ".bam", ".sam"}],
-        "gene_annotations":   [e for e in sorted(ALLOWED_FILE_EXTENSIONS)
-                               if e in {".gff", ".gff3", ".gtf"}],
-        "documents":          [e for e in sorted(ALLOWED_FILE_EXTENSIONS)
-                               if e in {".pdf"}],
-    }
     return JSONResponse(status_code=200, content={
         "supported_extensions": sorted(ALLOWED_FILE_EXTENSIONS),
-        "categories": categories,
-        "max_file_size_mb": 50,
+        "categories": {k: sorted(v) for k, v in FILE_TYPE_CATEGORIES.items()},
+        "max_file_size_mb": MAX_FILE_SIZE_MB,
     })
 
 
@@ -1005,7 +991,7 @@ async def post_v1_query(
             content_ids = [f["id"] for f in resolved_files]
             mongo_db_manager.add_thread_content_ids(thread_id, user_id, content_ids)
             for f in resolved_files:
-                mongo_db_manager.add_thread_resource(thread_id, user_id, "file", f["id"])
+                mongo_db_manager.add_thread_resource(thread_id, user_id, "file", f["id"], is_user_upload=True)
 
         if client_message_id:
             existing = mongo_db_manager.find_message_by_client_id(thread_id, user_id, client_message_id)

@@ -8,6 +8,8 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.graph import StateGraph, END
 from langgraph.types import Send
 
+from app.rag.file_types import format_file_description
+
 from app.agents.state import AgentState, UNRESOLVED_MARKER, RESET
 from app.agents.tools import TOOL_RUNNERS, grounding_violation, openai_tool_defs
 from app.agents.proposal_requirements import FILE_FORMAT_REQUIREMENTS
@@ -63,10 +65,7 @@ class WorkflowMixin:
                     file_info = self.store.get_content_file_by_id(user_id, rid) if self.store else None
                     if not file_info:
                         continue
-                    fname = file_info.get("filename", rid)
-                    fsize = (file_info.get("metadata") or {}).get("file_size_mb")
-                    size_str = f" ({fsize} MB)" if fsize is not None else ""
-                    lines.append(f"- file {rid}: {fname}{size_str}")
+                    lines.append(f"- file {rid}: {format_file_description(file_info, rid)}")
                     continue
                 else:
                     continue
