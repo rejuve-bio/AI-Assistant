@@ -14,7 +14,9 @@ PROPOSAL_DATA_SHAPE = {
     "hypothesis": {
         "status": "built -- propose_only path, app/hypothesis_generation/"
                   "hypothesis.py::propose_hypothesis, matches against "
-                  "existing GWAS projects only (never creates one)",
+                  "existing GWAS projects, or proposes a new project from "
+                  "an attached file (kind 'hypothesis-project', data.file_id) "
+                  "when none match",
         "fields": {
             "project_id": "the matched project",
             "project_name": "added beyond the doc's original 4 fields -- "
@@ -42,12 +44,14 @@ PROPOSAL_DATA_SHAPE = {
 
 FILE_FORMAT_REQUIREMENTS = {
     "hypothesis": {
-        "status": "confirmed from reading the real hypothesis-generation "
-                   "service's source code (POST /analysis-pipeline's "
-                   "gwas_file field) -- not guessed",
+        "status": "confirmed with the Hypothesis team directly (Slack, "
+                   "2026-11-16): a new project from an uploaded file goes "
+                   "through POST /analysis-pipeline as file_id, the id the "
+                   "file service returns, not gwas_file -- gwas_file stays "
+                   "for matching an existing catalog project",
         "accepted_extensions": [".tsv", ".txt", ".csv", ".gz", ".bgz"],
-        "note": "a GWAS summary-statistics file, uploaded as the gwas_file "
-                "field when creating a project",
+        "note": "a GWAS summary-statistics file, uploaded as the file_id "
+                "field when creating a project from a new upload",
     },
     "galaxy": {
         "status": "unknown -- not yet investigated against a real Galaxy "
