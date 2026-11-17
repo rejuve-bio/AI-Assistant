@@ -1,7 +1,44 @@
 import logging
+import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+_GALAXY_READY_STATES = {"ok", "deferred"}
+_GALAXY_FAILED_STATES = {"error", "failed_metadata", "discarded"}
+
+_PAIR_PATTERN = re.compile(
+    r"^(?P<sample>.+?)[._-](?:R)?(?P<read>[12])(?P<suffix>\.[^.]+(?:\.gz)?)$",
+    re.IGNORECASE,
+)
+
+
+def pair_attached_files(files: List[Dict[str, str]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
+    """Groups files into paired-end samples by filename convention
+    (sample_R1.fastq.gz / sample_R2.fastq.gz, etc). Returns (pairs, unpaired)."""
+    by_sample: Dict[str, Dict[str, Dict[str, str]]] = {}
+    unmatched: List[Dict[str, str]] = []
+
+    for f in files:
+        name = f.get("name") or ""
+        m = _PAIR_PATTERN.match(name)
+        if not m:
+            unmatched.append(f)
+            continue
+        sample = m.group("sample")
+        read = m.group("read")
+        by_sample.setdefault(sample, {})[f"r{read}"] = f
+
+    pairs: List[Dict[str, Any]] = []
+    unpaired: List[Dict[str, str]] = list(unmatched)
+    for sample, reads in by_sample.items():
+        if "r1" in reads and "r2" in reads:
+            pairs.append({"sample": sample, "r1": reads["r1"], "r2": reads["r2"]})
+        else:
+            unpaired.extend(reads.values())
+
+    return pairs, unpaired
 
 
 def _target_dict(target_type: str, target_id: str, target_version: Optional[str]) -> Dict[str, Any]:
@@ -16,6 +53,78 @@ def _branch_applies(inp: Dict[str, Any], filled: Dict[str, Any]) -> bool:
     if not when:
         return True
     return all(filled.get(k) == v for k, v in when.items())
+
+
+_FORMAT_SYNONYMS = {
+    "tsv": "tabular", "csv": "tabular", "txt": "tabular",
+    "fq": "fastq", "fq.gz": "fastq.gz",
+}
+
+
+def _file_matches_formats(name: str, formats: List[str]) -> bool:
+    name = (name or "").lower()
+    exts = []
+    if name.endswith(".gz"):
+        exts.append(name.rsplit(".", 2)[-2] + ".gz" if "." in name[:-3] else "gz")
+        exts.append(name[:-3].rsplit(".", 1)[-1] if "." in name[:-3] else "")
+    if "." in name:
+        exts.append(name.rsplit(".", 1)[-1])
+    exts = {_FORMAT_SYNONYMS.get(e, e) for e in exts if e}
+    return bool(exts & {f.lower() for f in formats})
+
+
+def _wait_for_galaxy_dataset(api, token: str, thread_id: str, galaxy_id: str,
+                              attempts: int = 8, delay: float = 1.0) -> Optional[str]:
+    """Polls thread_files for a just-delivered dataset's state. Returns the
+    final state once it's ready/failed, or None if still pending after all
+    attempts (caller treats that as not yet usable)."""
+    for _ in range(attempts):
+        files = api.thread_files(token, thread_id)
+        for item in (files or {}).get("items", []):
+            if item.get("src") == "hda" and item.get("id") == galaxy_id:
+                state = item.get("state")
+                if state in _GALAXY_READY_STATES or state in _GALAXY_FAILED_STATES:
+                    return state
+                break
+        time.sleep(delay)
+    return None
+
+
+def _deliver_for_unresolved(
+    api, file_service, token: str, thread_id: str,
+    inputs_schema: List[Dict[str, Any]], filled: Dict[str, Any],
+    unresolved: List[str], candidates: List[Dict[str, str]],
+) -> Tuple[Dict[str, Any], List[str], List[str]]:
+    used_ids = set()
+    still_unresolved = list(unresolved)
+    errors: List[str] = []
+    for path in list(unresolved):
+        inp = next((i for i in inputs_schema if i.get("path") == path), None)
+        if not inp or inp.get("type") not in ("data", "data_collection"):
+            continue
+        formats = inp.get("formats") or []
+        candidate = next(
+            (f for f in candidates if f.get("id") not in used_ids and _file_matches_formats(f.get("name", ""), formats)),
+            None,
+        )
+        if not candidate:
+            continue
+        delivery = file_service.deliver_to_galaxy(token, candidate["id"], thread_id)
+        galaxy_id = (((delivery or {}).get("delivery") or {}).get("galaxy") or {}).get("id")
+        if not galaxy_id:
+            errors.append(f"{inp.get('label', path)}: couldn't deliver {candidate.get('name')} to Galaxy ({(delivery or {}).get('error', 'unknown error')})")
+            continue
+        state = _wait_for_galaxy_dataset(api, token, thread_id, galaxy_id)
+        if state in _GALAXY_FAILED_STATES:
+            errors.append(f"{inp.get('label', path)}: {candidate.get('name')} failed in Galaxy (state: {state})")
+            continue
+        if state not in _GALAXY_READY_STATES:
+            errors.append(f"{inp.get('label', path)}: {candidate.get('name')} is still being delivered to Galaxy, try again shortly")
+            continue
+        filled[path] = {"src": "hda", "id": galaxy_id}
+        used_ids.add(candidate["id"])
+        still_unresolved.remove(path)
+    return filled, still_unresolved, errors
 
 
 def _fill_inputs(
@@ -61,26 +170,24 @@ def _fill_inputs(
     return filled, unresolved, summary
 
 
-def propose_galaxy_run(
-    api,
-    token: str,
-    thread_id: str,
-    target_type: str,
-    target_id: str,
-    target_version: Optional[str],
-    requested_values: Dict[str, Any],
+def _propose_single_run(
+    api, token: str, thread_id: str, target: Dict[str, Any], described_target: Dict[str, Any],
+    inputs_schema: List[Dict[str, Any]], real_name: str, requested_values: Dict[str, Any],
+    file_service=None, uploaded_candidates: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
-    target = _target_dict(target_type, target_id, target_version)
-
-    description = api.describe(token, thread_id, target)
-    if isinstance(description, dict) and description.get("error"):
-        return {"text": f"Couldn't read {target_id}'s requirements: {description['error']}", "json_format": None}
-
-    inputs_schema = description.get("inputs") or []
-    described_target = description.get("target") or target
-    real_name = described_target.get("name", target_id)
-
     filled, unresolved, summary = _fill_inputs(inputs_schema, requested_values)
+
+    delivery_errors: List[str] = []
+    if unresolved and file_service and uploaded_candidates:
+        filled, unresolved, delivery_errors = _deliver_for_unresolved(
+            api, file_service, token, thread_id, inputs_schema, filled, unresolved, uploaded_candidates
+        )
+        for path in list(filled):
+            inp = next((i for i in inputs_schema if i.get("path") == path), None)
+            if inp and not any(s["label"] == inp.get("label", path) for s in summary):
+                value = filled[path]
+                display = value.get("id") if isinstance(value, dict) else value
+                summary.append({"label": inp.get("label", path), "value": str(display)})
 
     if not unresolved and filled:
         validation = api.validate(token, thread_id, target, filled, {})
@@ -126,5 +233,91 @@ def propose_galaxy_run(
             text += f" ({len(unresolved)} setting(s) still needed in total -- I'll ask the rest after this one.)"
     else:
         text = f"{real_name} is ready to run with what's been set. Review it and run."
+    if delivery_errors:
+        text += " " + " ".join(delivery_errors)
 
     return {"text": text, "json_format": data}
+
+
+def _unmatched_required_data_paths(inputs_schema: List[Dict[str, Any]], requested_values: Dict[str, Any]) -> List[Dict[str, Any]]:
+    for_branches = dict(requested_values)
+    for inp in inputs_schema:
+        path = inp.get("path")
+        if path in for_branches or inp.get("type") in ("data", "data_collection"):
+            continue
+        if "default" in inp:
+            for_branches[path] = inp["default"]
+
+    out = []
+    for inp in inputs_schema:
+        path = inp.get("path")
+        if inp.get("type") != "data" or inp.get("optional") or not _branch_applies(inp, for_branches):
+            continue
+        if path in requested_values:
+            continue
+        if len(inp.get("matches") or []) == 1:
+            continue
+        out.append(inp)
+    return out
+
+
+def propose_galaxy_run(
+    api,
+    token: str,
+    thread_id: str,
+    target_type: str,
+    target_id: str,
+    target_version: Optional[str],
+    requested_values: Dict[str, Any],
+    file_service=None,
+    uploaded_candidates: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
+    target = _target_dict(target_type, target_id, target_version)
+
+    description = api.describe(token, thread_id, target)
+    if isinstance(description, dict) and description.get("error"):
+        return {"text": f"Couldn't read {target_id}'s requirements: {description['error']}", "json_format": None}
+
+    inputs_schema = description.get("inputs") or []
+    described_target = description.get("target") or target
+    real_name = described_target.get("name", target_id)
+
+    needed = _unmatched_required_data_paths(inputs_schema, requested_values)
+    candidates = list(uploaded_candidates or [])
+
+    file_groups: List[List[Dict[str, str]]] = []
+    if len(needed) == 1 and file_service and candidates:
+        formats = needed[0].get("formats") or []
+        matching = [f for f in candidates if _file_matches_formats(f.get("name", ""), formats)]
+        file_groups = [[f] for f in matching]
+        leftover = [f for f in candidates if f not in matching]
+    else:
+        leftover = candidates
+
+    if len(file_groups) <= 1:
+        group_candidates = file_groups[0] if file_groups else candidates
+        return _propose_single_run(
+            api, token, thread_id, target, described_target, inputs_schema, real_name,
+            requested_values, file_service=file_service, uploaded_candidates=group_candidates,
+        )
+
+    results = [
+        _propose_single_run(
+            api, token, thread_id, target, described_target, inputs_schema, real_name,
+            requested_values, file_service=file_service, uploaded_candidates=group,
+        )
+        for group in file_groups
+    ]
+    proposals = [r["json_format"] for r in results if r.get("json_format")]
+    ready = sum(1 for r in proposals if not r.get("unresolved"))
+    names = ", ".join(
+        "+".join(f.get("name", "?") for f in group) for group in file_groups
+    )
+    text = (
+        f"{real_name}: built {len(proposals)} separate run(s), once per "
+        f"{'pair' if len(file_groups[0]) == 2 else 'file'} ({names}) -- "
+        f"{ready} ready to run, {len(proposals) - ready} still need something."
+    )
+    if leftover:
+        text += f" {len(leftover)} other attached file(s) didn't match this tool's inputs and were left out."
+    return {"text": text, "proposals": proposals}
