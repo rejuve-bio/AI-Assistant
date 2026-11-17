@@ -246,10 +246,15 @@ TOOL_SPECS = [
             "guessed names. Only include a value the user explicitly "
             "named; leave everything else out so it either stays at "
             "Galaxy's own default or is honestly asked for in the reply. "
-            "Call this once per turn, after enough is known to build a "
-            "useful card -- it already calls describe and validate "
-            "itself, so don't call those separately just to build this "
-            "same card."
+            "NEVER put a file/data input (an attached or ticked file) in "
+            "requested_values yourself, and never invent a path name like "
+            "'data' for one -- this already delivers an attached/ticked "
+            "file to Galaxy and fills the matching data input on its own, "
+            "by file format. Just call this with the other settings; "
+            "leave file inputs out entirely. Call this once per turn, "
+            "after enough is known to build a useful card -- it already "
+            "calls describe and validate itself, so don't call those "
+            "separately just to build this same card."
         ),
         "parameters": {"type": "object", "properties": {
             "target_type": {"type": "string", "enum": ["tool", "workflow"]},
@@ -758,23 +763,36 @@ class ToolsMixin:
     def run_propose_galaxy(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
         emit_to_user(user=state["user_id"], message="Building the Galaxy proposal...", thread_id=state.get("thread_id"))
 
+        candidates = list(state.get("attached_files") or [])
+        seen_ids = {f.get("id") for f in candidates}
+        for r in (state.get("thread_resources") or []):
+            if r.get("kind") == "file" and r.get("name") and r.get("id") not in seen_ids:
+                candidates.append({"id": r["id"], "name": r["name"]})
+                seen_ids.add(r.get("id"))
+
         response = propose_galaxy_run(
             self.galaxy_runs_api, state.get("token"), state.get("thread_id"),
             arguments.get("target_type"), arguments.get("target_id"),
             arguments.get("target_version"), arguments.get("requested_values") or {},
+            file_service=self.file_service, uploaded_candidates=candidates,
         )
 
+        tool_args = {
+            "target_type": arguments.get("target_type"),
+            "target_id": arguments.get("target_id"),
+            "target_version": arguments.get("target_version"),
+            "requested_values": arguments.get("requested_values") or {},
+        }
         state_update = {}
-        if response.get("json_format"):
+        if response.get("proposals"):
+            state_update["proposals"] = [
+                {"kind": "galaxy", "data": data, "tool": "propose_galaxy_run", "arguments": tool_args}
+                for data in response["proposals"]
+            ]
+        elif response.get("json_format"):
             state_update["proposals"] = [{
                 "kind": "galaxy", "data": response["json_format"],
-                "tool": "propose_galaxy_run",
-                "arguments": {
-                    "target_type": arguments.get("target_type"),
-                    "target_id": arguments.get("target_id"),
-                    "target_version": arguments.get("target_version"),
-                    "requested_values": arguments.get("requested_values") or {},
-                },
+                "tool": "propose_galaxy_run", "arguments": tool_args,
             }]
         return {"content": response.get("text", ""), "state_update": state_update}
 
