@@ -578,22 +578,32 @@ class MongoManager:
         )
         return {"changed": True, "context": new_context}
 
-    def add_thread_resource(self, thread_id: str, user_id: str, kind: str, resource_id: str) -> None:
+    def add_thread_resource(self, thread_id: str, user_id: str, kind: str, resource_id: str,
+                            is_user_upload: bool = False) -> None:
         doc = self.threads_collection.find_one({"thread_id": thread_id, "user_id": user_id}, {"context": 1, "generated_resources": 1})
         resources = ((doc or {}).get("context") or {}).get("resources") or []
         generated = (doc or {}).get("generated_resources") or []
         already_selected = any(r.get("kind") == kind and r.get("id") == resource_id for r in resources)
         already_generated = any(r.get("kind") == kind and r.get("id") == resource_id for r in generated)
-        if already_selected and already_generated:
-            logger.info(f"Thread {thread_id}: resource {kind}/{resource_id} already attached, skipping.")
-            return
-        update = {"$set": {"updated_at": datetime.utcnow()}}
-        if not already_selected:
-            update["$set"]["context.resources"] = resources + [{"kind": kind, "id": resource_id}]
-        if not already_generated:
-            update["$set"]["generated_resources"] = generated + [{"kind": kind, "id": resource_id}]
+        # User uploads go into context.resources only, not generated_resources
+        if is_user_upload:
+            if already_selected:
+                logger.info(f"Thread {thread_id}: user-uploaded resource {kind}/{resource_id} already in context, skipping.")
+                return
+            update = {"$set": {"updated_at": datetime.utcnow(),
+                               "context.resources": resources + [{"kind": kind, "id": resource_id}]}}
+        else:
+            if already_selected and already_generated:
+                logger.info(f"Thread {thread_id}: resource {kind}/{resource_id} already attached, skipping.")
+                return
+            update = {"$set": {"updated_at": datetime.utcnow()}}
+            if not already_selected:
+                update["$set"]["context.resources"] = resources + [{"kind": kind, "id": resource_id}]
+            if not already_generated:
+                update["$set"]["generated_resources"] = generated + [{"kind": kind, "id": resource_id}]
         self.threads_collection.update_one({"thread_id": thread_id, "user_id": user_id}, update)
-        logger.info(f"Thread {thread_id}: attached resource {kind}/{resource_id} to context.resources and generated_resources.")
+        label = "user-uploaded" if is_user_upload else "generated"
+        logger.info(f"Thread {thread_id}: attached {label} resource {kind}/{resource_id} to context.resources.")
 
     def set_thread_title(self, thread_id: str, user_id: str, title: Optional[str]) -> None:
         if title:

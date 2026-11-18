@@ -17,7 +17,16 @@ logger = logging.getLogger(__name__)
 
 VECTOR_COLLECTION = os.getenv("VECTOR_COLLECTION")
 CONTENT_LIMIT = 10  
-MAX_FILE_SIZE_MB = 50 
+
+from app.rag.file_types import (  # noqa: E402
+    MAX_FILE_SIZE_MB,
+    FILE_TYPE_CATEGORIES,
+    ALLOWED_FILE_EXTENSIONS,
+    match_allowed_extension,
+    format_file_description,
+)
+
+
 class RAG:
     def __init__(self, llm, qdrant_client):
         """
@@ -364,6 +373,18 @@ class RAG:
         API calls (hypothesis, Galaxy, etc.), not knowledge retrieval.
         """
         try:
+            # Validate file extension -- match the longest allowed suffix
+            # so compound extensions like .tsv.gz, .fastq.gz work correctly.
+            filename = file.filename or ""
+            lower_name = filename.lower()
+            ext = match_allowed_extension(lower_name)
+            if ext is None:
+                simple_ext = os.path.splitext(lower_name)[1]
+                return {
+                    "error": f"File type '{simple_ext or '(none)'}' is not supported. "
+                             f"Accepted types: {', '.join(sorted(ALLOWED_FILE_EXTENSIONS))}"
+                }
+
             file_bytes = file.file.read()
             file_size_mb = len(file_bytes) / (1024 * 1024)
             if file_size_mb > MAX_FILE_SIZE_MB:

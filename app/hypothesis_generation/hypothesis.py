@@ -329,7 +329,8 @@ class HypothesisGeneration:
                             requested_tissue: Optional[str] = None,
                             requested_phenotype: Optional[str] = None,
                             requested_variant: Optional[str] = None,
-                            attached_file_note: Optional[str] = None) -> Dict[str, Any]:
+                            attached_file_note: Optional[str] = None,
+                            requested_file_id: Optional[str] = None) -> Dict[str, Any]:
         if not HYPOTHESIS_SERVICE_BASE_URL:
             logger.error("HYPOTHESIS_SERVICE_BASE_URL is not set")
             return {"text": "The hypothesis service isn't configured right now, so I can't look up GWAS projects.", "json_format": None}
@@ -372,6 +373,7 @@ class HypothesisGeneration:
                         "gwas_file": recommended.get("filename") or recommended.get("id"),
                         "project_name": self._suggest_project_name(recommended),
                         "phenotype": recommended.get("phenotype"),
+                        **({"file_id": requested_file_id} if requested_file_id else {}),
                     },
                     "recommended_file": {
                         "filename": recommended.get("filename") or recommended.get("id"),
@@ -424,6 +426,8 @@ class HypothesisGeneration:
             "tissue": tissue_name,
             "seed": 0,
         }
+        if requested_file_id:
+            data["file_id"] = requested_file_id
 
         if matched_cs:
             text = (
