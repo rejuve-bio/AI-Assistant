@@ -524,6 +524,26 @@ class Graph:
                 updated_json.get("nodes", []), updated_json.get("predicates", [])
             )
 
+            kept_nodes, dropped_nodes = self._drop_disconnected_nodes(
+                updated_json.get("nodes", []), updated_json.get("predicates", [])
+            )
+            if dropped_nodes:
+                kept_ids = {n["node_id"] for n in kept_nodes}
+                updated_json["nodes"] = kept_nodes
+                updated_json["predicates"] = [
+                    p for p in updated_json.get("predicates", [])
+                    if p.get("source") in kept_ids and p.get("target") in kept_ids
+                ]
+                validation_report["disconnected_nodes"] = [
+                    {"node_id": n["node_id"], "type": n.get("type"),
+                     "properties": n.get("properties", {})}
+                    for n in dropped_nodes
+                ]
+                logger.warning(
+                    f"Dropped {len(dropped_nodes)} disconnected node(s) not "
+                    f"linked to the rest of the query: {[n['node_id'] for n in dropped_nodes]}"
+                )
+
             logger.info(
                 f"Validated and updated JSON: \n{json.dumps(updated_json, indent=2)}"
             )
@@ -573,9 +593,6 @@ class Graph:
             raise
 
     def _select_best_matching_values_batch(self, items_with_candidates: dict) -> dict:
-        """One LLM call for all ambiguous items.
-        Returns {item: {"value": str, "auto_accept": bool} | None}
-        """
         if not items_with_candidates:
             return {}
         items_repr = {
@@ -601,8 +618,6 @@ class Graph:
 
     @staticmethod
     def _is_no_match(value) -> bool:
-        """True for every way the LLM spells "no match" — a real null, or one of
-        the null-ish strings it produces instead."""
         if value is None:
             return True
         if isinstance(value, str):
@@ -610,8 +625,6 @@ class Graph:
         return False
 
     def _build_alternatives_text(self, pending: dict) -> str:
-        """Show the other Neo4j candidates for each unconfirmed node, so the user
-        can pick a different one instead of the top suggestion."""
         candidates = pending.get("candidates", {})
         unconfirmed = pending.get("unconfirmed", [])
         lines = []
@@ -649,7 +662,6 @@ class Graph:
         return seen
 
     def _classify_confirmation(self, message: str) -> str:
-        """Uses the LLM to understand what the user meant — no keyword matching."""
         prompt = CONFIRMATION_CLASSIFICATION_PROMPT.format(message=message)
         try:
             result = self.llm.generate(prompt)
@@ -719,7 +731,6 @@ class Graph:
                 for key in ("needs_confirmation", "pending_substitutions", "all_list_values"):
                     node.pop(key, None)
 
-        # Deduplicate nodes that ended up with identical type + properties after substitution
         result["nodes"] = self._deduplicate_nodes(result.get("nodes", []), result.get("predicates", []))
         return result
 
@@ -751,6 +762,40 @@ class Graph:
 
         return cleaned, unresolved
 
+    def _drop_disconnected_nodes(self, nodes: list, predicates: list) -> tuple:
+        if len(nodes) <= 1:
+            return nodes, []
+
+        parent = {n["node_id"]: n["node_id"] for n in nodes}
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        for pred in predicates:
+            s, t = pred.get("source"), pred.get("target")
+            if s in parent and t in parent:
+                union(s, t)
+
+        components = {}
+        for n in nodes:
+            components.setdefault(find(n["node_id"]), []).append(n)
+
+        if len(components) <= 1:
+            return nodes, []
+
+        largest = max(components.values(), key=len)
+        kept_ids = {n["node_id"] for n in largest}
+        dropped = [n for n in nodes if n["node_id"] not in kept_ids]
+        return largest, dropped
+
     def _deduplicate_nodes(self, nodes: list, predicates: list) -> list:
         seen = {}       
         removed = {}    
@@ -775,11 +820,8 @@ class Graph:
 
         return kept
 
-    def _describe_annotation_result(self, query: str, validated_json: dict, organism: str = "human", thread_sources: list = None, unverified: bool = False) -> str:
-        """Generate a meaningful biological description from the query + validated JSON.
-        Replaces the generic 'structure created successfully' text so the aggregator
-        has real content to work with instead of hallucinating.
-        """
+    def _describe_annotation_result(self, query: str, validated_json: dict, organism: str = "human", thread_sources: list = None, unverified: bool = False, disconnected_nodes: list = None) -> str:
+
         try:
             nodes = validated_json.get("nodes", [])
             predicates = validated_json.get("predicates", [])
@@ -813,12 +855,26 @@ class Graph:
                 structure_summary += "\n\nEntities NOT found in the database:\n" + "\n".join(failed_nodes)
             if pred_lines:
                 structure_summary += "\n\nRelationships:\n" + "\n".join(pred_lines)
+            if disconnected_nodes:
+                dropped_lines = [
+                    f"- {n.get('type', 'unknown')}: "
+                    + (", ".join(f"{k}: {v}" for k, v in (n.get('properties') or {}).items()) or "(no properties)")
+                    for n in disconnected_nodes
+                ]
+                structure_summary += "\n\nLeft out, not connected to the rest of the query:\n" + "\n".join(dropped_lines)
 
             failure_instruction = (
                 " IMPORTANT: some requested entities were NOT found in the database (listed above). "
                 "Say so plainly and name them — do NOT describe this as successful or complete, and do "
                 "not imply those entities exist or were annotated."
                 if failed_nodes else ""
+            )
+            disconnected_instruction = (
+                " IMPORTANT: some requested entities (listed above as 'left out') had no relationship "
+                "connecting them to the rest of the query, so they were dropped -- a query can't run as "
+                "more than one disconnected piece. Say so plainly and name them, and ask the user how "
+                "they should relate to the rest if they still want them included."
+                if disconnected_nodes else ""
             )
             scope_instruction = (
                 f" IMPORTANT: this structure was built using only these source(s): {', '.join(thread_sources)}. "
@@ -838,7 +894,7 @@ class Graph:
             prompt = DESCRIBE_ANNOTATION_PROMPT.format(
                 query=query,
                 structure_summary=structure_summary,
-                failure_instruction=failure_instruction + scope_instruction + unverified_instruction,
+                failure_instruction=failure_instruction + disconnected_instruction + scope_instruction + unverified_instruction,
                 organism=organism,
             )
             result = self.llm.generate(prompt)
@@ -937,11 +993,6 @@ class Graph:
     }
 
     def _sources_covering_predicate(self, organism: str, source: str, rel_type: str, target: str) -> list:
-        """Which real data sources (for this organism) actually define this
-        exact {source}-{rel_type}-{target} relationship -- scans EVERY
-        per-source yaml file, not just the thread's currently selected
-        ones, so a dropped predicate's note can tell the user exactly which
-        source would need to be added instead of just saying it's missing."""
         directory = self._SOURCE_SCHEMA_DIRS.get(organism)
         if not directory or not os.path.isdir(directory):
             return []
@@ -965,18 +1016,6 @@ class Graph:
         return matches
 
     def _build_schema_from_sources(self, organism: str, sources: list):
-        """Dynamically assembles a schema restricted to only the named
-        sources, read from the real per-source yaml files -- so choosing a
-        source actually changes which node/relationship types extraction
-        can see, instead of 'sources' being pure unused metadata. Returns
-        None if no sources were given (caller falls back to the full
-        default schema in that case, same as today's behavior).
-
-        Also returns the same source/relationship/target facts as a flat
-        set of "{source}-{label}-{target}" strings -- the same shape
-        _validate_and_update checks predicates against -- so a caller can
-        validate against exactly what these sources actually support,
-        not just use this for the LLM-facing prompt text."""
         if not sources:
             return None, None
         directory = self._SOURCE_SCHEMA_DIRS.get(organism)
@@ -1078,7 +1117,6 @@ class Graph:
         return unconfirmed
 
     def _confirmation_needed(self, validation, unconfirmed, organism, sources=None):
-        """Pause the pipeline and hand the caller everything needed to resume."""
         logger.info(f"Returning needs_confirmation for {len(unconfirmed)} node(s)")
         return {
             "success": True,
@@ -1100,7 +1138,7 @@ class Graph:
         """A fully validated annotation, described for the user."""
         result = {
             "success": True,
-            "summary": self._describe_annotation_result(query, validation["updated_json"], organism=organism, thread_sources=thread_sources),
+            "summary": self._describe_annotation_result(query, validation["updated_json"], organism=organism, thread_sources=thread_sources, disconnected_nodes=validation["validation_report"].get("disconnected_nodes")),
             "json_format": validation["updated_json"],
             "organism": organism,
             "validation_report": validation["validation_report"],
@@ -1140,12 +1178,6 @@ class Graph:
                         logger.warning(f"Cheap id resolution unavailable, returning the draft marked unverified: {e}")
                         unverified = True
 
-                    # A proposal still needs its predicates checked against
-                    # the real schema (restricted to thread_sources when
-                    # set) -- otherwise an invented relationship (e.g. the
-                    # LLM echoing the user's own wording instead of a real
-                    # schema term) ends up on screen in the card with no
-                    # one ever having validated it.
                     validation = self._validate_and_update(
                         initial_json, neo4j=neo4j, schema_handler=schema_handler,
                         allowed_predicates=allowed_predicates,
@@ -1153,7 +1185,7 @@ class Graph:
                     if validation["validation_report"].get("validation_status") != "failed":
                         initial_json = validation["updated_json"]
                     dropped = validation["validation_report"].get("removed_predicates") or []
-                    summary = self._describe_annotation_result(query, initial_json, organism=organism, thread_sources=thread_sources, unverified=unverified)
+                    summary = self._describe_annotation_result(query, initial_json, organism=organism, thread_sources=thread_sources, unverified=unverified, disconnected_nodes=validation["validation_report"].get("disconnected_nodes"))
                     if dropped:
                         parts = []
                         for d in dropped:

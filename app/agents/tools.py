@@ -116,10 +116,10 @@ TOOL_SPECS = [
         ),
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "the full hypothesis request, in the user's own words, for context"},
-            "phenotype": {"type": "string", "description": "the phenotype/condition this is about. If the CURRENT message names one (even if it's the same word used before, e.g. 'arthritis' again), ALWAYS use that exact word -- never substitute a different phenotype/file name recorded in an earlier turn's proposal-summary note just because it's sitting in context. Only carry one forward from an earlier turn when the current message itself doesn't name one at all (e.g. 'same phenotype', 'try again'). Required: never omit, never guess one that wasn't actually named or implied."},
+            "phenotype": {"type": "string", "description": "the phenotype/condition this is about. If the CURRENT message names one (even if it's the same word used before, e.g. 'arthritis' again), ALWAYS use that exact word -- never substitute a different phenotype/file name recorded in an earlier turn's proposal-summary note just because it's sitting in context. Only carry one forward from an earlier turn when the current message itself doesn't name one at all (e.g. 'same phenotype', 'try again'). Omit entirely when the message names no phenotype at all -- e.g. it just attaches/confirms a file ('use this one', 'use sample_gwas.tsv') -- the tool matches on the attached file in that case. NEVER fill this with a placeholder like 'unknown' just to have a value."},
             "variant": {"type": "string", "description": "the lead variant (rsID) named, if any. Omit entirely if none was named -- never invent one."},
             "tissue": {"type": "string", "description": "ONLY set this if the user explicitly asked for a specific tissue instead of letting the strongest one be auto-picked (e.g. 'use adipose tissue instead', 'in CD8 T cells'). Omit entirely otherwise -- the tool auto-selects the project's strongest tissue by default. If the named tissue wasn't actually analyzed for the matched project, the tool falls back to the strongest one and says so."},
-        }, "required": ["query", "phenotype"]},
+        }, "required": ["query"]},
     },
     {
         "name": "list_lead_variants",
@@ -251,10 +251,15 @@ TOOL_SPECS = [
             "'data' for one -- this already delivers an attached/ticked "
             "file to Galaxy and fills the matching data input on its own, "
             "by file format. Just call this with the other settings; "
-            "leave file inputs out entirely. Call this once per turn, "
-            "after enough is known to build a useful card -- it already "
-            "calls describe and validate itself, so don't call those "
-            "separately just to build this same card."
+            "leave file inputs out entirely. When the user explicitly asks "
+            "to run WITHOUT a specific optional data input (e.g. 'without "
+            "the limits file', 'skip the adapter list'), put its exact "
+            "real path in excluded_paths -- it will be left unset rather "
+            "than auto-filled with whatever file happens to be attached. "
+            "Call this once per turn, after enough is known to build a "
+            "useful card -- it already calls describe and validate "
+            "itself, so don't call those separately just to build this "
+            "same card."
         ),
         "parameters": {"type": "object", "properties": {
             "target_type": {"type": "string", "enum": ["tool", "workflow"]},
@@ -263,6 +268,11 @@ TOOL_SPECS = [
             "requested_values": {
                 "type": "object",
                 "description": "settings the user explicitly named, keyed by their exact real path from galaxy_describe (e.g. {\"filter_options|length_required\": 30}). Omit anything not explicitly named -- never guess a value.",
+            },
+            "excluded_paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "real data-input paths the user explicitly said to run WITHOUT (e.g. an optional limits/adapter/contaminant file) -- left unset instead of auto-filled. Omit entirely when nothing was explicitly excluded.",
             },
         }, "required": ["target_type", "target_id"]},
     },
@@ -775,6 +785,7 @@ class ToolsMixin:
             arguments.get("target_type"), arguments.get("target_id"),
             arguments.get("target_version"), arguments.get("requested_values") or {},
             file_service=self.file_service, uploaded_candidates=candidates,
+            excluded_paths=arguments.get("excluded_paths") or [],
         )
 
         tool_args = {
@@ -782,6 +793,7 @@ class ToolsMixin:
             "target_id": arguments.get("target_id"),
             "target_version": arguments.get("target_version"),
             "requested_values": arguments.get("requested_values") or {},
+            "excluded_paths": arguments.get("excluded_paths") or [],
         }
         state_update = {}
         if response.get("proposals"):
