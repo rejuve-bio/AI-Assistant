@@ -94,45 +94,62 @@ def _deliver_for_unresolved(
     api, file_service, token: str, thread_id: str,
     inputs_schema: List[Dict[str, Any]], filled: Dict[str, Any],
     unresolved: List[str], candidates: List[Dict[str, str]],
+    used_galaxy_ids: Optional[set] = None, excluded_paths: Optional[List[str]] = None,
 ) -> Tuple[Dict[str, Any], List[str], List[str]]:
     used_ids = set()
+    used_galaxy_ids = set(used_galaxy_ids or set())
+    excluded = set(excluded_paths or [])
     still_unresolved = list(unresolved)
     errors: List[str] = []
     for path in list(unresolved):
+        if path in excluded:
+            still_unresolved.remove(path)
+            continue
         inp = next((i for i in inputs_schema if i.get("path") == path), None)
         if not inp or inp.get("type") not in ("data", "data_collection"):
             continue
         formats = inp.get("formats") or []
-        candidate = next(
-            (f for f in candidates if f.get("id") not in used_ids and _file_matches_formats(f.get("name", ""), formats)),
-            None,
-        )
-        if not candidate:
+        format_matches = [
+            f for f in candidates
+            if f.get("id") not in used_ids and _file_matches_formats(f.get("name", ""), formats)
+        ]
+        resolved = False
+        for candidate in format_matches:
+            delivery = file_service.deliver_to_galaxy(token, candidate["id"], thread_id)
+            galaxy_id = (((delivery or {}).get("delivery") or {}).get("galaxy") or {}).get("id")
+            if not galaxy_id:
+                errors.append(f"{inp.get('label', path)}: couldn't deliver {candidate.get('name')} to Galaxy ({(delivery or {}).get('error', 'unknown error')})")
+                continue
+            if galaxy_id in used_galaxy_ids:
+                used_ids.add(candidate["id"])
+                continue
+            state = _wait_for_galaxy_dataset(api, token, thread_id, galaxy_id)
+            if state in _GALAXY_FAILED_STATES:
+                errors.append(f"{inp.get('label', path)}: {candidate.get('name')} failed in Galaxy (state: {state})")
+                continue
+            if state not in _GALAXY_READY_STATES:
+                errors.append(f"{inp.get('label', path)}: {candidate.get('name')} is still being delivered to Galaxy, try again shortly")
+                continue
+            filled[path] = {"src": "hda", "id": galaxy_id}
+            used_ids.add(candidate["id"])
+            used_galaxy_ids.add(galaxy_id)
+            still_unresolved.remove(path)
+            resolved = True
+            break
+        if not resolved:
             continue
-        delivery = file_service.deliver_to_galaxy(token, candidate["id"], thread_id)
-        galaxy_id = (((delivery or {}).get("delivery") or {}).get("galaxy") or {}).get("id")
-        if not galaxy_id:
-            errors.append(f"{inp.get('label', path)}: couldn't deliver {candidate.get('name')} to Galaxy ({(delivery or {}).get('error', 'unknown error')})")
-            continue
-        state = _wait_for_galaxy_dataset(api, token, thread_id, galaxy_id)
-        if state in _GALAXY_FAILED_STATES:
-            errors.append(f"{inp.get('label', path)}: {candidate.get('name')} failed in Galaxy (state: {state})")
-            continue
-        if state not in _GALAXY_READY_STATES:
-            errors.append(f"{inp.get('label', path)}: {candidate.get('name')} is still being delivered to Galaxy, try again shortly")
-            continue
-        filled[path] = {"src": "hda", "id": galaxy_id}
-        used_ids.add(candidate["id"])
-        still_unresolved.remove(path)
     return filled, still_unresolved, errors
 
 
 def _fill_inputs(
-    inputs_schema: List[Dict[str, Any]], requested_values: Dict[str, Any]
-) -> Tuple[Dict[str, Any], List[str], List[Dict[str, str]]]:
+    inputs_schema: List[Dict[str, Any]], requested_values: Dict[str, Any],
+    excluded_paths: Optional[List[str]] = None,
+) -> Tuple[Dict[str, Any], List[str], List[Dict[str, str]], set]:
     filled: Dict[str, Any] = dict(requested_values)
     unresolved: List[str] = []
     summary: List[Dict[str, str]] = []
+    used_galaxy_ids: set = set()
+    excluded = set(excluded_paths or [])
 
     data_gating_keys = {
         k for inp in inputs_schema if inp.get("type") in ("data", "data_collection")
@@ -155,10 +172,15 @@ def _fill_inputs(
         has_default = "default" in inp and inp.get("type") not in ("data", "data_collection")
         required = not inp.get("optional", False) and (is_file_decider or not has_default)
 
+        if path in excluded and path not in filled:
+            summary.append({"label": inp.get("label", path), "value": "(left out, as asked)"})
+            continue
+
         if path not in filled and inp.get("type") == "data":
             matches = inp.get("matches") or []
             if len(matches) == 1:
                 filled[path] = {"src": "hda", "id": matches[0]["id"]}
+                used_galaxy_ids.add(matches[0]["id"])
 
         if path in filled:
             value = filled[path]
@@ -167,20 +189,24 @@ def _fill_inputs(
         elif required:
             unresolved.append(path)
 
-    return filled, unresolved, summary
+    return filled, unresolved, summary, used_galaxy_ids
 
 
 def _propose_single_run(
     api, token: str, thread_id: str, target: Dict[str, Any], described_target: Dict[str, Any],
     inputs_schema: List[Dict[str, Any]], real_name: str, requested_values: Dict[str, Any],
     file_service=None, uploaded_candidates: Optional[List[Dict[str, str]]] = None,
+    excluded_paths: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    filled, unresolved, summary = _fill_inputs(inputs_schema, requested_values)
+    filled, unresolved, summary, used_galaxy_ids = _fill_inputs(
+        inputs_schema, requested_values, excluded_paths=excluded_paths
+    )
 
     delivery_errors: List[str] = []
     if unresolved and file_service and uploaded_candidates:
         filled, unresolved, delivery_errors = _deliver_for_unresolved(
-            api, file_service, token, thread_id, inputs_schema, filled, unresolved, uploaded_candidates
+            api, file_service, token, thread_id, inputs_schema, filled, unresolved, uploaded_candidates,
+            used_galaxy_ids=used_galaxy_ids, excluded_paths=excluded_paths,
         )
         for path in list(filled):
             inp = next((i for i in inputs_schema if i.get("path") == path), None)
@@ -239,7 +265,11 @@ def _propose_single_run(
     return {"text": text, "json_format": data}
 
 
-def _unmatched_required_data_paths(inputs_schema: List[Dict[str, Any]], requested_values: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _unmatched_required_data_paths(
+    inputs_schema: List[Dict[str, Any]], requested_values: Dict[str, Any],
+    excluded_paths: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    excluded = set(excluded_paths or [])
     for_branches = dict(requested_values)
     for inp in inputs_schema:
         path = inp.get("path")
@@ -253,7 +283,7 @@ def _unmatched_required_data_paths(inputs_schema: List[Dict[str, Any]], requeste
         path = inp.get("path")
         if inp.get("type") != "data" or inp.get("optional") or not _branch_applies(inp, for_branches):
             continue
-        if path in requested_values:
+        if path in requested_values or path in excluded:
             continue
         if len(inp.get("matches") or []) == 1:
             continue
@@ -271,6 +301,7 @@ def propose_galaxy_run(
     requested_values: Dict[str, Any],
     file_service=None,
     uploaded_candidates: Optional[List[Dict[str, str]]] = None,
+    excluded_paths: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     target = _target_dict(target_type, target_id, target_version)
 
@@ -282,7 +313,7 @@ def propose_galaxy_run(
     described_target = description.get("target") or target
     real_name = described_target.get("name", target_id)
 
-    needed = _unmatched_required_data_paths(inputs_schema, requested_values)
+    needed = _unmatched_required_data_paths(inputs_schema, requested_values, excluded_paths=excluded_paths)
     candidates = list(uploaded_candidates or [])
 
     file_groups: List[List[Dict[str, str]]] = []
@@ -299,12 +330,14 @@ def propose_galaxy_run(
         return _propose_single_run(
             api, token, thread_id, target, described_target, inputs_schema, real_name,
             requested_values, file_service=file_service, uploaded_candidates=group_candidates,
+            excluded_paths=excluded_paths,
         )
 
     results = [
         _propose_single_run(
             api, token, thread_id, target, described_target, inputs_schema, real_name,
             requested_values, file_service=file_service, uploaded_candidates=group,
+            excluded_paths=excluded_paths,
         )
         for group in file_groups
     ]

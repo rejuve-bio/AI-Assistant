@@ -251,10 +251,15 @@ TOOL_SPECS = [
             "'data' for one -- this already delivers an attached/ticked "
             "file to Galaxy and fills the matching data input on its own, "
             "by file format. Just call this with the other settings; "
-            "leave file inputs out entirely. Call this once per turn, "
-            "after enough is known to build a useful card -- it already "
-            "calls describe and validate itself, so don't call those "
-            "separately just to build this same card."
+            "leave file inputs out entirely. When the user explicitly asks "
+            "to run WITHOUT a specific optional data input (e.g. 'without "
+            "the limits file', 'skip the adapter list'), put its exact "
+            "real path in excluded_paths -- it will be left unset rather "
+            "than auto-filled with whatever file happens to be attached. "
+            "Call this once per turn, after enough is known to build a "
+            "useful card -- it already calls describe and validate "
+            "itself, so don't call those separately just to build this "
+            "same card."
         ),
         "parameters": {"type": "object", "properties": {
             "target_type": {"type": "string", "enum": ["tool", "workflow"]},
@@ -263,6 +268,11 @@ TOOL_SPECS = [
             "requested_values": {
                 "type": "object",
                 "description": "settings the user explicitly named, keyed by their exact real path from galaxy_describe (e.g. {\"filter_options|length_required\": 30}). Omit anything not explicitly named -- never guess a value.",
+            },
+            "excluded_paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "real data-input paths the user explicitly said to run WITHOUT (e.g. an optional limits/adapter/contaminant file) -- left unset instead of auto-filled. Omit entirely when nothing was explicitly excluded.",
             },
         }, "required": ["target_type", "target_id"]},
     },
@@ -775,6 +785,7 @@ class ToolsMixin:
             arguments.get("target_type"), arguments.get("target_id"),
             arguments.get("target_version"), arguments.get("requested_values") or {},
             file_service=self.file_service, uploaded_candidates=candidates,
+            excluded_paths=arguments.get("excluded_paths") or [],
         )
 
         tool_args = {
@@ -782,6 +793,7 @@ class ToolsMixin:
             "target_id": arguments.get("target_id"),
             "target_version": arguments.get("target_version"),
             "requested_values": arguments.get("requested_values") or {},
+            "excluded_paths": arguments.get("excluded_paths") or [],
         }
         state_update = {}
         if response.get("proposals"):
