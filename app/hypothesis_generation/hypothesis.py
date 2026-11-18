@@ -306,7 +306,8 @@ class HypothesisGeneration:
     def _suggest_project_name(cls, gwas_file: Dict[str, Any]) -> Optional[str]:
         phenotype = gwas_file.get("phenotype")
         if not phenotype:
-            return None
+            fallback = gwas_file.get("filename") or gwas_file.get("id")
+            return cls._project_name_from_filename(fallback) if fallback else None
         name = cls._trim_phenotype_for_name(phenotype)
         sex = (gwas_file.get("sex") or "").lower()
         if sex == "female":
@@ -316,8 +317,10 @@ class HypothesisGeneration:
         return name
 
     @staticmethod
-    def _project_name_from_filename(filename: str) -> str:
-        stem = re.sub(r"\.[a-z0-9]+(\.gz)?$", "", filename or "", flags=re.IGNORECASE)
+    def _project_name_from_filename(filename: str) -> Optional[str]:
+        if not filename:
+            return None
+        stem = re.sub(r"\.[a-z0-9]+(\.gz)?$", "", filename, flags=re.IGNORECASE)
         return re.sub(r"[_-]+", " ", stem).strip() or filename
 
     @staticmethod
@@ -379,10 +382,12 @@ class HypothesisGeneration:
                     else self._match_uploaded_file_by_name(searched_phenotype or user_query, attached_gwas_files)
                 )
                 if chosen:
-                    project_name = (
-                        self._trim_phenotype_for_name(searched_phenotype) if searched_phenotype
-                        else self._project_name_from_filename(chosen.get("name"))
-                    )
+                    filename_part = self._project_name_from_filename(chosen.get("name"))
+                    if searched_phenotype:
+                        phenotype_part = self._trim_phenotype_for_name(searched_phenotype)
+                        project_name = f"{phenotype_part} ({filename_part})" if filename_part else phenotype_part
+                    else:
+                        project_name = filename_part
                     intro = (
                         f"'{searched_phenotype}' isn't one of your existing projects, but "
                         if searched_phenotype else ""
