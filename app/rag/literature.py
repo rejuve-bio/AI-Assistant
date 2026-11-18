@@ -17,6 +17,16 @@ _GENERIC_QUERY_TERMS = {
 }
 
 
+def _truncate_on_word(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    last_space = cut.rfind(" ")
+    if last_space > 0:
+        cut = cut[:last_space]
+    return cut.rstrip(",;:.") + "..."
+
+
 def _matches_actual_query(haystack_text: str, query: str) -> bool:
     terms = [t for t in re.findall(r"[A-Za-z0-9\-]+", query) if len(t) > 2 and t.lower() not in _GENERIC_QUERY_TERMS]
     if not terms:
@@ -81,7 +91,7 @@ def search_pubmed(query: str, max_results: int = 10, min_year: int = None) -> di
             if not title or len(title) < 5:
                 continue  # skip articles with missing/broken titles
             abstract_parts = [_element_full_text(t) for t in article.findall(".//AbstractText")]
-            abstract = " ".join(p for p in abstract_parts if p)[:600]
+            abstract = _truncate_on_word(" ".join(p for p in abstract_parts if p), 600)
             year = article.findtext(".//PubDate/Year") or article.findtext(
                 ".//PubDate/MedlineDate", ""
             )[:4]
