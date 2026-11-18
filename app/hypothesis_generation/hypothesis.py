@@ -316,6 +316,11 @@ class HypothesisGeneration:
         return name
 
     @staticmethod
+    def _project_name_from_filename(filename: str) -> str:
+        stem = re.sub(r"\.[a-z0-9]+(\.gz)?$", "", filename or "", flags=re.IGNORECASE)
+        return re.sub(r"[_-]+", " ", stem).strip() or filename
+
+    @staticmethod
     def _new_project_requirements_note() -> str:
         hyp = FILE_FORMAT_REQUIREMENTS.get("hypothesis", {})
         extensions = hyp.get("accepted_extensions") or []
@@ -365,23 +370,30 @@ class HypothesisGeneration:
                 "json_format": None,
             }
 
-        searched_phenotype = requested_phenotype or user_query
-        project = self._match_project_by_phenotype(searched_phenotype, projects)
+        searched_phenotype = requested_phenotype
+        project = self._match_project_by_phenotype(searched_phenotype, projects) if searched_phenotype else None
         if not project:
             if attached_gwas_files:
                 chosen = (
                     attached_gwas_files[0] if len(attached_gwas_files) == 1
-                    else self._match_uploaded_file_by_name(searched_phenotype, attached_gwas_files)
+                    else self._match_uploaded_file_by_name(searched_phenotype or user_query, attached_gwas_files)
                 )
                 if chosen:
+                    project_name = (
+                        self._trim_phenotype_for_name(searched_phenotype) if searched_phenotype
+                        else self._project_name_from_filename(chosen.get("name"))
+                    )
+                    intro = (
+                        f"'{searched_phenotype}' isn't one of your existing projects, but "
+                        if searched_phenotype else ""
+                    )
                     return {
-                        "text": (f"'{searched_phenotype}' isn't one of your existing projects, but "
-                                 f"you attached **{chosen.get('name')}** -- I can create a new "
+                        "text": (f"{intro}you attached **{chosen.get('name')}** -- I can create a new "
                                  f"hypothesis project from that file instead.") + attached_suffix,
                         "kind": "hypothesis-project",
                         "json_format": {
                             "file_id": chosen.get("id"),
-                            "project_name": self._trim_phenotype_for_name(searched_phenotype) if searched_phenotype else None,
+                            "project_name": project_name,
                             "phenotype": searched_phenotype,
                         },
                         "recommended_file": {
@@ -391,11 +403,19 @@ class HypothesisGeneration:
                         },
                     }
                 names_attached = ", ".join(f.get("name", "?") for f in attached_gwas_files)
+                which = f"for '{searched_phenotype}' " if searched_phenotype else ""
                 return {
                     "text": (f"You attached {len(attached_gwas_files)} files that look like GWAS "
-                             f"data ({names_attached}), but I can't tell which one is for "
-                             f"'{searched_phenotype}' from the names alone. Which one should I "
-                             "use?") + attached_suffix,
+                             f"data ({names_attached}), but I can't tell which one is {which}"
+                             "from the names alone. Which one should I use?") + attached_suffix,
+                    "json_format": None,
+                }
+
+            if not searched_phenotype:
+                names = ", ".join(p.get("phenotype", "?") for p in projects)
+                return {
+                    "text": ("I need either a phenotype to match against your existing projects "
+                             f"({names}), or a GWAS file attached to build a new one from.") + attached_suffix,
                     "json_format": None,
                 }
 
