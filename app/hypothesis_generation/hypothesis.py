@@ -374,7 +374,10 @@ class HypothesisGeneration:
             }
 
         searched_phenotype = requested_phenotype
-        project = self._match_project_by_phenotype(searched_phenotype, projects) if searched_phenotype else None
+        project = (
+            self._match_project_by_phenotype(searched_phenotype, projects)
+            if searched_phenotype and not attached_gwas_files else None
+        )
         if not project:
             if attached_gwas_files:
                 chosen = (
