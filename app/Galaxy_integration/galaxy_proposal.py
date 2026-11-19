@@ -178,7 +178,7 @@ def _fill_inputs(
 
         if path not in filled and inp.get("type") == "data":
             matches = inp.get("matches") or []
-            if len(matches) == 1:
+            if len(matches) == 1 and matches[0]["id"] not in used_galaxy_ids:
                 filled[path] = {"src": "hda", "id": matches[0]["id"]}
                 used_galaxy_ids.add(matches[0]["id"])
 
@@ -215,11 +215,13 @@ def _propose_single_run(
                 display = value.get("id") if isinstance(value, dict) else value
                 summary.append({"label": inp.get("label", path), "value": str(display)})
 
+    validation_errors: Dict[str, str] = {}
     if not unresolved and filled:
         validation = api.validate(token, thread_id, target, filled, {})
         if isinstance(validation, dict) and validation.get("errors"):
             for path, message in validation["errors"].items():
-                unresolved.append(f"{path} ({message})")
+                unresolved.append(path)
+                validation_errors[path] = message
                 filled.pop(path, None)
 
     full_description = api.describe(token, thread_id, target, full=True)
@@ -248,13 +250,18 @@ def _propose_single_run(
         "all_values": all_values,
         "defaults_count": defaults_count,
         "unresolved": unresolved,
+        "validation_errors": validation_errors,
     }
 
     if unresolved:
         first = unresolved[0]
         inp = next((i for i in inputs_schema if i.get("path") == first), None)
         label = inp.get("label", first) if inp else first
-        text = f"{real_name}: I still need {label} to proceed. What should it be?"
+        reason = validation_errors.get(first)
+        if reason:
+            text = f"{real_name}: {label} was rejected -- {reason} What should it be instead?"
+        else:
+            text = f"{real_name}: I still need {label} to proceed. What should it be?"
         if len(unresolved) > 1:
             text += f" ({len(unresolved)} setting(s) still needed in total -- I'll ask the rest after this one.)"
     else:
