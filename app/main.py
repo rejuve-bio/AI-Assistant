@@ -8,6 +8,7 @@ from .Galaxy_integration.galaxy import GalaxyHandler
 from .Galaxy_integration.galaxy_runs_api import GalaxyRunsAPI
 from .file_service.client import FileServiceClient
 from .biogpt_agent.biogpt import BioGPTAgent
+from .rag.literature_consensus import LiteratureConsensusAnalyzer
 from .agents import (
     ToolsMixin,
     AggregationMixin,
@@ -59,6 +60,7 @@ class AiAssistance(
         self.file_service = FileServiceClient()
         self.embedding_model = embedding_model
         self.biogpt = BioGPTAgent(basic_llm=basic_llm, advanced_llm=advanced_llm)
+        self.consensus_analyzer = LiteratureConsensusAnalyzer(basic_llm)
 
         logger.info(
             f"AiAssistance initialized with advanced_llm: {type(self.advanced_llm).__name__}"
@@ -133,6 +135,7 @@ class AiAssistance(
                 "hypothesis_response": None,
                 "pubmed_response": None,
                 "clinical_trials_response": None,
+                "consensus_result": None,
                 "proposals": [],
                 "proposals_baseline": 0,
                 "agents_completed": [],

@@ -47,6 +47,7 @@ class AgentState(TypedDict):
     biogpt_response: Annotated[Optional[Dict[str, Any]], keep_latest]
     hypothesis_response: Annotated[Optional[Dict[str, Any]], keep_latest]
     pubmed_response: Annotated[Optional[Dict[str, Any]], keep_latest]
+    consensus_result: Annotated[Optional[Dict[str, Any]], keep_latest]
     clinical_trials_response: Annotated[Optional[Dict[str, Any]], keep_latest]
     proposals: Annotated[List[Dict[str, Any]], operator.add]
     proposals_baseline: Optional[int]

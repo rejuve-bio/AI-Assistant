@@ -33,6 +33,7 @@ class LiteratureState(TypedDict, total=False):
     min_year: Optional[int]
     rag_response: Optional[Dict[str, Any]]
     pubmed_response: Optional[Dict[str, Any]]
+    consensus_result: Optional[Dict[str, Any]]
     clinical_trials_response: Optional[Dict[str, Any]]
     agents_completed: Annotated[List[str], operator.add]
     messages: Annotated[List[Any], operator.add]
