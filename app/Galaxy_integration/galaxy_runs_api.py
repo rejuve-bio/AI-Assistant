@@ -72,9 +72,14 @@ class GalaxyRunsAPI:
         )
 
     def thread_files(self, token: str, thread_id: str) -> Dict[str, Any]:
-        
+
         return self._make_api_request(
             "GET", f"{GALAXY_RUNS_API_BASE_URL}/v1/galaxy/threads/{thread_id}/files", token
+        )
+
+    def get_run(self, token: str, run_id: str) -> Dict[str, Any]:
+        return self._make_api_request(
+            "GET", f"{GALAXY_RUNS_API_BASE_URL}/v1/galaxy/runs/{run_id}", token
         )
 
     def validate(
