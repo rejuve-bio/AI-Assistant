@@ -193,12 +193,19 @@ TOOL_SPECS = [
         "name": "galaxy_thread_files",
         "description": (
             "List every file already uploaded into THIS thread's Galaxy "
-            "history (dataset ids, names, formats) -- Galaxy's own ground "
+            "history (dataset ids, names, formats, and each one's "
+            "genome_build when Galaxy has set one) -- Galaxy's own ground "
             "truth of what's available to use as an input. Call this "
             "before asking the user to specify a file for a Galaxy input, "
             "so an already-uploaded file can be matched automatically "
-            "instead of asking for one that's already there. Takes no "
-            "arguments -- the thread is already known from context."
+            "instead of asking for one that's already there. Also call this "
+            "before proposing a tool whose options depend on an earlier "
+            "step's output genome (e.g. a gene-counting tool whose built-in "
+            "annotations only cover specific genomes) -- check the aligned "
+            "file's real genome_build here against that tool's listed valid "
+            "values from galaxy_describe, rather than assuming a built-in "
+            "option will match. Takes no arguments -- the thread is already "
+            "known from context."
         ),
         "parameters": {"type": "object", "properties": {}},
     },
@@ -241,11 +248,25 @@ TOOL_SPECS = [
             "review and run, not just a text description. Call "
             "galaxy_describe on this exact target FIRST if its real input "
             "paths aren't already known from this conversation -- "
-            "requested_values must be keyed by those exact real paths "
-            "(e.g. 'filter_options|length_required'), never invented or "
-            "guessed names. Only include a value the user explicitly "
-            "named; leave everything else out so it either stays at "
-            "Galaxy's own default or is honestly asked for in the reply. "
+            "requested_values must be keyed by those exact real \"path\" "
+            "strings from galaxy_describe's listing (e.g. "
+            "'filter_options|length_required'), NEVER by an input's label "
+            "or type -- Galaxy rejects an unknown key outright, and the "
+            "card will look stuck re-asking the same thing forever. For a "
+            "plain setting, only include a value the user explicitly "
+            "named; leave the rest out so Galaxy's own default applies "
+            "silently. For a setting that CONTROLS A BRANCH (galaxy_describe "
+            "shows other inputs as \"only applies when <this path>=<value>\"), "
+            "you must decide and include a real value yourself even when "
+            "the user never mentioned it -- an unset branch-controlling "
+            "setting can't be left to Galaxy's default, since nothing else "
+            "can be resolved until it's picked. Use galaxy_describe's own "
+            "default for it UNLESS that default's branch needs a data "
+            "input this thread has no matching/attached file for -- in "
+            "that case pick one of its other listed \"valid values\" whose "
+            "branch's data needs this thread can actually satisfy, and say "
+            "which one you picked and why. Only ask the user when none of "
+            "the listed values work with what's available. "
             "NEVER put a file/data input (an attached or ticked file) in "
             "requested_values yourself, and never invent a path name like "
             "'data' for one -- this already delivers an attached/ticked "
@@ -267,7 +288,7 @@ TOOL_SPECS = [
             "target_version": {"type": "string", "description": "the target's version, if known"},
             "requested_values": {
                 "type": "object",
-                "description": "settings the user explicitly named, keyed by their exact real path from galaxy_describe (e.g. {\"filter_options|length_required\": 30}). Omit anything not explicitly named -- never guess a value.",
+                "description": "keyed by each input's exact real \"path\" string from galaxy_describe (e.g. {\"filter_options|length_required\": 30}) -- NEVER by its label or type. Include a plain setting only when the user explicitly named it. Include a branch-controlling setting always (Galaxy's own default, or an alternative value whose branch this thread can actually satisfy -- see this tool's own description).",
             },
             "excluded_paths": {
                 "type": "array",
@@ -455,6 +476,25 @@ def grounding_violation(tool_name: str, arguments: Dict[str, Any], state: AgentS
             "named by the user or came back from a prior tool's real result."
         )
     return None
+
+
+def _describe_galaxy_run(run: Dict[str, Any]) -> str:
+    status = run.get("status", "unknown")
+    target = run.get("target") or {}
+    name = target.get("name") or target.get("id") or "the run"
+    lines = [f"{name}: status={status}"]
+    if run.get("galaxy_state"):
+        lines.append(f"Galaxy's own state: {run['galaxy_state']}")
+    error = run.get("error")
+    if isinstance(error, dict) and error.get("message"):
+        step = f" (step: {error['step']})" if error.get("step") else ""
+        lines.append(f"Error{step}: {error['message']}")
+    outputs = run.get("outputs") or []
+    if outputs:
+        lines.append(
+            "Outputs: " + ", ".join(o.get("name", o.get("id", "?")) for o in outputs)
+        )
+    return "\n".join(lines)
 
 
 class ToolsMixin:
@@ -689,7 +729,8 @@ class ToolsMixin:
 
     @staticmethod
     def _galaxy_api_error(response: Dict[str, Any]) -> Optional[str]:
-        return response.get("error") if isinstance(response, dict) and response.get("error") else None
+        error = response.get("error") if isinstance(response, dict) else None
+        return error if isinstance(error, str) else None
 
     def run_galaxy_search(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
         query = arguments.get("query") or state["user_query"]
@@ -727,13 +768,31 @@ class ToolsMixin:
             return {"content": f"{response.get('target', {}).get('name', target.get('id'))} has no inputs to report (or all are at Galaxy defaults)."}
         lines = []
         for inp in inputs:
-            required = "" if inp.get("when") else " (required unless its branch doesn't apply)"
+            path = inp.get("path")
+            when = inp.get("when") or {}
+            branch_note = (
+                f" -- only applies when {', '.join(f'{k}={v!r}' for k, v in when.items())}"
+                if when else " (required unless its branch doesn't apply)"
+            )
+            default_note = f", default={inp['default']!r}" if "default" in inp else ""
+            options = inp.get("options") or []
+            options_note = f", valid values: {', '.join(repr(o) for o in options)}" if options else ""
+            formats = inp.get("formats") or []
+            formats_note = f", accepted formats: {', '.join(formats)}" if formats else ""
             match_note = ""
             matches = inp.get("matches") or []
             if matches:
                 match_note = " -- already matched in this thread: " + ", ".join(m.get("name", m.get("id", "?")) for m in matches)
-            lines.append(f"- {inp.get('label', inp.get('path'))} [{inp.get('type')}]{required}{match_note}")
-        return {"content": f"{target.get('id')}'s real inputs:\n" + "\n".join(lines)}
+            lines.append(
+                f"- path=\"{path}\" -- {inp.get('label', path)} [{inp.get('type')}]"
+                f"{default_note}{options_note}{formats_note}{branch_note}{match_note}"
+            )
+        return {
+            "content": (
+                f"{target.get('id')}'s real inputs (use the exact \"path\" string as the key in "
+                "requested_values/inputs -- never the label or type):\n" + "\n".join(lines)
+            )
+        }
 
     def run_galaxy_thread_files(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
         emit_to_user(user=state["user_id"], message="Checking this thread's Galaxy files...", thread_id=state.get("thread_id"))
@@ -747,8 +806,22 @@ class ToolsMixin:
         items = items or []
         if not items:
             return {"content": "No files have been uploaded into this thread's Galaxy history yet."}
-        lines = [f"- {f.get('name', f.get('id', '?'))} ({f.get('format', '?')}, id={f.get('id')})" for f in items]
-        return {"content": "Files already in this thread's Galaxy history:\n" + "\n".join(lines)}
+        lines = []
+        for f in items:
+            genome_build = f" genome_build={f['genome_build']!r}" if f.get("genome_build") else ""
+            state_note = f" state={f['state']!r}" if f.get("state") else ""
+            lines.append(
+                f"- {f.get('name', f.get('id', '?'))} ({f.get('format', '?')}, id={f.get('id')}"
+                f"{genome_build}{state_note})"
+            )
+        return {
+            "content": (
+                "Files already in this thread's Galaxy history (use genome_build to match "
+                "a tool's genome-specific options, e.g. featureCounts' built-in annotations, "
+                "to what an earlier step's OUTPUT actually ended up labeled as):\n"
+                + "\n".join(lines)
+            )
+        }
 
     def run_galaxy_validate(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
         target = {"type": arguments.get("target_type"), "id": arguments.get("target_id")}
@@ -924,6 +997,14 @@ class ToolsMixin:
                     token, graph_id, user_id, query, thread_id=thread_id
                 )
                 summary_text = summary_result.get('text', '') if isinstance(summary_result, dict) else summary_result
+                emit_to_user(user=user_id, message=ANALYZING_MSG, thread_id=thread_id)
+            elif resource == "galaxy":
+                run = self.galaxy_runs_api.get_run(token, graph_id)
+                error = self._galaxy_api_error(run)
+                if error:
+                    summary_text = f"Couldn't read that Galaxy run: {error}"
+                else:
+                    summary_text = _describe_galaxy_run(run)
                 emit_to_user(user=user_id, message=ANALYZING_MSG, thread_id=thread_id)
             else:
                 return "Invalid resource type specified."

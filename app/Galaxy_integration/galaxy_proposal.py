@@ -298,6 +298,36 @@ def _unmatched_required_data_paths(
     return out
 
 
+def _normalize_requested_values(
+    inputs_schema: List[Dict[str, Any]], requested_values: Dict[str, Any]
+) -> Dict[str, Any]:
+    real_paths = {inp.get("path") for inp in inputs_schema}
+    by_label = {
+        (inp.get("label") or "").strip().lower(): inp.get("path")
+        for inp in inputs_schema if inp.get("label")
+    }
+    normalized: Dict[str, Any] = {}
+    for key, value in requested_values.items():
+        if key in real_paths:
+            normalized[key] = value
+            continue
+        by_label_match = by_label.get((key or "").strip().lower())
+        if by_label_match:
+            logger.info(f"requested_values key {key!r} isn't a real path -- remapped by label to {by_label_match!r}")
+            normalized[by_label_match] = value
+            continue
+        by_type = [
+            inp.get("path") for inp in inputs_schema
+            if inp.get("type") == key and inp.get("path") not in normalized
+        ]
+        if len(by_type) == 1:
+            logger.info(f"requested_values key {key!r} isn't a real path -- remapped by type to {by_type[0]!r}")
+            normalized[by_type[0]] = value
+            continue
+        logger.warning(f"requested_values key {key!r} doesn't match any real input path, label, or unique type -- dropped")
+    return normalized
+
+
 def propose_galaxy_run(
     api,
     token: str,
@@ -319,6 +349,8 @@ def propose_galaxy_run(
     inputs_schema = description.get("inputs") or []
     described_target = description.get("target") or target
     real_name = described_target.get("name", target_id)
+
+    requested_values = _normalize_requested_values(inputs_schema, requested_values)
 
     needed = _unmatched_required_data_paths(inputs_schema, requested_values, excluded_paths=excluded_paths)
     candidates = list(uploaded_candidates or [])
