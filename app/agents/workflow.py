@@ -170,15 +170,6 @@ class WorkflowMixin:
                 "file, URL, or graph. If the question relates to it, call "
                 "retrieve_content rather than asking the user to restate it.)"
             )
-        if state.get("thread_species"):
-            notes.append(
-                f"(Note: this thread's declared organism is {state['thread_species']!r}. "
-                "When a Galaxy tool needs a reference genome/index, use this organism "
-                "to pick a real matching value from galaxy_describe's listed options -- "
-                "never leave it to Galaxy's own silently-picked default, which can be "
-                "an arbitrary, wrong genome. If no listed option matches this organism, "
-                "say so honestly instead of guessing one.)"
-            )
 
         summary_lines = []
         if state.get("thread_id") and state.get("user_id"):
@@ -425,8 +416,11 @@ class WorkflowMixin:
         return None
 
     def _route_after_tool(self, state: AgentState) -> str:
+        just_ran = (state.get("current_tool_call") or {}).get("name")
         if state.get("one_round_only") and state.get("loop_iterations", 0) <= 1:
-            return "finalizer"
+            if just_ran != "galaxy_search":
+                return "finalizer"
+            logger.info("[STEP] galaxy_search alone isn't a final answer -- continuing past the one-round cutoff")
         before = state.get("proposals_before_round")
         if before is not None and len(state.get("proposals") or []) > before:
             # A new proposal just came back -- that's the answer, stop looping.
