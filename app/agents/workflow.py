@@ -416,8 +416,11 @@ class WorkflowMixin:
         return None
 
     def _route_after_tool(self, state: AgentState) -> str:
+        just_ran = (state.get("current_tool_call") or {}).get("name")
         if state.get("one_round_only") and state.get("loop_iterations", 0) <= 1:
-            return "finalizer"
+            if just_ran != "galaxy_search":
+                return "finalizer"
+            logger.info("[STEP] galaxy_search alone isn't a final answer -- continuing past the one-round cutoff")
         before = state.get("proposals_before_round")
         if before is not None and len(state.get("proposals") or []) > before:
             # A new proposal just came back -- that's the answer, stop looping.
