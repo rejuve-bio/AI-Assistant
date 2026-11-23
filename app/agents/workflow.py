@@ -170,15 +170,6 @@ class WorkflowMixin:
                 "file, URL, or graph. If the question relates to it, call "
                 "retrieve_content rather than asking the user to restate it.)"
             )
-        if state.get("thread_species"):
-            notes.append(
-                f"(Note: this thread's declared organism is {state['thread_species']!r}. "
-                "When a Galaxy tool needs a reference genome/index, use this organism "
-                "to pick a real matching value from galaxy_describe's listed options -- "
-                "never leave it to Galaxy's own silently-picked default, which can be "
-                "an arbitrary, wrong genome. If no listed option matches this organism, "
-                "say so honestly instead of guessing one.)"
-            )
 
         summary_lines = []
         if state.get("thread_id") and state.get("user_id"):
