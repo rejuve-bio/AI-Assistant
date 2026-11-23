@@ -84,8 +84,9 @@ def _resolve_attached_gwas(
     pool = list(attached_files or [])
     seen_ids = {f.get("id") for f in pool}
     for r in (thread_resources or []):
-        if r.get("kind") == "file" and r.get("name") and r.get("id") not in seen_ids:
-            pool.append({"id": r["id"], "name": r["name"]})
+        name = r.get("name") or (r.get("summary") or {}).get("name")
+        if r.get("kind") == "file" and name and r.get("id") not in seen_ids:
+            pool.append({"id": r["id"], "name": name})
             seen_ids.add(r.get("id"))
 
     if not pool:
