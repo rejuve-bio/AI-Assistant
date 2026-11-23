@@ -420,14 +420,14 @@ class HypothesisGeneration:
                 }
 
             if not searched_phenotype:
-                names = ", ".join(p.get("phenotype", "?") for p in projects)
+                names = ", ".join(dict.fromkeys(p.get("phenotype", "?") for p in projects))
                 return {
                     "text": ("I need either a phenotype to match against your existing projects "
                              f"({names}), or a GWAS file attached to build a new one from.") + attached_suffix,
                     "json_format": None,
                 }
 
-            names = ", ".join(p.get("phenotype", "?") for p in projects)
+            names = ", ".join(dict.fromkeys(p.get("phenotype", "?") for p in projects))
             base_phenotype, requested_sex = self._extract_requested_sex(searched_phenotype)
             search_result = self._search_gwas_files_raw(
                 token, self._gwas_search_term(base_phenotype), sex=requested_sex
