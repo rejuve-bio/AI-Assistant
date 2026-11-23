@@ -185,6 +185,20 @@ class WorkflowMixin:
                 + "\n".join(summary_lines) + ")"
             )
 
+        running_summary = ""
+        if state.get("thread_id") and state.get("user_id"):
+            try:
+                running_summary = (self.store.get_thread(state["thread_id"], state["user_id"]) or {}).get("running_summary") or ""
+            except Exception as e:
+                logger.warning(f"Could not load running summary for thread {state.get('thread_id')}: {e}")
+        if running_summary:
+            notes.append(
+                "(Note: summary of this conversation's earlier turns, for background only -- "
+                "any real ids it mentions (graph/resource/proposal/dataset ids) are accurate "
+                "and safe to reuse, but treat everything else here as background, not live "
+                "data:\n" + running_summary + ")"
+            )
+
         thread_resources = state.get("thread_resources") or []
         if thread_resources:
             resource_lines = self._thread_resource_summaries(
@@ -274,6 +288,22 @@ class WorkflowMixin:
             return True
         return "BLOCKING" in verdict
 
+    _RECENT_TURNS = 6
+
+    @classmethod
+    def _recent_messages(cls, messages: list) -> list:
+        """Caps the raw message history sent to the LLM to the most recent
+        turns -- older turns are already covered by the thread's running_summary
+        note injected in _seed(), so sending the full history every round isn't
+        needed and is what eventually overflows the model's context window.
+        Always cuts at a HumanMessage boundary (the start of a turn) so an
+        AIMessage's tool_calls and their ToolMessage results are never split."""
+        human_idxs = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+        if len(human_idxs) <= cls._RECENT_TURNS:
+            return messages
+        start = human_idxs[-cls._RECENT_TURNS]
+        return messages[start:]
+
     def _as_chat_messages(self, messages) -> list:
         converted = [{"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT}]
         for m in messages:
@@ -308,7 +338,7 @@ class WorkflowMixin:
             }
 
         logger.info(f"[STEP] orchestrator round {iterations}: asking the LLM for the next step")
-        chat_messages = self._as_chat_messages(state["messages"])
+        chat_messages = self._as_chat_messages(self._recent_messages(state["messages"]))
         result = self.advanced_llm.generate_with_tools(chat_messages, openai_tool_defs())
 
         content = result.get("content") or ""
@@ -316,6 +346,24 @@ class WorkflowMixin:
             {"name": tc["name"], "args": tc["arguments"], "id": tc["id"]}
             for tc in result.get("tool_calls", [])
         ]
+
+        if not tool_calls and not state.get("one_round_only") and iterations == 1:
+            logger.info(
+                "[STEP] multi-round request answered with no tool call on the first "
+                "round -- forcing a real attempt instead of accepting prose"
+            )
+            nudge = {"role": "user", "content": (
+                "That answer didn't call any tool, but this request needs real tool "
+                "results before it can be answered -- call the appropriate tool now "
+                "instead of describing what you would do."
+            )}
+            result = self.advanced_llm.generate_with_tools(chat_messages + [nudge], openai_tool_defs())
+            content = result.get("content") or ""
+            tool_calls = [
+                {"name": tc["name"], "args": tc["arguments"], "id": tc["id"]}
+                for tc in result.get("tool_calls", [])
+            ]
+
         if tool_calls:
             logger.info(f"[STEP] orchestrator round {iterations} decided to call: " +
                         ", ".join(f"{tc['name']}({tc['args']})" for tc in tool_calls))
@@ -351,6 +399,13 @@ class WorkflowMixin:
             return "finalizer"
         return [Send("run_tool", {**state, "current_tool_call": tc}) for tc in tool_calls]
 
+    # Tools whose real result depends on live thread state (e.g. which files
+    # are currently attached) that isn't captured in their own arguments --
+    # reusing a prior result for these by matching (name, arguments) alone is
+    # unsound, since the same arguments can mean something different once
+    # that outside state has changed. Never served from the prior-result cache.
+    _NEVER_CACHE = {"propose_galaxy_run", "galaxy_thread_files"}
+
     def _run_tool(self, state: AgentState) -> Dict[str, Any]:
         tc = state["current_tool_call"]
         name, arguments, call_id = tc["name"], tc["args"], tc["id"]
@@ -365,7 +420,13 @@ class WorkflowMixin:
             logger.warning(f"Rejected ungrounded tool call {name}({arguments}): {violation}")
             return {"messages": [ToolMessage(tool_call_id=call_id, name=name, content=f"{UNRESOLVED_MARKER}{violation}")]}
 
-        prior_result = self._find_prior_tool_result(state, name, arguments)
+        # Only consider a cache hit from within the same window of recent
+        # turns the LLM actually sees (_recent_messages) -- matching against
+        # a call from outside that window would reuse a result the model has
+        # no visibility into and no basis for.
+        prior_result = None if name in self._NEVER_CACHE else self._find_prior_tool_result(
+            self._recent_messages(state.get("messages") or []), name, arguments
+        )
         if prior_result is not None:
             logger.info(f"[STEP] tool {name} reused a prior result instead of re-running it")
             update = {"messages": [ToolMessage(tool_call_id=call_id, name=name, content=prior_result)]}
@@ -392,8 +453,7 @@ class WorkflowMixin:
         return update
 
     @staticmethod
-    def _find_prior_tool_result(state: AgentState, name: str, arguments: dict):
-        messages = state.get("messages", [])
+    def _find_prior_tool_result(messages: list, name: str, arguments: dict):
         for i, m in enumerate(messages):
             if not isinstance(m, AIMessage) or not m.tool_calls:
                 continue
@@ -417,6 +477,20 @@ class WorkflowMixin:
 
     def _route_after_tool(self, state: AgentState) -> str:
         just_ran = (state.get("current_tool_call") or {}).get("name")
+        messages = state.get("messages") or []
+        last = messages[-1] if messages else None
+        just_rejected = (
+            isinstance(last, ToolMessage)
+            and isinstance(last.content, str)
+            and last.content.startswith(UNRESOLVED_MARKER)
+        )
+        if just_rejected:
+            # A rejected/failed tool call is never a final answer on its own --
+            # always give the orchestrator a chance to see why and react (e.g.
+            # ask_human), instead of silently falling back to unrelated older
+            # content when packaging the response.
+            logger.info("[STEP] a tool call was rejected/errored -- routing back to the orchestrator instead of finalizing")
+            return "orchestrator"
         if state.get("one_round_only") and state.get("loop_iterations", 0) <= 1:
             if just_ran != "galaxy_search":
                 return "finalizer"
