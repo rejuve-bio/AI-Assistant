@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from app.agents.state import AgentState
+from app.agents.state import AgentState, UNRESOLVED_MARKER
 from app.socket_manager import emit_to_user
 
 logger = logging.getLogger(__name__)
@@ -19,13 +19,16 @@ class AggregationMixin:
         if isinstance(last, AIMessage) and (last.content or "").strip():
             text = last.content
         else:
-            recent = []
+            text = "I don't have a response for that."
             for m in reversed(messages):
                 if isinstance(m, HumanMessage):
                     break
                 if isinstance(m, ToolMessage):
-                    recent.append(m.content)
-            text = "\n\n".join(reversed(recent)) if recent else "I don't have a response for that."
+                    content = m.content if isinstance(m.content, str) else str(m.content)
+                    if content.startswith(UNRESOLVED_MARKER):
+                        continue
+                    text = content
+                    break
 
         response = {"text": text, "json_format": None}
         baseline = state.get("proposals_baseline") or 0

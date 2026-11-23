@@ -868,7 +868,8 @@ class ToolsMixin:
     def run_propose_galaxy(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
         emit_to_user(user=state["user_id"], message="Building the Galaxy proposal...", thread_id=state.get("thread_id"))
 
-        candidates = list(state.get("attached_files") or [])
+        attached = state.get("attached_files") or []
+        candidates = list(attached)
         seen_ids = {f.get("id") for f in candidates}
         for r in (state.get("thread_resources") or []):
             name = r.get("name") or (r.get("summary") or {}).get("name")
