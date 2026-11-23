@@ -191,9 +191,14 @@ class JsonToCypherConverter:
                     # Check if this property is already used in MATCH clause
                     if not (node["id"] and node["id"].strip()):
                         # Only add if not using database ID
-                        conditions.append(
-                            f"{node_id}.{key} = '{self._sanitize_value(value)}'"
-                        )
+                        if node.get("is_list") and isinstance(value, str):
+                            items = [v.strip() for v in value.split(",") if v.strip()]
+                            quoted = ", ".join(f"'{self._sanitize_value(v)}'" for v in items)
+                            conditions.append(f"{node_id}.{key} IN [{quoted}]")
+                        else:
+                            conditions.append(
+                                f"{node_id}.{key} = '{self._sanitize_value(value)}'"
+                            )
         if conditions:
             return f"WHERE {' AND '.join(conditions)}"
         return ""

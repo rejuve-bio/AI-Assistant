@@ -516,8 +516,7 @@ class Graph:
                         )
             updated_json["predicates"] = valid_predicates
 
-            for node in updated_json.get("nodes", []):
-                node.pop("is_list", None)
+            # is_list stays on the node so the Cypher builder can match each value separately.
 
             # Remove duplicate nodes (same type + properties) the LLM may have hallucinated
             updated_json["nodes"] = self._deduplicate_nodes(
