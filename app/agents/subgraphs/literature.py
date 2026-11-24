@@ -33,6 +33,7 @@ class LiteratureState(TypedDict, total=False):
     min_year: Optional[int]
     rag_response: Optional[Dict[str, Any]]
     pubmed_response: Optional[Dict[str, Any]]
+    consensus_result: Optional[Dict[str, Any]]
     clinical_trials_response: Optional[Dict[str, Any]]
     agents_completed: Annotated[List[str], operator.add]
     messages: Annotated[List[Any], operator.add]
@@ -149,12 +150,7 @@ def build_literature_subgraph(rag, extract_search_term):
         return END
 
     def after_pubmed(state: LiteratureState) -> str:
-        if CLINICAL_TRIALS in (state.get("sources") or []):
-            return CLINICAL_TRIALS
-        if not (state.get("pubmed_response") or {}).get("items"):
-            logger.info("PubMed found nothing — trying ClinicalTrials")
-            return CLINICAL_TRIALS
-        return END
+        return CLINICAL_TRIALS
 
     graph = StateGraph(LiteratureState)
     graph.add_node(RAG, rag_node)
@@ -177,12 +173,26 @@ def _format_papers(papers: list) -> str:
     lines = [f"Found {len(papers)} relevant paper(s) from PubMed:\n"]
     for paper in papers:
         authors = ", ".join(paper.get("authors", [])) or "Unknown authors"
+        snippet = _first_sentence(paper.get("abstract", ""))
         lines.append(
             f"- **{paper.get('title', 'No title')}** ({paper.get('year', '')}) — {authors}\n"
-            f"  {paper.get('abstract', '')}\n"
-            f"  PMID: {paper.get('pmid', '?')} | URL: {paper.get('url', '')}"
+            + (f"  {snippet}\n" if snippet else "")
+            + f"  PMID: {paper.get('pmid', '?')} | URL: {paper.get('url', '')}"
         )
     return "\n".join(lines)
+
+
+def _first_sentence(text: str, max_len: int = 200) -> str:
+    """One short line of real context -- not the full abstract (too much),
+    not nothing (too little)."""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    end = text.find(". ")
+    sentence = text[: end + 1] if end != -1 else text
+    if len(sentence) > max_len:
+        sentence = sentence[:max_len].rsplit(" ", 1)[0] + "…"
+    return sentence
 
 
 def _format_trials(trials: list, standing_in: bool = False) -> str:

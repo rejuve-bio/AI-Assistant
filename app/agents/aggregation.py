@@ -47,6 +47,9 @@ class AggregationMixin:
         elif state.get("resource"):
             response["resource"] = state.get("resource")
 
+        if state.get("consensus_result"):
+            response["consensus_result"] = state["consensus_result"]
+
         if state.get("error"):
             response.setdefault("status", "error")
 

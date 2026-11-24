@@ -19,6 +19,7 @@ from app.agents.subgraphs.hypothesis import (
 from app.agents.subgraphs.literature import RAG, build_literature_subgraph
 from app.Galaxy_integration.galaxy_proposal import propose_galaxy_run
 from app.prompts.rag_prompts import SEARCH_TERM_EXTRACTION_PROMPT
+from app.rag.literature_consensus import LiteratureConsensusAnalyzer, format_consensus_narrative
 from app.socket_manager import emit_to_user
 
 logger = logging.getLogger(__name__)
@@ -62,9 +63,21 @@ TOOL_SPECS = [
     },
     {
         "name": "search_literature",
-        "description": "Search the knowledge base, PubMed, and ClinicalTrials.gov for papers and trials matching a topic.",
+        "description": "Search the knowledge base, PubMed, and ClinicalTrials.gov for papers and trials matching a topic. Can also analyze scientific consensus and contradictions across whatever it retrieves, when evaluate_consensus is set.",
         "parameters": {"type": "object", "properties": {
-            "query": {"type": "string", "description": "the search topic"},
+            "query": {"type": "string", "description": "the search topic or scientific claim to evaluate"},
+            "evaluate_consensus": {
+                "type": "boolean",
+                "description": (
+                    "true ONLY when the user is asking whether something is true, "
+                    "supported, or contested -- e.g. 'does X cause Y', 'is X linked to "
+                    "Y', 'what's the evidence for X'. false for a general background/"
+                    "explanatory question (e.g. 'what does gene X do', 'explain "
+                    "mechanism Y') -- running consensus analysis there would force "
+                    "unrelated background papers into a meaningless support/oppose "
+                    "judgment. Omit or set false when unsure."
+                ),
+            },
         }, "required": ["query"]},
     },
     {
@@ -604,12 +617,52 @@ class ToolsMixin:
         })
 
         state_update, parts = {}, []
+        literature_text_parts = []
         for key in ("rag_response", "pubmed_response", "clinical_trials_response"):
             if result.get(key):
                 state_update[key] = result[key]
                 text = result[key].get("text", "")
                 if text:
-                    parts.append(text)
+                    if key == "rag_response":
+                        parts.append(text)
+                    else:
+                        literature_text_parts.append(text)
+
+        pubmed_papers = (result.get("pubmed_response") or {}).get("items") or []
+        clinical_trials = (result.get("clinical_trials_response") or {}).get("items") or []
+        consensus_analyzer = getattr(self, "consensus_analyzer", None)
+        evaluate_consensus = bool(arguments.get("evaluate_consensus"))
+        narrative = ""
+        if evaluate_consensus and (pubmed_papers or clinical_trials) and consensus_analyzer:
+            claim = ""
+            hypothesis = state.get("hypothesis_response") or {}
+            annotation = state.get("annotation_response") or {}
+            if hypothesis.get("text"):
+                claim = hypothesis["text"]
+            elif annotation:
+                claim = LiteratureConsensusAnalyzer.extract_claim_from_annotation(annotation) or ""
+            if not claim:
+                claim = query
+
+            try:
+                emit_to_user(user=state["user_id"], message="Analyzing literature consensus...", thread_id=state.get("thread_id"))
+                consensus_result = consensus_analyzer.analyze_consensus(claim, papers=pubmed_papers, trials=clinical_trials)
+                logger.info(
+                    "Consensus analysis: %s (support=%d, oppose=%d, inconclusive=%d)",
+                    consensus_result.get("consensus_label"),
+                    consensus_result.get("support_count", 0),
+                    consensus_result.get("oppose_count", 0),
+                    consensus_result.get("inconclusive_count", 0),
+                )
+                state_update["consensus_result"] = consensus_result
+                narrative = format_consensus_narrative(consensus_result, pubmed_papers, clinical_trials)
+            except Exception as ce:
+                logger.error("Consensus analysis failed (non-fatal): %s", ce, exc_info=True)
+
+        if narrative:
+            parts.append(narrative)
+        else:
+            parts.extend(literature_text_parts)
 
         return {
             "content": "\n\n".join(parts) if parts else "No relevant literature found.",
@@ -618,10 +671,6 @@ class ToolsMixin:
         }
 
     def run_rejuvebio_info(self, arguments: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
-        """Answers questions about Rejuve.Bio the company/platform from its own
-        scraped-website knowledge base (the general SITE_INFORMATION_gemini
-        collection) -- never the per-user uploaded-content collection, and
-        never PubMed/ClinicalTrials (those are search_literature's job)."""
         user_id = state["user_id"]
         query = arguments.get("query") or state["user_query"]
         emit_to_user(user=user_id, message="Checking Rejuve.Bio's knowledge base...", thread_id=state.get("thread_id"))
