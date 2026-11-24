@@ -15,8 +15,6 @@ _PAIR_PATTERN = re.compile(
 
 
 def pair_attached_files(files: List[Dict[str, str]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
-    """Groups files into paired-end samples by filename convention
-    (sample_R1.fastq.gz / sample_R2.fastq.gz, etc). Returns (pairs, unpaired)."""
     by_sample: Dict[str, Dict[str, Dict[str, str]]] = {}
     unmatched: List[Dict[str, str]] = []
 
@@ -58,26 +56,35 @@ def _branch_applies(inp: Dict[str, Any], filled: Dict[str, Any]) -> bool:
 _FORMAT_SYNONYMS = {
     "tsv": "tabular", "csv": "tabular", "txt": "tabular",
     "fq": "fastq", "fq.gz": "fastq.gz",
+    "fa": "fasta", "fa.gz": "fasta.gz",
+    "fna": "fasta", "fna.gz": "fasta.gz",
 }
+
+_FASTQ_EXTS = {"fastq", "fq"}
 
 
 def _file_matches_formats(name: str, formats: List[str]) -> bool:
     name = (name or "").lower()
-    exts = []
-    if name.endswith(".gz"):
-        exts.append(name.rsplit(".", 2)[-2] + ".gz" if "." in name[:-3] else "gz")
-        exts.append(name[:-3].rsplit(".", 1)[-1] if "." in name[:-3] else "")
-    if "." in name:
-        exts.append(name.rsplit(".", 1)[-1])
-    exts = {_FORMAT_SYNONYMS.get(e, e) for e in exts if e}
-    return bool(exts & {f.lower() for f in formats})
+    is_gz = name.endswith(".gz")
+    base = name[:-3] if is_gz else name
+    ext = base.rsplit(".", 1)[-1] if "." in base else ""
+    formats_l = {f.lower() for f in formats}
+
+    if ext:
+        mapped = _FORMAT_SYNONYMS.get(ext, ext)
+        candidates = {mapped, ext}
+        candidates = {c + (".gz" if is_gz else "") for c in candidates}
+        if candidates & formats_l:
+            return True
+
+    if ext in _FASTQ_EXTS:
+        return any(f.startswith("fastq") and f.endswith(".gz") == is_gz for f in formats_l)
+
+    return False
 
 
 def _wait_for_galaxy_dataset(api, token: str, thread_id: str, galaxy_id: str,
                               attempts: int = 8, delay: float = 1.0) -> Optional[str]:
-    """Polls thread_files for a just-delivered dataset's state. Returns the
-    final state once it's ready/failed, or None if still pending after all
-    attempts (caller treats that as not yet usable)."""
     for _ in range(attempts):
         files = api.thread_files(token, thread_id)
         for item in (files or {}).get("items", []):
@@ -162,6 +169,24 @@ def _fill_inputs(
         if path in for_branches or inp.get("type") in ("data", "data_collection"):
             continue
         if "default" in inp:
+            for_branches[path] = inp["default"]
+
+    for inp in inputs_schema:
+        path = inp.get("path")
+        if path in filled or path not in data_gating_keys or "default" not in inp:
+            continue
+        if inp.get("type") in ("data", "data_collection"):
+            continue
+        trial_branches = dict(for_branches)
+        trial_branches[path] = inp["default"]
+        gated = [
+            other for other in inputs_schema
+            if other.get("type") in ("data", "data_collection")
+            and path in (other.get("when") or {})
+            and _branch_applies(other, trial_branches)
+        ]
+        if gated and all(other.get("matches") for other in gated):
+            filled[path] = inp["default"]
             for_branches[path] = inp["default"]
 
     for inp in inputs_schema:
@@ -260,6 +285,14 @@ def _propose_single_run(
         reason = validation_errors.get(first)
         if reason:
             text = f"{real_name}: {label} was rejected -- {reason} What should it be instead?"
+        elif inp and inp.get("type") in ("data", "data_collection"):
+            formats = inp.get("formats") or []
+            formats_note = f" (accepted formats: {', '.join(formats)})" if formats else ""
+            text = (
+                f"{real_name}: I need a file for {label}{formats_note}, but none of the "
+                "files already in this thread match -- attach one, or tell me which "
+                "already-uploaded file to use."
+            )
         else:
             text = f"{real_name}: I still need {label} to proceed. What should it be?"
         if len(unresolved) > 1:
@@ -359,7 +392,11 @@ def propose_galaxy_run(
     if len(needed) == 1 and file_service and candidates:
         formats = needed[0].get("formats") or []
         matching = [f for f in candidates if _file_matches_formats(f.get("name", ""), formats)]
-        file_groups = [[f] for f in matching]
+        by_name: Dict[str, Dict[str, str]] = {}
+        for f in matching:
+            by_name[f.get("name", "")] = f
+        deduped = list(by_name.values())
+        file_groups = [[f] for f in deduped]
         leftover = [f for f in candidates if f not in matching]
     else:
         leftover = candidates
