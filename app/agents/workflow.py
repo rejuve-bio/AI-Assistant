@@ -57,11 +57,15 @@ class WorkflowMixin:
 
             if kind == "file":
                 looks_like_file_service = (
-                    "summary" in r or r.get("content_type") is not None or r.get("size") is not None
+                    "summary" in r or r.get("content_type") is not None
+                    or r.get("size") is not None or "run" in r
                 )
                 if looks_like_file_service:
                     summary = r.get("summary") or self.file_service.get_summary(token, rid)
                     name = r.get("name") or (summary or {}).get("name") or rid
+                    content_type = r.get("content_type") or (summary or {}).get("content_type") or ""
+                    size = r.get("size") if r.get("size") is not None else (summary or {}).get("size")
+                    run_note = f", output of run {r['run']}" if r.get("run") else ""
                     if summary and summary.get("first_lines"):
                         cols = ", ".join(summary.get("columns") or []) or "none detected"
                         preview_lines = summary["first_lines"]
@@ -73,7 +77,7 @@ class WorkflowMixin:
                             full_text = self.file_service.get_content(token, rid)
                         if full_text:
                             lines.append(
-                                f"- file {rid} ({name}), columns: {cols}, "
+                                f"- file {rid} ({name}{run_note}), columns: {cols}, "
                                 f"{line_estimate} lines, full content:\n{full_text}"
                             )
                         else:
@@ -85,16 +89,26 @@ class WorkflowMixin:
                             )
                             preview_text = "\n".join(preview_lines)
                             lines.append(
-                                f"- file {rid} ({name}), columns: {cols}, "
+                                f"- file {rid} ({name}{run_note}), columns: {cols}, "
                                 f"~{line_estimate} lines{trunc}, content:\n{preview_text}"
                             )
                     else:
-                        size = r.get("size")
-                        size_str = f"{size / 1024:.1f} KB" if isinstance(size, (int, float)) else "unknown size"
-                        lines.append(
-                            f"- file {rid} ({name}, {r.get('content_type') or 'unknown type'}, "
-                            f"{size_str}): not a readable text format here, name/size only"
+                        is_textlike = content_type.startswith("text/") or content_type in (
+                            "application/json", "application/xml",
                         )
+                        full_text = (
+                            self.file_service.get_content(token, rid)
+                            if is_textlike and isinstance(size, (int, float)) and size <= 60000
+                            else None
+                        )
+                        if full_text:
+                            lines.append(f"- file {rid} ({name}{run_note}), content:\n{full_text}")
+                        else:
+                            size_str = f"{size / 1024:.1f} KB" if isinstance(size, (int, float)) else "unknown size"
+                            lines.append(
+                                f"- file {rid} ({name}{run_note}, {content_type or 'unknown type'}, "
+                                f"{size_str}): not a readable text format here, name/size only"
+                            )
                     continue
                 try:
                     preview = self.rag.read_raw_file_preview(rid, user_id)
