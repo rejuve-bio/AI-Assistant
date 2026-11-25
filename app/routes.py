@@ -1128,9 +1128,20 @@ async def record_thread_run(
                 return JSONResponse(status_code=200, content={"text": "Already recorded."})
 
         run_part = {k: v for k, v in run_parts[0].items() if k != "type"}
-        logger.info(f"POST /v1/threads/{thread_id}/messages -- user={auth.user_id}, run_part={run_part!r}")
+        files_part = next((p for p in parts if p.get("type") == "files"), None)
+        output_files = (files_part or {}).get("files") or []
+        logger.info(
+            f"POST /v1/threads/{thread_id}/messages -- user={auth.user_id}, run_part={run_part!r}, "
+            f"output_files={output_files!r}"
+        )
         if run_part.get("kind") in ("annotation", "hypothesis") and run_part.get("id"):
             mongo_db_manager.add_thread_resource(thread_id, auth.user_id, run_part["kind"], run_part["id"])
+        for f in output_files:
+            if f.get("id"):
+                mongo_db_manager.add_thread_resource(
+                    thread_id, auth.user_id, "file", f["id"],
+                    extra={"name": f.get("name"), "run": f.get("run")},
+                )
         thread_doc = mongo_db_manager.append_message(
             thread_id, auth.user_id, "system", "",
             client_message_id=client_message_id,
