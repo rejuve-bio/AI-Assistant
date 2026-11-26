@@ -17,6 +17,7 @@ from .logging_config import setup_logging
 setup_logging()
 
 from .routes import main_router
+from .openapi import API_DESCRIPTION, API_TITLE, API_VERSION, TAGS_METADATA, configure_openapi
 from app.main import AiAssistance
 from app.rag.rag import RAG
 from app.socket_manager import create_socket_app, set_event_loop
@@ -198,7 +199,14 @@ def create_app():
     Socket.IO ASGI app and is what actually gets served by Uvicorn.
     """
     logger.info("Creating FastAPI app")
-    app = FastAPI(lifespan=lifespan)
+    app = FastAPI(
+        title=API_TITLE,
+        version=API_VERSION,
+        description=API_DESCRIPTION,
+        openapi_tags=TAGS_METADATA,
+        lifespan=lifespan,
+    )
+    configure_openapi(app)
 
     app.add_middleware(
         CORSMiddleware,

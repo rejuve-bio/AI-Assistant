@@ -1,0 +1,3720 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Rejuve.Bio AI Assistant API",
+    "description": "Backend HTTP and real-time Socket.IO API for the Rejuve.Bio AI Assistant.\n\n## Authentication\nAll endpoints (except `GET /`) require a valid HS256 JWT in the `Authorization` header:\n`Authorization: Bearer <token>` (raw `<token>` without the `Bearer` prefix is also accepted by legacy clients).\nMissing or invalid tokens return HTTP `403` with `{\"text\": \"Token is missing!\"}` or `{\"text\": \"Token is invalid!\"}`.\n\n## Rate Limiting\nSlowAPI applies a default limit of **200 requests/minute** per client IP (returns HTTP `429` when exceeded).\n\n## Real-Time Socket.IO Protocol (`/socket.io/`)\nIn addition to HTTP routes, the server exposes a Socket.IO ASGI endpoint mounted at `/socket.io/` (`app/socket_manager.py`).\n\n### Connection & Authentication\n- **Path:** `/socket.io/`\n- **Header:** `Authorization: Bearer <token>` during the Socket.IO handshake. Invalid or missing tokens reject the connection (`connect` returns `false`).\n- On connect, the client is automatically joined to its personal room `{user_id}` and receives a `response` event: `{\"message\": \"Connected successfully\"}`.\n\n### Client -> Server Events\n| Event | Payload Schema | Behavior |\n| --- | --- | --- |\n| `connect` | Handshake `Authorization` header | Authenticates JWT, saves session, auto-joins `{user_id}`, emits `response`. |\n| `disconnect` | \u2014 | Leaves `{user_id}` room and cleans up session. |\n| `join_room` | `SocketJoinRoomPayload` (`{\"thread_id\": \"...\"}`) | Joins room `{user_id}:{thread_id}` (or `{user_id}` if omitted) and emits `response`. |\n| `question` | `SocketQuestionPayload` (`{\"question\": \"...\", \"thread_id\": \"...\"}`) | Acquires per-thread Redis lock, invokes the orchestrator, and emits progress `update` events followed by `response` (`status: \"completed\"`) to the room. |\n\n### Server -> Client Events\n| Event | Payload Schema | When Emitted |\n| --- | --- | --- |\n| `response` | `SocketResponseEvent` | On `connect`, `join_room`, busy rejection (`status: \"busy\"`), or final `question` completion (`status: \"completed\"`). |\n| `update` | `SocketUpdateEvent` | Intermediate progress/status updates streamed while processing a `question`. |\n| `error` | `SocketErrorEvent` | Validation errors (missing/empty `question`) or unhandled processing exceptions. |",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/query": {
+      "post": {
+        "tags": [
+          "Legacy"
+        ],
+        "summary": "Unified legacy query and PDF upload endpoint",
+        "description": "Unified question answering endpoint for the Rejuve platform.\n\n- Accepts form data.\n- Required fields:\n    - user_id: The user's identifier (string).\n    - question: The user's question or prompt (string).\n    - context: JSON string with keys:\n        - id: For content queries, a list of content IDs; for other resources, a single ID.\n        - resource: The type of resource (e.g., 'content', 'annotation', 'hypothesis').\n    - graph, json_query: Optional, for advanced queries.\n    - resume: Optional. The exact `value` of a button clicked in response to a\n      `needs_confirmation` reply's `confirmation.options` (e.g. \"confirm\",\n      \"reject\", or a specific candidate name) \u2014 a deterministic, validated\n      answer to a pending confirmation. Mutually distinct from `question`:\n      free text always goes through `question` and is interpreted as before;\n      `resume` is only ever one of the exact offered option values.\n    - thread_id: REQUIRED. Which conversation this message belongs to \u2014 the\n      client picks it (e.g. a new UUID generated at \"New Chat\") and sends the\n      same value with every message in that conversation. Requests without it\n      are rejected with 400; there is deliberately no implicit fallback, so a\n      client can't silently end up with every conversation sharing one thread.\n      Scopes both the checkpointer (pause/resume state) and the durable\n      conversation thread (messages + tool-call references).\n- For content queries (resource == 'content'), content_ids are extracted from context['id'].\n- If content_ids are provided, answers are retrieved only from those content items. If omitted, any content_ids this thread has already\n  uploaded or referenced are recalled automatically; only a thread with no such history falls back to the general collection.\n- Handles both user-uploaded content question answering and general knowledge queries.",
+        "operationId": "process_query_query_post",
+        "deprecated": true,
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_process_query_query_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyQueryResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing thread_id or missing input.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Thread belongs to a different user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Thread is currently processing another request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyBusyResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unhandled server error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/user_status/documents/": {
+      "get": {
+        "tags": [
+          "Legacy"
+        ],
+        "summary": "List uploaded PDF and web documents for a user",
+        "description": "Returns counts and metadata for the authenticated user's uploaded PDF and web documents. Note: the handler declares an optional legacy `user_id` form parameter, defaulting to the JWT `user_id`.",
+        "operationId": "user_status_user_status_documents__get",
+        "deprecated": true,
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserStatusDocumentsResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing user_id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/clear_user_data": {
+      "delete": {
+        "tags": [
+          "Legacy"
+        ],
+        "summary": "Delete all stored documents, history, and Qdrant collection for a user",
+        "operationId": "clear_user_data_clear_user_data_delete",
+        "deprecated": true,
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing user_id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/delete_content": {
+      "delete": {
+        "tags": [
+          "Legacy"
+        ],
+        "summary": "Delete a single uploaded PDF or web content item",
+        "operationId": "delete_content_delete_content_delete",
+        "deprecated": true,
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing user_id or content_id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Content not found for this user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/audio/summary": {
+      "get": {
+        "tags": [
+          "Legacy"
+        ],
+        "summary": "Generate or serve cached TTS audio for a content summary",
+        "description": "Returns `audio/mpeg` bytes for a document's stored summary (cached in Redis for 10 minutes). Note: the handler currently reads `content_id` as a legacy `Form(None)` parameter.",
+        "operationId": "get_summary_audio_audio_summary_get",
+        "deprecated": true,
+        "responses": {
+          "200": {
+            "description": "Generated MPEG audio stream.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "audio/mpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing user_id or content_id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Content or summary not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/audio/query": {
+      "get": {
+        "tags": [
+          "Legacy"
+        ],
+        "summary": "Generate or serve cached TTS audio for a historical query answer",
+        "description": "Returns `audio/mpeg` bytes for a saved conversation answer (cached in Redis for 10 minutes). Note: the handler currently reads `query_id` as a legacy `Form(None)` parameter.",
+        "operationId": "get_query_audio_audio_query_get",
+        "deprecated": true,
+        "responses": {
+          "200": {
+            "description": "Generated MPEG audio stream.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "audio/mpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing user_id or query_id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Query or answer text not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/history": {
+      "get": {
+        "tags": [
+          "Legacy"
+        ],
+        "summary": "Retrieve recent legacy conversation history for a user",
+        "description": "Returns a JSON object keyed by `user_id` mapping to up to 5 recent history entries. Note: the handler declares an optional legacy `user_id` `Form(None)` parameter.",
+        "operationId": "get_user_history_history_get",
+        "deprecated": true,
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/LegacyHistoryEntry"
+                    }
+                  },
+                  "title": "Response Get User History History Get"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Legacy"
+        ],
+        "summary": "Clear legacy conversation history for a user",
+        "operationId": "clear_user_history_history_delete",
+        "deprecated": true,
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/faq": {
+      "get": {
+        "tags": [
+          "Legacy"
+        ],
+        "summary": "Get welcome message and sample FAQ questions",
+        "description": "Returns seeded FAQ prompts for the given `context`. When `context=hypothesis`, queries the external hypothesis projects API and generates sample questions via the LLM (may return `null` if unavailable).",
+        "operationId": "get_faq_intro_faq_get",
+        "deprecated": true,
+        "parameters": [
+          {
+            "name": "context",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FaqIntroResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HypothesisFaqResponse"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Get Faq Intro Faq Get"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/faq/{question_id}": {
+      "get": {
+        "tags": [
+          "Legacy"
+        ],
+        "summary": "Get pre-populated FAQ answer by question ID",
+        "description": "Get answer for a FAQ question from MongoDB.\nReturns pre-populated answer instantly.",
+        "operationId": "get_faq_answer_faq__question_id__get",
+        "deprecated": true,
+        "parameters": [
+          {
+            "name": "question_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Question Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FaqAnswerResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Question ID not found in FAQ.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FaqNotFoundResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/threads": {
+      "get": {
+        "tags": [
+          "Threads v1"
+        ],
+        "summary": "List threads for the authenticated user",
+        "description": "Thread summaries for the authenticated user, latest activity first.\nRead-only -- exposes the existing conversation_threads data, no new\nstorage introduced. See the Threads API v1 proposal.",
+        "operationId": "list_threads_v1_threads_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadListResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Failed to list threads.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/threads/{thread_id}": {
+      "get": {
+        "tags": [
+          "Threads v1"
+        ],
+        "summary": "Get a single thread summary",
+        "description": "A single thread's summary. 404 if it doesn't belong to this user --\nanother user's thread_id counts as missing, same as the v1 proposal's\nerror convention.",
+        "operationId": "get_thread_v1_threads__thread_id__get",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Thread (or message) not found for this user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream storage or model error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "Threads v1"
+        ],
+        "summary": "Rename a thread or reset its custom title",
+        "operationId": "rename_thread_v1_threads__thread_id__patch",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Thread (or message) not found for this user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream storage or model error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "description": "New custom thread title (or null/empty to clear).",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameThreadRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Threads v1"
+        ],
+        "summary": "Delete a thread",
+        "operationId": "delete_thread_route_v1_threads__thread_id__delete",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Thread deleted."
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Thread (or message) not found for this user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream storage or model error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/threads/{thread_id}/messages": {
+      "get": {
+        "tags": [
+          "Threads v1"
+        ],
+        "summary": "List ordered messages in a thread",
+        "description": "A thread's messages, oldest first, read from the existing stored\nturns. Each message's id is built from its stable, stored `seq`\n(see _format_v1_message) -- read-only, no schema change.",
+        "operationId": "get_thread_messages_v1_threads__thread_id__messages_get",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadMessageListResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Thread (or message) not found for this user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream storage or model error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Threads v1"
+        ],
+        "summary": "Record an executed run message and its output files on a thread",
+        "operationId": "record_thread_run_v1_threads__thread_id__messages_post",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V1Message"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Idempotent replay when client_message_id already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or multiple 'run' parts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Thread (or message) not found for this user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream storage or model error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "description": "Run status message containing one 'run' part and optional 'files' output part.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordThreadRunRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/files": {
+      "post": {
+        "tags": [
+          "Query & Files v1"
+        ],
+        "summary": "Upload raw files for use in /v1/query",
+        "description": "Accept and store one or more files, per-user, no embedding -- step 1\nonly (RAG embedding is a separate, later decision). Returns {id, name}\nper file so the client can reference them in a 'files' part on\n/v1/query right away.",
+        "operationId": "post_v1_files_v1_files_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_post_v1_files_v1_files_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V1FilesUploadResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No file in the upload succeeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V1FilesUploadErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/query": {
+      "post": {
+        "tags": [
+          "Query & Files v1"
+        ],
+        "summary": "Send a Threads v1 message (propose-only)",
+        "description": "Send a message. Unlike /query, this never executes anything -- it\nonly proposes (annotation only, in v1). Matches 'Send a message' in\nthe Threads API v1 proposal.\n\nAccepts either application/json (unchanged), or multipart/form-data\nwith a \"body\" field holding the same JSON plus the actual file(s)\nattached in the same request -- lets a client attach a brand-new file\nand send the message in one round trip instead of always needing a\nseparate /v1/files upload first. A files part entry can still name an\nalready-uploaded file by \"id\" (unchanged) or, only in the multipart\ncase, by \"name\" to match one of the files attached to this request.",
+        "operationId": "post_v1_query_v1_query_post",
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V1Message"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Idempotent replay for an existing client_message_id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V1Message"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid thread_id, parts, context, or file reference.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Thread belongs to a different user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A reply is already in progress in this thread.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Model or tool execution failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "description": "Send either `application/json` matching `V1QueryRequest`, or `multipart/form-data` with a `body` JSON string plus attached file parts referenced by `name` in the `files` part.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/V1QueryRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "body"
+                ],
+                "properties": {
+                  "body": {
+                    "type": "string",
+                    "description": "JSON-serialized V1QueryRequest payload."
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "binary"
+                    },
+                    "description": "One or more attached files matched by filename."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/threads/{thread_id}/context": {
+      "put": {
+        "tags": [
+          "Threads v1"
+        ],
+        "summary": "Set or update a thread's species, sources, and context resources",
+        "operationId": "put_thread_context_v1_threads__thread_id__context_put",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V1Message"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "Context matched the existing thread context; no change recorded."
+          },
+          "400": {
+            "description": "Invalid species, sources, or resources payload.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Thread (or message) not found for this user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream storage or model error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "description": "Species, optional source list, and optional resource references.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThreadContextUpdateRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/threads/{thread_id}/messages/{message_id}": {
+      "delete": {
+        "tags": [
+          "Threads v1"
+        ],
+        "summary": "Delete a single message from a thread",
+        "operationId": "delete_thread_message_v1_threads__thread_id__messages__message_id__delete",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          },
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Message Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Message deleted."
+          },
+          "403": {
+            "description": "Missing or invalid JWT token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Thread (or message) not found for this user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream storage or model error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Health check",
+        "operationId": "health_check__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string",
+                  "title": "Response Health Check  Get"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AboutPart": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "about",
+            "title": "Type",
+            "default": "about"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": "Referenced resource kind (e.g. 'annotation', 'hypothesis')."
+          },
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Referenced resource identifier."
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "id"
+        ],
+        "title": "AboutPart"
+      },
+      "Body_post_v1_files_v1_files_post": {
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string",
+              "contentMediaType": "application/octet-stream"
+            },
+            "type": "array",
+            "title": "Files"
+          }
+        },
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "title": "Body_post_v1_files_v1_files_post"
+      },
+      "Body_process_query_query_post": {
+        "properties": {
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query"
+          },
+          "context": {
+            "type": "string",
+            "title": "Context",
+            "default": "{}"
+          },
+          "json_query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Query"
+          },
+          "resume": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
+          },
+          "client_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Message Id"
+          },
+          "uploaded_files": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "contentMediaType": "application/octet-stream"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploaded Files"
+          }
+        },
+        "type": "object",
+        "title": "Body_process_query_query_post"
+      },
+      "ConfirmationOption": {
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label",
+            "description": "Display label for a confirmation choice."
+          },
+          "value": {
+            "type": "string",
+            "title": "Value",
+            "description": "Exact value to echo back in `resume`."
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "title": "ConfirmationOption"
+      },
+      "ConfirmationPrompt": {
+        "properties": {
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/ConfirmationOption"
+            },
+            "type": "array",
+            "title": "Options"
+          },
+          "allow_free_text": {
+            "type": "boolean",
+            "title": "Allow Free Text",
+            "description": "Whether free-text `question` replies are also accepted.",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "ConfirmationPrompt"
+      },
+      "ContextPart": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "context",
+            "title": "Type",
+            "default": "context"
+          },
+          "species": {
+            "type": "string",
+            "title": "Species",
+            "description": "Target species."
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sources",
+            "description": "Active data sources."
+          },
+          "resources": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resources",
+            "description": "Attached context resources."
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "species"
+        ],
+        "title": "ContextPart"
+      },
+      "FaqAnswerResponse": {
+        "properties": {
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "json_format": {
+            "title": "Json Format"
+          }
+        },
+        "type": "object",
+        "required": [
+          "question",
+          "text",
+          "json_format"
+        ],
+        "title": "FaqAnswerResponse"
+      },
+      "FaqIntroResponse": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/FaqQuestionLink"
+            },
+            "type": "array",
+            "title": "Questions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "FaqIntroResponse"
+      },
+      "FaqNotFoundResponse": {
+        "properties": {
+          "error": {
+            "type": "string",
+            "title": "Error"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "error",
+          "text"
+        ],
+        "title": "FaqNotFoundResponse"
+      },
+      "FaqQuestionLink": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "link": {
+            "type": "string",
+            "title": "Link"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "text",
+          "link"
+        ],
+        "title": "FaqQuestionLink"
+      },
+      "FileUploadError": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Filename that failed to upload."
+          },
+          "error": {
+            "type": "string",
+            "title": "Error",
+            "description": "Failure reason."
+          }
+        },
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "title": "FileUploadError"
+      },
+      "FilesPart": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "files",
+            "title": "Type",
+            "default": "files"
+          },
+          "files": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Files",
+            "description": "Attached file descriptors."
+          }
+        },
+        "type": "object",
+        "title": "FilesPart"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HypothesisFaqResponse": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/HypothesisProjectSummary"
+            },
+            "type": "array",
+            "title": "Projects"
+          },
+          "sample_questions": {
+            "title": "Sample Questions",
+            "description": "LLM-generated sample questions."
+          }
+        },
+        "type": "object",
+        "required": [
+          "text",
+          "sample_questions"
+        ],
+        "title": "HypothesisFaqResponse"
+      },
+      "HypothesisProjectSummary": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "project_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Name"
+          },
+          "phenotype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phenotype"
+          },
+          "causal_genes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Causal Genes"
+          },
+          "tissues": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tissues"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "HypothesisProjectSummary"
+      },
+      "LegacyBusyResponse": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "Busy notice explaining a previous request is still running."
+          },
+          "json_format": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Format"
+          },
+          "status": {
+            "type": "string",
+            "const": "busy",
+            "title": "Status",
+            "default": "busy"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "LegacyBusyResponse"
+      },
+      "LegacyErrorResponse": {
+        "properties": {
+          "error": {
+            "type": "string",
+            "title": "Error",
+            "description": "Error description."
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field",
+            "description": "Optional failing field name (e.g. 'thread_id')."
+          }
+        },
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "title": "LegacyErrorResponse",
+        "description": "Error payload returned by legacy endpoints."
+      },
+      "LegacyHistoryEntry": {
+        "properties": {
+          "query_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Id"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User"
+          },
+          "assistant_answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assistant Answer"
+          },
+          "graph_id_referenced": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Id Referenced"
+          },
+          "time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time"
+          }
+        },
+        "type": "object",
+        "title": "LegacyHistoryEntry"
+      },
+      "LegacyProposalItem": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": "Proposal kind ('annotation', 'hypothesis', 'hypothesis-project', 'galaxy')."
+          },
+          "data": {
+            "title": "Data",
+            "description": "Proposal data payload."
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "kind",
+          "data"
+        ],
+        "title": "LegacyProposalItem"
+      },
+      "LegacyQueryResponse": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "Assistant response text or upload summary."
+          },
+          "json_format": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Format",
+            "description": "Structured annotation, hypothesis, or Galaxy JSON payload."
+          },
+          "proposals": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/LegacyProposalItem"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposals",
+            "description": "Structured proposals produced in this turn."
+          },
+          "needs_confirmation": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Confirmation",
+            "description": "True when awaiting user confirmation."
+          },
+          "confirmation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConfirmationPrompt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Confirmation choices when paused."
+          },
+          "consensus_result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consensus Result",
+            "description": "Literature consensus summary, if evaluated."
+          },
+          "organism": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organism",
+            "description": "Organism for annotation results."
+          },
+          "resource": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resource",
+            "description": "Associated resource metadata."
+          },
+          "agents_completed": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agents Completed",
+            "description": "Agents invoked during the turn."
+          },
+          "content_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Ids",
+            "description": "Uploaded content IDs (upload-only responses)."
+          },
+          "suggested_questions": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Questions",
+            "description": "Suggested questions extracted from uploads."
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "LegacyQueryResponse",
+        "description": "Response from POST /query for both conversational turns and upload-only calls."
+      },
+      "MessageResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Operation outcome message."
+          }
+        },
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "MessageResponse",
+        "description": "Simple confirmation message returned by legacy delete operations."
+      },
+      "ProposalPart": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "proposal",
+            "title": "Type",
+            "default": "proposal"
+          },
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Deterministic proposal identifier within the thread."
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": "Proposal kind ('annotation', 'hypothesis', 'hypothesis-project', 'galaxy')."
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "Human-readable proposal title."
+          },
+          "data": {
+            "title": "Data",
+            "description": "Structured proposal payload."
+          },
+          "replaces": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replaces",
+            "description": "Prior proposal ID superseded by this proposal."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "data"
+        ],
+        "title": "ProposalPart"
+      },
+      "QuickRepliesPart": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "quick_replies",
+            "title": "Type",
+            "default": "quick_replies"
+          },
+          "replies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Replies",
+            "description": "Suggested follow-up prompts."
+          }
+        },
+        "type": "object",
+        "title": "QuickRepliesPart"
+      },
+      "ResourceRef": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "annotation",
+              "hypothesis",
+              "file"
+            ],
+            "title": "Kind",
+            "description": "Resource category."
+          },
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Resource identifier."
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Optional display name (for files)."
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url",
+            "description": "Optional URL (for files)."
+          },
+          "content_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Type",
+            "description": "Optional MIME type (for files)."
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size",
+            "description": "Optional file size in bytes."
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary",
+            "description": "Optional file summary metadata."
+          },
+          "run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run",
+            "description": "Optional Galaxy run identifier that produced the file."
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "kind",
+          "id"
+        ],
+        "title": "ResourceRef",
+        "description": "Reference to an annotation, hypothesis, or file resource attached to a thread."
+      },
+      "RunPart": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "run",
+            "title": "Type",
+            "default": "run"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind",
+            "description": "Executed run kind ('annotation', 'hypothesis', 'galaxy', etc.)."
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id",
+            "description": "Created/executed resource identifier."
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "RunPart"
+      },
+      "TextErrorResponse": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "Human-readable error or status message."
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "TextErrorResponse",
+        "description": "Standard error payload returned by /v1/* endpoints and HTTPException handler."
+      },
+      "TextPart": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "text",
+            "title": "Type",
+            "default": "text"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "Message text content."
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "TextPart"
+      },
+      "ThreadContext": {
+        "properties": {
+          "species": {
+            "type": "string",
+            "title": "Species",
+            "description": "Target organism/species (e.g. 'human', 'fly')."
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sources",
+            "description": "Enabled annotation data sources."
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceRef"
+            },
+            "type": "array",
+            "title": "Resources",
+            "description": "Resources attached to this thread's context."
+          }
+        },
+        "type": "object",
+        "required": [
+          "species"
+        ],
+        "title": "ThreadContext",
+        "description": "Active species, data sources, and attached resources for a conversation thread."
+      },
+      "ThreadDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Thread UUID."
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "Custom title or derived preview from first message."
+          },
+          "context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ThreadContext"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Current thread context, if configured."
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At",
+            "description": "UTC ISO-8601 creation timestamp."
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At",
+            "description": "UTC ISO-8601 last-update timestamp."
+          },
+          "message_count": {
+            "type": "integer",
+            "title": "Message Count",
+            "description": "Number of stored messages in the thread."
+          },
+          "generated_resources": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Generated Resources",
+            "description": "Resources produced by completed runs in this thread."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "message_count"
+        ],
+        "title": "ThreadDetail",
+        "description": "Single thread summary including resources generated during the conversation."
+      },
+      "ThreadListItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Thread UUID."
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "Custom title or derived preview from first message."
+          },
+          "context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ThreadContext"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Current thread context, if configured."
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At",
+            "description": "UTC ISO-8601 creation timestamp."
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At",
+            "description": "UTC ISO-8601 last-update timestamp."
+          },
+          "message_count": {
+            "type": "integer",
+            "title": "Message Count",
+            "description": "Number of stored messages in the thread."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "message_count"
+        ],
+        "title": "ThreadListItem",
+        "description": "Summary row for a conversation thread."
+      },
+      "ThreadListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ThreadListItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor",
+            "description": "Pagination cursor (currently null)."
+          }
+        },
+        "type": "object",
+        "title": "ThreadListResponse"
+      },
+      "ThreadMessageListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/V1Message"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor",
+            "description": "Pagination cursor (currently null)."
+          }
+        },
+        "type": "object",
+        "title": "ThreadMessageListResponse"
+      },
+      "UploadedFileItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Assigned content_id for referencing the file in /v1/query."
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Original filename."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "UploadedFileItem"
+      },
+      "UserDocumentItem": {
+        "properties": {
+          "content_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Id"
+          },
+          "content_type": {
+            "type": "string",
+            "enum": [
+              "pdf",
+              "web"
+            ],
+            "title": "Content Type"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename",
+            "description": "Present when content_type == 'pdf'."
+          },
+          "num_pages": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Num Pages",
+            "description": "Present when content_type == 'pdf'."
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url",
+            "description": "Present when content_type == 'web'."
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title",
+            "description": "Present when content_type == 'web'."
+          },
+          "author": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author",
+            "description": "Present when content_type == 'web'."
+          },
+          "file_size": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Size"
+          },
+          "upload_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upload Time",
+            "description": "Formatted as 'YYYY-MM-DD HH:MM:SS'."
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "content_type"
+        ],
+        "title": "UserDocumentItem"
+      },
+      "UserStatusDocumentsResponse": {
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "title": "User Id"
+          },
+          "total_count": {
+            "type": "integer",
+            "title": "Total Count"
+          },
+          "pdf_count": {
+            "type": "integer",
+            "title": "Pdf Count"
+          },
+          "web_count": {
+            "type": "integer",
+            "title": "Web Count"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/UserDocumentItem"
+            },
+            "type": "array",
+            "title": "Files"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "total_count",
+          "pdf_count",
+          "web_count"
+        ],
+        "title": "UserStatusDocumentsResponse"
+      },
+      "V1FilesUploadErrorResponse": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "Summary error message."
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/FileUploadError"
+            },
+            "type": "array",
+            "title": "Errors",
+            "description": "Per-file upload errors."
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "V1FilesUploadErrorResponse"
+      },
+      "V1FilesUploadResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/UploadedFileItem"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "Successfully stored files."
+          },
+          "errors": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/FileUploadError"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errors",
+            "description": "Per-file errors for any files in the batch that failed."
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "V1FilesUploadResponse"
+      },
+      "V1Message": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Stable message ID formatted as '{thread_id}_msg_{seq}'."
+          },
+          "thread_id": {
+            "type": "string",
+            "title": "Thread Id",
+            "description": "Parent thread UUID."
+          },
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "description": "Sender role ('user', 'assistant', or 'system')."
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At",
+            "description": "UTC ISO-8601 timestamp (YYYY-MM-DDTHH:MM:SSZ)."
+          },
+          "client_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Message Id",
+            "description": "Client-supplied idempotency key, if any."
+          },
+          "parts": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TextPart"
+                },
+                {
+                  "$ref": "#/components/schemas/FilesPart"
+                },
+                {
+                  "$ref": "#/components/schemas/AboutPart"
+                },
+                {
+                  "$ref": "#/components/schemas/ProposalPart"
+                },
+                {
+                  "$ref": "#/components/schemas/QuickRepliesPart"
+                },
+                {
+                  "$ref": "#/components/schemas/ContextPart"
+                },
+                {
+                  "$ref": "#/components/schemas/RunPart"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Parts",
+            "description": "Ordered structured content parts."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "thread_id",
+          "role"
+        ],
+        "title": "V1Message",
+        "description": "Canonical Threads v1 message object."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "RecordRunFilesPart": {
+        "properties": {
+          "type": {
+            "const": "files",
+            "default": "files",
+            "title": "Type",
+            "type": "string"
+          },
+          "files": {
+            "description": "Output files produced by the run.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Files",
+            "type": "array"
+          }
+        },
+        "title": "RecordRunFilesPart",
+        "type": "object"
+      },
+      "RecordThreadRunRequest": {
+        "description": "Request body for POST /v1/threads/{thread_id}/messages.",
+        "properties": {
+          "client_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional idempotency key.",
+            "title": "Client Message Id"
+          },
+          "parts": {
+            "description": "Must contain exactly one 'run' part, plus an optional 'files' part.",
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RunPart"
+                },
+                {
+                  "$ref": "#/components/schemas/RecordRunFilesPart"
+                }
+              ]
+            },
+            "title": "Parts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "parts"
+        ],
+        "title": "RecordThreadRunRequest",
+        "type": "object"
+      },
+      "RenameThreadRequest": {
+        "description": "Request body for PATCH /v1/threads/{thread_id}.",
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "New custom thread title. Passing null or empty clears the custom title.",
+            "title": "Title"
+          }
+        },
+        "title": "RenameThreadRequest",
+        "type": "object"
+      },
+      "SocketErrorEvent": {
+        "description": "Server -> Client `error` event emitted when validation or processing fails.",
+        "properties": {
+          "error": {
+            "description": "Error description.",
+            "title": "Error",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "SocketErrorEvent",
+        "type": "object"
+      },
+      "SocketJoinRoomPayload": {
+        "description": "Client -> Server `join_room` event payload.",
+        "properties": {
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional thread ID. Joins room '{user_id}:{thread_id}' if set, else '{user_id}'.",
+            "title": "Thread Id"
+          }
+        },
+        "title": "SocketJoinRoomPayload",
+        "type": "object"
+      },
+      "SocketQuestionPayload": {
+        "description": "Client -> Server `question` event payload.",
+        "properties": {
+          "question": {
+            "description": "User question text (required, non-empty).",
+            "title": "Question",
+            "type": "string"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional conversation thread ID used for room scoping and locking.",
+            "title": "Thread Id"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "SocketQuestionPayload",
+        "type": "object"
+      },
+      "SocketResponseEvent": {
+        "description": "Server -> Client `response` event emitted on connect, join_room, or final answer.",
+        "properties": {
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "'completed' for question responses.",
+            "title": "Status"
+          },
+          "response": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Final agent response or join confirmation string.",
+            "title": "Response"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Connection acknowledgment message.",
+            "title": "Message"
+          }
+        },
+        "title": "SocketResponseEvent",
+        "type": "object"
+      },
+      "SocketUpdateEvent": {
+        "description": "Server -> Client `update` event emitted during intermediate processing stages.",
+        "properties": {
+          "status": {
+            "description": "Status tag (e.g. 'update', 'completed', 'error').",
+            "title": "Status",
+            "type": "string"
+          },
+          "response": {
+            "description": "Progress message string or structured response payload.",
+            "title": "Response"
+          }
+        },
+        "required": [
+          "status",
+          "response"
+        ],
+        "title": "SocketUpdateEvent",
+        "type": "object"
+      },
+      "ThreadContextUpdateRequest": {
+        "description": "Request body for PUT /v1/threads/{thread_id}/context.",
+        "properties": {
+          "species": {
+            "description": "Target species (e.g. 'human', 'fly').",
+            "title": "Species",
+            "type": "string"
+          },
+          "sources": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Annotation data sources for the species; defaults to species defaults when omitted or empty.",
+            "title": "Sources"
+          },
+          "resources": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ResourceRef"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional replacement list of context resources.",
+            "title": "Resources"
+          }
+        },
+        "required": [
+          "species"
+        ],
+        "title": "ThreadContextUpdateRequest",
+        "type": "object"
+      },
+      "V1QueryAboutPart": {
+        "properties": {
+          "type": {
+            "const": "about",
+            "default": "about",
+            "title": "Type",
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Resource kind (e.g. 'annotation', 'hypothesis').",
+            "title": "Kind"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Resource identifier.",
+            "title": "Id"
+          }
+        },
+        "title": "V1QueryAboutPart",
+        "type": "object"
+      },
+      "V1QueryContext": {
+        "description": "Initial thread context applied when `thread_id` is brand new.",
+        "properties": {
+          "species": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "human",
+            "description": "Target species (defaults to 'human').",
+            "title": "Species"
+          },
+          "sources": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Annotation sources validated against species schemas.",
+            "title": "Sources"
+          }
+        },
+        "title": "V1QueryContext",
+        "type": "object"
+      },
+      "V1QueryFileRef": {
+        "description": "Reference either an already-uploaded file by `id` or a file attached to the multipart request by `name`.",
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Existing content_id or File Service file ID.",
+            "title": "Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Filename matching an uploaded file part in a multipart/form-data request.",
+            "title": "Name"
+          }
+        },
+        "title": "V1QueryFileRef",
+        "type": "object"
+      },
+      "V1QueryFilesPart": {
+        "properties": {
+          "type": {
+            "const": "files",
+            "default": "files",
+            "title": "Type",
+            "type": "string"
+          },
+          "files": {
+            "description": "Files referenced by this message.",
+            "items": {
+              "$ref": "#/components/schemas/V1QueryFileRef"
+            },
+            "title": "Files",
+            "type": "array"
+          }
+        },
+        "title": "V1QueryFilesPart",
+        "type": "object"
+      },
+      "V1QueryRequest": {
+        "description": "JSON payload (or `body` field in multipart/form-data) for POST /v1/query.",
+        "properties": {
+          "thread_id": {
+            "description": "Client-generated UUIDv4 identifying the conversation thread.",
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "client_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional idempotency key; repeated requests return 200 with the stored message.",
+            "title": "Client Message Id"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V1QueryContext"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional context applied on the first message of a new thread."
+          },
+          "parts": {
+            "description": "Message parts. Must include at least one non-empty 'text' part.",
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/V1QueryTextPart"
+                },
+                {
+                  "$ref": "#/components/schemas/V1QueryFilesPart"
+                },
+                {
+                  "$ref": "#/components/schemas/V1QueryAboutPart"
+                }
+              ]
+            },
+            "title": "Parts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "thread_id",
+          "parts"
+        ],
+        "title": "V1QueryRequest",
+        "type": "object"
+      },
+      "V1QueryTextPart": {
+        "properties": {
+          "type": {
+            "const": "text",
+            "default": "text",
+            "title": "Type",
+            "type": "string"
+          },
+          "text": {
+            "description": "User prompt text.",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "V1QueryTextPart",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "HS256 JWT containing `user_id`. Passed in the `Authorization` header."
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Threads v1",
+      "description": "Thread lifecycle, message history, context configuration, and run-recording endpoints."
+    },
+    {
+      "name": "Query & Files v1",
+      "description": "Threads v1 file upload and proposal-oriented query endpoints."
+    },
+    {
+      "name": "Legacy",
+      "description": "Deprecated pre-v1 endpoints retained for backward compatibility."
+    },
+    {
+      "name": "Health",
+      "description": "Service liveness check."
+    }
+  ],
+  "x-socketio": {
+    "path": "/socket.io/",
+    "auth": {
+      "header": "Authorization",
+      "format": "Bearer <jwt>"
+    },
+    "rooms": [
+      "{user_id}",
+      "{user_id}:{thread_id}"
+    ],
+    "client_events": {
+      "connect": {
+        "description": "Authenticate via HTTP Authorization header and join {user_id} room."
+      },
+      "disconnect": {
+        "description": "Leave user room on disconnect."
+      },
+      "join_room": {
+        "payload": {
+          "$ref": "#/components/schemas/SocketJoinRoomPayload"
+        }
+      },
+      "question": {
+        "payload": {
+          "$ref": "#/components/schemas/SocketQuestionPayload"
+        }
+      }
+    },
+    "server_events": {
+      "response": {
+        "payload": {
+          "$ref": "#/components/schemas/SocketResponseEvent"
+        }
+      },
+      "update": {
+        "payload": {
+          "$ref": "#/components/schemas/SocketUpdateEvent"
+        }
+      },
+      "error": {
+        "payload": {
+          "$ref": "#/components/schemas/SocketErrorEvent"
+        }
+      }
+    }
+  }
+}

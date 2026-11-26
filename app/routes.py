@@ -1,6 +1,30 @@
-from typing import List, Optional
+from typing import Dict, List, Optional, Union
 
 from app.lib.auth import token_required, AuthContext
+from app.openapi import json_request_body, schema_ref
+from app.schemas import (
+    FaqAnswerResponse,
+    FaqIntroResponse,
+    FaqNotFoundResponse,
+    HypothesisFaqResponse,
+    LegacyBusyResponse,
+    LegacyErrorResponse,
+    LegacyHistoryEntry,
+    LegacyQueryResponse,
+    MessageResponse,
+    RecordThreadRunRequest,
+    RenameThreadRequest,
+    TextErrorResponse,
+    ThreadContextUpdateRequest,
+    ThreadDetail,
+    ThreadListResponse,
+    ThreadMessageListResponse,
+    UserStatusDocumentsResponse,
+    V1FilesUploadErrorResponse,
+    V1FilesUploadResponse,
+    V1Message,
+    V1QueryRequest,
+)
 from fastapi import APIRouter, Depends, Form, File, UploadFile, Query, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.concurrency import run_in_threadpool
@@ -21,6 +45,23 @@ main_router = APIRouter()
 logger = logging.getLogger(__name__)
 
 AUDIO_MIME = "audio/mpeg"
+
+_AUTH_RESPONSES = {
+    403: {"model": TextErrorResponse, "description": "Missing or invalid JWT token."},
+}
+_V1_THREAD_ERROR_RESPONSES = {
+    **_AUTH_RESPONSES,
+    404: {"model": TextErrorResponse, "description": "Thread (or message) not found for this user."},
+    502: {"model": TextErrorResponse, "description": "Upstream storage or model error."},
+}
+_LEGACY_SERVER_ERROR_RESPONSES = {
+    **_AUTH_RESPONSES,
+    500: {"model": LegacyErrorResponse, "description": "Internal server error."},
+}
+_AUDIO_RESPONSE_SCHEMA = {
+    "description": "Generated MPEG audio stream.",
+    "content": {AUDIO_MIME: {"schema": {"type": "string", "format": "binary"}}},
+}
 
 _UUID4_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.IGNORECASE
@@ -142,7 +183,20 @@ def _dispatch_query(ai_assistant, question, json_query, uploaded_files, upload_r
     return JSONResponse(content=response)
 
 
-@main_router.post("/query")
+@main_router.post(
+    "/query",
+    tags=["Legacy"],
+    deprecated=True,
+    summary="Unified legacy query and PDF upload endpoint",
+    response_model=LegacyQueryResponse,
+    responses={
+        **_AUTH_RESPONSES,
+        400: {"model": LegacyErrorResponse, "description": "Missing thread_id or missing input."},
+        404: {"model": TextErrorResponse, "description": "Thread belongs to a different user."},
+        409: {"model": LegacyBusyResponse, "description": "Thread is currently processing another request."},
+        500: {"model": TextErrorResponse, "description": "Unhandled server error."},
+    },
+)
 def process_query(
     auth: AuthContext = Depends(token_required),
     ai_assistant=Depends(get_ai_assistant),
@@ -212,7 +266,21 @@ def process_query(
         return JSONResponse(status_code=500, content={"text": f"Error processing request: {e}"})
 
 
-@main_router.get("/user_status/documents/")
+@main_router.get(
+    "/user_status/documents/",
+    tags=["Legacy"],
+    deprecated=True,
+    summary="List uploaded PDF and web documents for a user",
+    description=(
+        "Returns counts and metadata for the authenticated user's uploaded PDF and web documents. "
+        "Note: the handler declares an optional legacy `user_id` form parameter, defaulting to the JWT `user_id`."
+    ),
+    response_model=UserStatusDocumentsResponse,
+    responses={
+        **_LEGACY_SERVER_ERROR_RESPONSES,
+        400: {"model": LegacyErrorResponse, "description": "Missing user_id."},
+    },
+)
 def user_status(
     auth: AuthContext = Depends(token_required),
     user_id: Optional[str] = Form(None),
@@ -282,7 +350,17 @@ def user_status(
         return JSONResponse(status_code=500, content={"error": f"Error getting user status: {str(e)}"})
 
 
-@main_router.delete("/clear_user_data")
+@main_router.delete(
+    "/clear_user_data",
+    tags=["Legacy"],
+    deprecated=True,
+    summary="Delete all stored documents, history, and Qdrant collection for a user",
+    response_model=MessageResponse,
+    responses={
+        **_LEGACY_SERVER_ERROR_RESPONSES,
+        400: {"model": LegacyErrorResponse, "description": "Missing user_id."},
+    },
+)
 def clear_user_data(
     auth: AuthContext = Depends(token_required),
     qdrant_client=Depends(get_qdrant_client),
@@ -329,7 +407,18 @@ def clear_user_data(
         return JSONResponse(status_code=500, content={"error": f"Error clearing user data: {str(e)}"})
 
 
-@main_router.delete("/delete_content")
+@main_router.delete(
+    "/delete_content",
+    tags=["Legacy"],
+    deprecated=True,
+    summary="Delete a single uploaded PDF or web content item",
+    response_model=MessageResponse,
+    responses={
+        **_LEGACY_SERVER_ERROR_RESPONSES,
+        400: {"model": LegacyErrorResponse, "description": "Missing user_id or content_id."},
+        404: {"model": LegacyErrorResponse, "description": "Content not found for this user."},
+    },
+)
 def delete_content(
     auth: AuthContext = Depends(token_required),
     qdrant_client=Depends(get_qdrant_client),
@@ -371,7 +460,22 @@ def delete_content(
         return JSONResponse(status_code=500, content={"error": f"Error deleting content: {str(e)}"})
 
 
-@main_router.get("/audio/summary")
+@main_router.get(
+    "/audio/summary",
+    tags=["Legacy"],
+    deprecated=True,
+    summary="Generate or serve cached TTS audio for a content summary",
+    description=(
+        "Returns `audio/mpeg` bytes for a document's stored summary (cached in Redis for 10 minutes). "
+        "Note: the handler currently reads `content_id` as a legacy `Form(None)` parameter."
+    ),
+    responses={
+        200: _AUDIO_RESPONSE_SCHEMA,
+        **_LEGACY_SERVER_ERROR_RESPONSES,
+        400: {"model": LegacyErrorResponse, "description": "Missing user_id or content_id."},
+        404: {"model": LegacyErrorResponse, "description": "Content or summary not found."},
+    },
+)
 def get_summary_audio(
     auth: AuthContext = Depends(token_required),
     content_id: Optional[str] = Form(None),
@@ -422,7 +526,22 @@ def get_summary_audio(
         return JSONResponse(status_code=500, content={"error": f"Error generating summary audio: {str(e)}"})
 
 
-@main_router.get("/audio/query")
+@main_router.get(
+    "/audio/query",
+    tags=["Legacy"],
+    deprecated=True,
+    summary="Generate or serve cached TTS audio for a historical query answer",
+    description=(
+        "Returns `audio/mpeg` bytes for a saved conversation answer (cached in Redis for 10 minutes). "
+        "Note: the handler currently reads `query_id` as a legacy `Form(None)` parameter."
+    ),
+    responses={
+        200: _AUDIO_RESPONSE_SCHEMA,
+        **_LEGACY_SERVER_ERROR_RESPONSES,
+        400: {"model": LegacyErrorResponse, "description": "Missing user_id or query_id."},
+        404: {"model": LegacyErrorResponse, "description": "Query or answer text not found."},
+    },
+)
 def get_query_audio(
     auth: AuthContext = Depends(token_required),
     query_id: Optional[str] = Form(None),
@@ -473,7 +592,18 @@ def get_query_audio(
         return JSONResponse(status_code=500, content={"error": f"Error generating query audio: {str(e)}"})
 
 
-@main_router.get("/history")
+@main_router.get(
+    "/history",
+    tags=["Legacy"],
+    deprecated=True,
+    summary="Retrieve recent legacy conversation history for a user",
+    description=(
+        "Returns a JSON object keyed by `user_id` mapping to up to 5 recent history entries. "
+        "Note: the handler declares an optional legacy `user_id` `Form(None)` parameter."
+    ),
+    response_model=Dict[str, List[LegacyHistoryEntry]],
+    responses=_LEGACY_SERVER_ERROR_RESPONSES,
+)
 def get_user_history(
     auth: AuthContext = Depends(token_required),
     user_id: Optional[str] = Form(None),
@@ -490,7 +620,14 @@ def get_user_history(
         return JSONResponse(status_code=500, content={"error": f"Error retrieving history: {str(e)}"})
 
 
-@main_router.delete("/history")
+@main_router.delete(
+    "/history",
+    tags=["Legacy"],
+    deprecated=True,
+    summary="Clear legacy conversation history for a user",
+    response_model=MessageResponse,
+    responses=_LEGACY_SERVER_ERROR_RESPONSES,
+)
 def clear_user_history(
     auth: AuthContext = Depends(token_required),
     user_id: Optional[str] = Form(None),
@@ -592,7 +729,18 @@ def handle_hypothesis_faq(auth_token, ai_assistant):
     })
 
 
-@main_router.get("/faq")
+@main_router.get(
+    "/faq",
+    tags=["Legacy"],
+    deprecated=True,
+    summary="Get welcome message and sample FAQ questions",
+    description=(
+        "Returns seeded FAQ prompts for the given `context`. When `context=hypothesis`, queries "
+        "the external hypothesis projects API and generates sample questions via the LLM (may return `null` if unavailable)."
+    ),
+    response_model=Optional[Union[FaqIntroResponse, HypothesisFaqResponse]],
+    responses=_LEGACY_SERVER_ERROR_RESPONSES,
+)
 def get_faq_intro(
     auth: AuthContext = Depends(token_required),
     ai_assistant=Depends(get_ai_assistant),
@@ -624,7 +772,17 @@ def get_faq_intro(
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-@main_router.get("/faq/{question_id}")
+@main_router.get(
+    "/faq/{question_id}",
+    tags=["Legacy"],
+    deprecated=True,
+    summary="Get pre-populated FAQ answer by question ID",
+    response_model=FaqAnswerResponse,
+    responses={
+        **_LEGACY_SERVER_ERROR_RESPONSES,
+        404: {"model": FaqNotFoundResponse, "description": "Question ID not found in FAQ."},
+    },
+)
 def get_faq_answer(
     question_id: str,
     auth: AuthContext = Depends(token_required),
@@ -654,7 +812,16 @@ def get_faq_answer(
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-@main_router.get("/v1/threads")
+@main_router.get(
+    "/v1/threads",
+    tags=["Threads v1"],
+    summary="List threads for the authenticated user",
+    response_model=ThreadListResponse,
+    responses={
+        **_AUTH_RESPONSES,
+        502: {"model": TextErrorResponse, "description": "Failed to list threads."},
+    },
+)
 def list_threads(
     auth: AuthContext = Depends(token_required),
 ):
@@ -672,7 +839,13 @@ def list_threads(
         return JSONResponse(status_code=502, content={"text": f"Error listing threads: {e}"})
 
 
-@main_router.get("/v1/threads/{thread_id}")
+@main_router.get(
+    "/v1/threads/{thread_id}",
+    tags=["Threads v1"],
+    summary="Get a single thread summary",
+    response_model=ThreadDetail,
+    responses=_V1_THREAD_ERROR_RESPONSES,
+)
 def get_thread(
     thread_id: str,
     auth: AuthContext = Depends(token_required),
@@ -825,7 +998,13 @@ def _format_v1_message(thread_id: str, m: dict, index: int) -> dict:
     }
 
 
-@main_router.get("/v1/threads/{thread_id}/messages")
+@main_router.get(
+    "/v1/threads/{thread_id}/messages",
+    tags=["Threads v1"],
+    summary="List ordered messages in a thread",
+    response_model=ThreadMessageListResponse,
+    responses=_V1_THREAD_ERROR_RESPONSES,
+)
 def get_thread_messages(
     thread_id: str,
     auth: AuthContext = Depends(token_required),
@@ -848,7 +1027,17 @@ def get_thread_messages(
         return JSONResponse(status_code=502, content={"text": f"Error getting messages: {e}"})
 
 
-@main_router.post("/v1/files")
+@main_router.post(
+    "/v1/files",
+    tags=["Query & Files v1"],
+    status_code=201,
+    summary="Upload raw files for use in /v1/query",
+    response_model=V1FilesUploadResponse,
+    responses={
+        **_AUTH_RESPONSES,
+        400: {"model": V1FilesUploadErrorResponse, "description": "No file in the upload succeeded."},
+    },
+)
 async def post_v1_files(
     files: List[UploadFile] = File(...),
     auth: AuthContext = Depends(token_required),
@@ -878,7 +1067,50 @@ async def post_v1_files(
     return JSONResponse(status_code=201, content=body)
 
 
-@main_router.post("/v1/query")
+@main_router.post(
+    "/v1/query",
+    tags=["Query & Files v1"],
+    status_code=201,
+    summary="Send a Threads v1 message (propose-only)",
+    response_model=V1Message,
+    responses={
+        200: {"model": V1Message, "description": "Idempotent replay for an existing client_message_id."},
+        400: {"model": TextErrorResponse, "description": "Invalid thread_id, parts, context, or file reference."},
+        **_AUTH_RESPONSES,
+        404: {"model": TextErrorResponse, "description": "Thread belongs to a different user."},
+        409: {"model": TextErrorResponse, "description": "A reply is already in progress in this thread."},
+        502: {"model": TextErrorResponse, "description": "Model or tool execution failure."},
+    },
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "description": (
+                "Send either `application/json` matching `V1QueryRequest`, or `multipart/form-data` "
+                "with a `body` JSON string plus attached file parts referenced by `name` in the `files` part."
+            ),
+            "content": {
+                "application/json": {"schema": schema_ref(V1QueryRequest)},
+                "multipart/form-data": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["body"],
+                        "properties": {
+                            "body": {
+                                "type": "string",
+                                "description": "JSON-serialized V1QueryRequest payload.",
+                            },
+                            "files": {
+                                "type": "array",
+                                "items": {"type": "string", "format": "binary"},
+                                "description": "One or more attached files matched by filename.",
+                            },
+                        },
+                    }
+                },
+            },
+        }
+    },
+)
 async def post_v1_query(
     request: Request,
     auth: AuthContext = Depends(token_required),
@@ -1048,7 +1280,22 @@ async def post_v1_query(
         return JSONResponse(status_code=502, content={"text": f"Error processing request: {e}"})
 
 
-@main_router.put("/v1/threads/{thread_id}/context")
+@main_router.put(
+    "/v1/threads/{thread_id}/context",
+    tags=["Threads v1"],
+    status_code=201,
+    summary="Set or update a thread's species, sources, and context resources",
+    response_model=V1Message,
+    responses={
+        204: {"description": "Context matched the existing thread context; no change recorded."},
+        400: {"model": TextErrorResponse, "description": "Invalid species, sources, or resources payload."},
+        **_V1_THREAD_ERROR_RESPONSES,
+    },
+    openapi_extra=json_request_body(
+        ThreadContextUpdateRequest,
+        description="Species, optional source list, and optional resource references.",
+    ),
+)
 async def put_thread_context(
     thread_id: str,
     request: Request,
@@ -1105,7 +1352,22 @@ async def put_thread_context(
         return JSONResponse(status_code=502, content={"text": f"Error setting context: {e}"})
 
 
-@main_router.post("/v1/threads/{thread_id}/messages")
+@main_router.post(
+    "/v1/threads/{thread_id}/messages",
+    tags=["Threads v1"],
+    status_code=201,
+    summary="Record an executed run message and its output files on a thread",
+    response_model=V1Message,
+    responses={
+        200: {"model": TextErrorResponse, "description": "Idempotent replay when client_message_id already exists."},
+        400: {"model": TextErrorResponse, "description": "Missing or multiple 'run' parts."},
+        **_V1_THREAD_ERROR_RESPONSES,
+    },
+    openapi_extra=json_request_body(
+        RecordThreadRunRequest,
+        description="Run status message containing one 'run' part and optional 'files' output part.",
+    ),
+)
 async def record_thread_run(
     thread_id: str,
     request: Request,
@@ -1154,7 +1416,17 @@ async def record_thread_run(
         return JSONResponse(status_code=502, content={"text": f"Error recording run: {e}"})
 
 
-@main_router.patch("/v1/threads/{thread_id}")
+@main_router.patch(
+    "/v1/threads/{thread_id}",
+    tags=["Threads v1"],
+    summary="Rename a thread or reset its custom title",
+    response_model=ThreadDetail,
+    responses=_V1_THREAD_ERROR_RESPONSES,
+    openapi_extra=json_request_body(
+        RenameThreadRequest,
+        description="New custom thread title (or null/empty to clear).",
+    ),
+)
 async def rename_thread(
     thread_id: str,
     request: Request,
@@ -1178,7 +1450,16 @@ async def rename_thread(
         return JSONResponse(status_code=502, content={"text": f"Error renaming thread: {e}"})
 
 
-@main_router.delete("/v1/threads/{thread_id}")
+@main_router.delete(
+    "/v1/threads/{thread_id}",
+    tags=["Threads v1"],
+    status_code=204,
+    summary="Delete a thread",
+    responses={
+        204: {"description": "Thread deleted."},
+        **_V1_THREAD_ERROR_RESPONSES,
+    },
+)
 def delete_thread_route(
     thread_id: str,
     auth: AuthContext = Depends(token_required),
@@ -1195,7 +1476,16 @@ def delete_thread_route(
         return JSONResponse(status_code=502, content={"text": f"Error deleting thread: {e}"})
 
 
-@main_router.delete("/v1/threads/{thread_id}/messages/{message_id}")
+@main_router.delete(
+    "/v1/threads/{thread_id}/messages/{message_id}",
+    tags=["Threads v1"],
+    status_code=204,
+    summary="Delete a single message from a thread",
+    responses={
+        204: {"description": "Message deleted."},
+        **_V1_THREAD_ERROR_RESPONSES,
+    },
+)
 def delete_thread_message(
     thread_id: str,
     message_id: str,
@@ -1222,6 +1512,11 @@ def delete_thread_message(
         return JSONResponse(status_code=502, content={"text": f"Error deleting message: {e}"})
 
 
-@main_router.get("/")
+@main_router.get(
+    "/",
+    tags=["Health"],
+    summary="Health check",
+    response_model=str,
+)
 def health_check():
     return "This is health check"
